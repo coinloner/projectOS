@@ -5,6 +5,8 @@ description = "AI Code Review"
 requires-python = ">=3.10"
 dependencies = [
     "PyYAML>=6.0",
+    "openai>=1.0",
+    "python-dotenv>=1.0",
 ]
 
 [build-system]
