@@ -1,17 +1,19 @@
 import subprocess
-from typing import Optional, Union
+from typing import Optional
 
 
 class Runtime:
     """命令执行层 —— 所有命令统一走这里，后续可在此层加入权限校验、日志等。"""
 
     @staticmethod
-    def run(command: Union[str, list], cwd: Optional[str] = None) -> dict:
+    def run(command: list, cwd: Optional[str] = None) -> dict:
         """
         执行任意命令。
 
         Args:
-            command: 要执行的命令，可以是字符串或列表。
+           command: 命令参数列表，例如：
+
+             ["python", "--version"]
             cwd:     工作目录，不传则沿用当前进程的 cwd。
 
         Returns:
@@ -24,7 +26,6 @@ class Runtime:
         result = subprocess.run(
             command,
             cwd=cwd,
-            shell=True if isinstance(command, str) else False,
             capture_output=True,
             text=True,
         )

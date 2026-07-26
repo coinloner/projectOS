@@ -2,7 +2,7 @@ from app.project.project import Project
 
 def main():
     # 我们把测试项目建在前面规划好的 Environment 目录下
-    demo_project = Project(name="AI-Code-Review", base_dir="./Environment")
+    demo_project = Project(name="AI-Code-Review", base_dir="./projects", language="Python", version="0.1")
     
     # 触发创建动作
     demo_project.create()

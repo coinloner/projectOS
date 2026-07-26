@@ -3,7 +3,7 @@ import sys
 import yaml
 from pathlib import Path
 
-from app.Runtime.Runtime import Runtime
+from app.runtime.Runtime import Runtime
 
 
 class Project:
@@ -14,19 +14,20 @@ class Project:
         self.language = language
         self.version = version
         self.state = "created"
+        self.workspace_path = self.project_path / "workspace"
 
     def create(self):
-        # 第一步：创建项目根目录
-        print(f"🚀 [1/3] 正在创建项目目录: {self.project_path} ...")
+        # 第一步：创建项目根目录和 workspace 子目录
+        print(f"🚀 [1/4] 正在创建项目目录: {self.project_path} ...")
         self.project_path.mkdir(parents=True, exist_ok=True)
+        self.workspace_path.mkdir(parents=True, exist_ok=True)
 
-        # 第二步：通过 Runtime.run() 创建虚拟环境
-        print(f"📦 [2/3] 正在初始化 Python 虚拟环境 (.venv) ...")
+        # 第二步：在 workspace 下通过 Runtime.run() 创建虚拟环境
+        print(f"📦 [2/4] 正在 workspace 下初始化 Python 虚拟环境 (.venv) ...")
 
-        # 通过 Runtime 层执行命令，统一管控
         result = Runtime.run(
             [sys.executable, "-m", "venv", ".venv"],
-            cwd=str(self.project_path),
+            cwd=str(self.workspace_path),
         )
         if result["returncode"] != 0:
             raise RuntimeError(
@@ -34,7 +35,7 @@ class Project:
             )
 
         # 第三步：生成初始的 YAML 配置文件
-        print(f"📄 [3/3] 正在生成项目配置 (project.yaml) ...")
+        print(f"📄 [3/4] 正在生成项目配置 (project.yaml) ...")
         # 利用 f-string 将当前的 self.name 动态注入进去
         config = {
             "name": self.name,
@@ -51,11 +52,13 @@ class Project:
 
 
         print("✅ 项目创建完成！")
+        print(f"   📁 项目根目录: {self.project_path}")
+        print(f"   📂 工作空间:   {self.workspace_path}")
 
     @staticmethod
     def load(project_dir: str):
         """
-        工厂方法：直接传入项目的完整路径（比如 ./Environment/AI-Code-Review），
+        工厂方法：直接传入项目的完整路径（比如 ./workspace/AI-Code-Review），
         读取 YAML 后，帮你把 Project 对象组装好并返回。
         """
         target_path = Path(project_dir)
