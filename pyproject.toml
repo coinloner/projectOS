@@ -3,6 +3,9 @@ name = "ai-code-review"
 version = "0.1.0"
 description = "AI Code Review"
 requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0",
+]
 
 [build-system]
 requires = ["setuptools>=61.0"]

@@ -5,3 +5,8 @@ venv/
 .env
 *.egg-info/
 dist/
+
+# 运行时产物
+projects/
+workspace/
+Environment/
