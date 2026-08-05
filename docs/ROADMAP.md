@@ -1,189 +1,123 @@
-ProjectOS Roadmap（MVP）
+# ProjectOS 系统架构
 
-Phase 0：基础能力（已完成）
+## 当前架构
 
-搭建整个系统最底层的基础设施。
+```
+                          ┌─────────────────────┐
+                          │      Planner         │  □ 未来
+                          │   跨 Workflow 规划    │
+                          └──────────┬──────────┘
+                                     │
+                          ┌──────────▼──────────┐
+                          │      Workflow        │  □ 未来
+                          │   单流程状态机        │
+                          └──────────┬──────────┘
+                                     │
+          ┌──────────────────────────┼──────────────────────────┐
+          │                          │                          │
+  ┌───────▼───────┐         ┌───────▼───────┐         ┌───────▼───────┐
+  │ Requirement  │         │    Task       │         │    Code       │
+  │    Agent     │         │    Agent     │         │    Agent     │
+  │     ✅       │         │     □        │         │     □        │
+  └───────┬───────┘         └───────────────┘         └───────────────┘
+          │
+          │  "有什么工具可用？"
+          ▼
+  ┌───────────────┐
+  │ ToolRegistry  │  ✅  注册 / 发现 / 调用
+  └───────┬───────┘
+          │
+          │  list_tools() / call()
+          ▼
+  ┌───────────────┐     ┌───────────────┐     ┌───────────────┐
+  │  Requirement  │     │    Runtime    │     │    LLMClient  │
+  │   ToolSet     │     │     ✅        │     │      ✅       │
+  │     ✅        │     │  run()        │     │  invoke()     │
+  │ save / load   │     │               │     │  build_*()    │
+  └───────────────┘     └───────────────┘     └───────────────┘
+```
 
-基础能力
-✅ Project
-    项目的创建、加载、删除、扫描
-✅ Runtime
-    命令统一执行入口
-✅ Requirement
-    requirement.md 的管理
-✅ LLMClient
-    统一的大模型调用入口
+## 已完成的模块
 
-⸻
+| 层 | 模块 | 文件 | 职责 |
+|---|---|---|---|
+| **Agent** | `BaseAgent` | `app/agent/base_agent.py` | 智能执行节点基类，tool-calling loop |
+| | `RequirementAgent` | `app/agent/requirement_agent.py` | 接收自然语言，生成结构化需求文档 |
+| **ToolRegistry** | `ToolRegistry` | `app/tool_registry/registry.py` | 工具注册、发现、调用 |
+| **Tool** | `Requirement` | `app/requirement/requirement.py` | requirement.md 文件操作 |
+| | `RequirementToolSet` | `app/requirement/requirement_tool.py` | Agent 可调用的工具封装 |
+| | `Runtime` | `app/runtime/Runtime.py` | 命令统一执行入口 |
+| **LLM** | `LLMClient` | `app/llm/llm_client.py` | 大模型调用入口，invoke() + build_*() |
+| | `LLMResponse` | `app/llm/llm_client.py` | invoke() 统一返回值 |
+| | `config` | `app/llm/config.py` | 厂商预设，provider 切换 |
+| **Project** | `Project` | `app/project/project.py` | 项目创建、加载、删除、扫描 |
 
-Phase 1：Requirement Workflow（当前阶段）
+## 调用链路（已跑通）
 
-完成软件开发生命周期的第一步：需求。
+```
+main.py
+  │
+  ├── registry = ToolRegistry()
+  ├── registry.register("save_requirement", ...)
+  ├── registry.register("load_requirement", ...)
+  │
+  └── agent = RequirementAgent(registry)
+       │
+       agent.run("我要一个博客系统")
+         │
+         ├── registry.list_tools()           → 发现可用工具
+         ├── llm.invoke(messages, tools)      → LLMResponse
+         │     ├── is_tool_call → True        → LLM 请求调 save_requirement
+         │     └── is_tool_call → False       → LLM 返回文本，结束
+         ├── llm.build_assistant_message()    → provider 格式
+         ├── registry.call("save_requirement") → 执行工具
+         └── llm.build_tool_result()          → 结果喂回 LLM
+              │
+              ▼
+         projects/Test-Blog/requirement.md  ✅
+```
 
-Requirement Workflow
-□ 用户输入自然语言需求
-□ LLM 标准化需求
-□ 用户确认需求
-□ 保存 requirement.md
-□ 修改已有需求
-□ 自动更新 requirement.md
+## 待实现的模块
 
-最终成果：
+| 层 | 模块 | 职责 | 依赖 |
+|---|---|---|---|
+| **Planner** | Planner | 跨 Workflow 规划和动态调整 | Workflow |
+| **Workflow** | RequirementWorkflow | 需求流程状态机（草稿→确认→修改→保存） | Agent, Memory |
+| | TaskWorkflow | 需求 → 任务拆解流程 | Agent |
+| | CodeWorkflow | 任务 → 代码生成流程 | Agent, Runtime |
+| **Memory** | Memory | 会话记忆，跨 run() 持久化 | — |
+| **Policy** | Policy | Prompt 模板管理 | — |
+| **ContextBuilder** | ContextBuilder | Context 拼接策略 | Memory, Policy |
+| **Agent** | TaskAgent | 需求 → 任务拆解 | RequirementAgent（参考实现） |
+| | CodeAgent | 代码生成 | TaskAgent（参考实现） |
+| **Tool** | TaskToolSet | task.md 文件操作 | Requirement（参考实现） |
+| | CodeToolSet | 代码文件读写 | Requirement（参考实现） |
 
-用户
-↓
-ProjectOS
-↓
-requirement.md
+## 技术演进
 
-⸻
+```
+MVP（当前）          CLI                FastAPI           Web Dashboard
+    │                  │                   │                   │
+    ▼                  ▼                   ▼                   ▼
+ 单项目本地       命令行工具          REST API 服务       可视化管理台
+ 单 Agent         多项目支持          远程调用            项目管理界面
+ DeepSeek        批量处理            用户系统            实时日志
+                                                          
+    ──────────────────────────────────────────────────────────────►
 
-Phase 2：Task Workflow
+    Multi-Agent       Remote Runtime      Docker Runtime      Cloud
+        │                   │                   │               │
+        ▼                   ▼                   ▼               ▼
+    多 Agent 编排      远端命令执行        容器化隔离         云端项目
+    并行执行           安全沙箱            环境一致性         团队协作
+```
 
-将需求拆解成可执行任务。
+## 关键设计决策
 
-Task Workflow
-□ 读取 requirement.md
-□ LLM 拆解任务
-□ 生成 task.md
-□ 标记任务状态
-□ 支持重新规划
-
-最终成果：
-
-requirement.md
-↓
-task.md
-
-⸻
-
-Phase 3：Code Workflow
-
-真正开始开发。
-
-Code Workflow
-□ 读取 Requirement
-□ 读取 Task
-□ LLM 生成代码
-□ Runtime 执行
-□ 写入项目
-
-最终成果：
-
-Task
-↓
-代码
-
-⸻
-
-Phase 4：Test Workflow
-
-Test Workflow
-□ 自动运行测试
-□ 收集失败日志
-□ LLM 分析错误
-□ 自动修复
-□ 循环直到通过
-
-最终成果：
-
-Code
-↓
-Test
-↓
-Pass
-
-⸻
-
-Phase 5：Review Workflow
-
-Review Workflow
-□ Code Review
-□ Architecture Review
-□ Security Review
-□ Performance Review
-□ 输出 review.md
-
-⸻
-
-Phase 6：Knowledge Workflow
-
-Knowledge Workflow
-□ 提取项目知识
-□ 更新长期知识
-□ 建立索引
-□ RAG
-
-⸻
-
-Phase 7：Project Dashboard
-
-Dashboard
-□ Project Status
-□ Requirement
-□ Task
-□ Runtime
-□ Review
-□ Logs
-
-⸻
-
-Phase 8：Agent Orchestration
-
-Agent
-□ Planner
-□ Developer
-□ Tester
-□ Reviewer
-□ Manager
-
-⸻
-
-整个 ProjectOS 最终工作流
-
-用户需求
-      │
-      ▼
-Requirement Workflow
-      │
-      ▼
-Task Workflow
-      │
-      ▼
-Code Workflow
-      │
-      ▼
-Test Workflow
-      │
-      ▼
-Review Workflow
-      │
-      ▼
-Knowledge Workflow
-      │
-      ▼
-Project Dashboard
-
-⸻
-
-我还想建议你再增加一个章节
-
-我觉得这是你之前一直没有加进去，但其实非常重要的一部分。
-
-## 技术演进（Evolution）
-MVP
-↓
-CLI
-↓
-FastAPI
-↓
-Web Dashboard
-↓
-Multi-Agent
-↓
-Remote Runtime
-↓
-Docker Runtime
-↓
-Cloud Project
-
+| 决策 | 选择 | 原因 |
+|---|---|---|
+| Tool 注册方式 | 方案 A（启动时集中注册） | 可见性优先，将来可切换 MCP |
+| Tool Calls 格式 | 方案 B（简化格式） | provider 无关，换模型 Agent 不动 |
+| Agent 管理注册 | 不管理，外部注入 Registry | 注册与使用分离 |
+| Provider 格式 | 收敛在 LLMClient.build_*() | Agent 不碰 provider 格式 |
+| 返回值类型 | LLMResponse（dataclass） | 不泄漏 SDK，不靠字符串猜测 |

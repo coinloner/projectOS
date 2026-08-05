@@ -78,6 +78,45 @@ Requirement.update(project_path: str, document: RequirementDocument) -> None
 
 ---
 
+## 5. RequirementToolSet（Agent 工具集）
+
+`RequirementToolSet` 将 `Requirement` 封装为 Agent 可调用的工具。
+
+### 构造函数
+
+```python
+RequirementToolSet(project_path: str) -> RequirementToolSet
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `project_path` | `str` | 是 | 项目根目录路径 |
+
+### save
+
+```python
+RequirementToolSet.save(content: str) -> str
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `content` | `str` | 是 | 需求文档的 Markdown 内容 |
+
+- 返回 `"✅ 需求文档已保存"`
+- 不抛异常
+
+### load
+
+```python
+RequirementToolSet.load() -> str
+```
+
+- 文件存在 → 返回文档内容
+- 文件不存在 → 返回 `"（尚未创建需求文档）"`
+- 不抛异常
+
+---
+
 ## 兼容性约定
 
 1. **数据结构稳定** —— `RequirementDocument` 的字段可扩展（增加可选字段），不得删除或修改 `content` 的类型。

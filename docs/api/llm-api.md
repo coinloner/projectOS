@@ -2,7 +2,40 @@
 
 > **定位**：定义 `LLMClient` 模块对外的公共契约。所有实现变更不得破坏此文档中声明的签名、返回值结构和异常语义。
 
-## 1. 初始化
+## 1. LLMResponse 数据结构
+
+```python
+@dataclass
+class LLMResponse:
+    content: Optional[str] = None      # 文本回复
+    tool_calls: Optional[list] = None  # 工具调用请求（简化格式）
+
+    @property
+    def is_tool_call(self) -> bool     # tool_calls 非空 → True
+    def __str__(self) -> str           # 返回 content 或 ""
+```
+
+### tool_calls 格式（方案 B）
+
+```python
+[
+    {
+        "id": "call_xxxxxxxxxxxxx",
+        "name": "save_requirement",
+        "arguments": '{"content": "# 需求文档..."}',
+    }
+]
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | `str` | 工具调用唯一标识 |
+| `name` | `str` | 工具名称 |
+| `arguments` | `str` | JSON 字符串，工具参数 |
+
+---
+
+## 2. 初始化
 
 ```python
 LLMClient(provider: Optional[str] = None) -> LLMClient
@@ -12,10 +45,6 @@ LLMClient(provider: Optional[str] = None) -> LLMClient
 |---|---|---|---|
 | `provider` | `str \| None` | `None`（使用 `ACTIVE_PROVIDER`） | 否 |
 
-- 从对应环境变量读取 API Key
-- 初始化 OpenAI 兼容客户端
-- 设置 `base_url` 和 `model`
-
 | 异常 | 触发条件 |
 |---|---|
 | `RuntimeError` | 对应厂商的 API Key 环境变量未设置 |
@@ -23,19 +52,32 @@ LLMClient(provider: Optional[str] = None) -> LLMClient
 
 ---
 
-## 2. 调用 LLM
+## 3. 调用 LLM
 
 ```python
-LLMClient.invoke(prompt: str) -> str
+LLMClient.invoke(
+    prompt: Union[str, list],
+    tools: Optional[list] = None,
+) -> LLMResponse
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `prompt` | `str` | 是 | 用户提示词 |
+| `prompt` | `str \| list` | 是 | 字符串（Simple）或 messages 列表（Agent） |
+| `tools` | `list \| None` | 否 | OpenAI 格式的工具定义列表 |
 
-### 返回值
+### 返回值判断
 
-`str` —— LLM 回复的纯文本内容
+```python
+response = client.invoke(...)
+
+if response.tool_calls is None:
+    text = response.content       # LLM 文本回复
+else:
+    for tc in response.tool_calls:
+        tc["name"]                # 工具名
+        tc["arguments"]           # 参数 JSON
+```
 
 ### 异常
 
@@ -44,16 +86,31 @@ LLMClient.invoke(prompt: str) -> str
 | `RuntimeError` | `prompt` 为空或全空白字符 |
 | `RuntimeError` | API 调用失败（含网络异常、鉴权失败、超时等） |
 | `RuntimeError` | LLM 返回空 `choices` 列表 |
-| `RuntimeError` | `message.content` 为 `None` |
+| `RuntimeError` | `message.content` 为 `None` 且无 `tool_calls` |
 
 ---
 
-## 3. 配置切换
+## 4. 消息构建
+
+### `build_assistant_message`
 
 ```python
-# config.py —— 全局默认厂商
-ACTIVE_PROVIDER: str = "deepseek"
+LLMClient.build_assistant_message(tool_calls: list[dict]) -> dict
 ```
+
+将简化 tool_calls 转为 provider 特定的 assistant 消息。Agent 调用此方法拼消息，不直接构造 provider 格式。
+
+### `build_tool_result`
+
+```python
+LLMClient.build_tool_result(call_id: str, result: str) -> dict
+```
+
+构建 provider 特定的 tool 结果消息。
+
+---
+
+## 5. 配置切换
 
 ### 厂商预设
 
@@ -77,9 +134,9 @@ ACTIVE_PROVIDER = "claude"
 
 ## 兼容性约定
 
-1. **签名不可变** —— `invoke(prompt: str) -> str` 是对外唯一的调用契约，新增参数只能以可选方式追加。
-2. **不返回 SDK 类型** —— `invoke()` 的返回值绝不会是 `ChatCompletion`、`Choice`、`Message` 等 SDK 类型，调用方无需了解底层 SDK。
-3. **异常统一为 RuntimeError** —— 与 `Runtime` 模块保持一致，调用方只需捕获 `RuntimeError`。
-4. **API Key 统一从环境变量读取** —— 不通过构造函数传入 key，避免 key 散落在代码中。
-5. **新增厂商不改变接口** —— 在 `_PROVIDERS` 中追加厂商不会改变 `LLMClient` 的公共签名。
-6. **单次调用，不维护对话历史** —— `invoke()` 每次调用都是独立的，不记录历史。对话管理是上层 Workflow 的职责。
+1. **`invoke()` 返回 `LLMResponse`** —— 不得返回 SDK 类型（`ChatCompletion`、`Choice`、`Message`）
+2. **`tool_calls` 使用简化格式** —— provider 无关，切换模型时格式不变
+3. **Provider 格式收敛在 `build_*()`** —— Agent 不直接构造 provider 消息格式
+4. **异常统一为 RuntimeError** —— 与 `Runtime` 模块保持一致
+5. **API Key 统一从环境变量读取** —— 不通过构造函数传入 key
+6. **新增厂商不改变公共接口** —— 追加 `_PROVIDERS` 条目 + 适配 `build_*()` 分支即可
