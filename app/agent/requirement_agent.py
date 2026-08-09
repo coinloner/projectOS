@@ -1,16 +1,18 @@
 from app.agent.base_agent import BaseAgent
-from app.tool_registry.registry import ToolRegistry
+from app.tool_manager.manager import ToolManager
 
 
 class RequirementAgent(BaseAgent):
     """需求 Agent —— 接收自然语言需求，调用 LLM 标准化后写入项目。
 
-    工具注册由外部（启动入口）完成，Agent 不管理注册。
+    工具由 ToolManager 按 domain × tier 提供。
+    Manager 在外部（启动入口）注册 ToolSource，Agent 不管理注册。
     """
 
-    def __init__(self, registry: ToolRegistry) -> None:
+    def __init__(self, manager: ToolManager) -> None:
         super().__init__(
-            registry=registry,
+            manager=manager,
+            domain="requirement",
             system_prompt=_SYSTEM_PROMPT,
             max_iterations=5,
         )

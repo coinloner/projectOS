@@ -1,6 +1,6 @@
 # Runtime API 接口文档
 
-> **定位**：定义 `Runtime` 模块对外的公共契约。`Runtime` 是 ProjectOS 唯一的命令执行入口，所有模块的 shell 调用必须经由 `Runtime.run()`。
+> **定位**：定义 `Runtime` 模块对外的公共契约。`Runtime` 是 ProjectOS 唯一的命令执行入口。
 
 ## 1. 执行命令
 
@@ -50,14 +50,41 @@ if result["returncode"] != 0:
 
 ---
 
+## 2. 安全执行命令
+
+```python
+Runtime.run_checked(
+    command: list,
+    cwd: str,
+    allowed_commands: list,
+) -> dict
+```
+
+`run_checked()` 用于未来 Workflow 的 Shell 逃生舱。Workflow 负责人工确认，Runtime 负责命令校验和执行。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `command` | `list` | 是 | 命令参数列表 |
+| `cwd` | `str` | 是 | 执行目录 |
+| `allowed_commands` | `list` | 是 | 命令白名单 |
+
+### 校验
+
+| 校验 | 失败异常 |
+|---|---|
+| `command` 必须是非空 list | `RuntimeError` |
+| command 每项必须是 str | `RuntimeError` |
+| 命令不在白名单 | `PermissionError` |
+| cwd 不存在或不是目录 | `RuntimeError` |
+
+通过校验后复用 `Runtime.run(command, cwd)`。
+
+---
+
 ## 兼容性约定
 
 1. **返回值结构不可变** —— `dict` 必须包含 `stdout`、`stderr`、`returncode` 三个键，类型不可改变。
 2. **命令参数格式** —— `command` 必须为 `list` 类型，不支持字符串形式的 shell 命令，以避免 shell 注入风险。
 3. **不自动抛异常** —— `Runtime.run()` 不会因命令失败而抛出异常。调用方需自行检查 `returncode` 并决定处理策略。
-4. **后续扩展方向** —— 可在 `Runtime.run()` 内部增加：
-   - 命令白名单校验
-   - 执行日志记录
-   - 超时控制（`timeout` 参数）
-   - 环境变量注入
+4. **安全入口** —— 需要权限校验的命令必须使用 `Runtime.run_checked()`。
 5. **唯一入口原则** —— 所有模块不得绕过 `Runtime` 直接使用 `subprocess`、`os.system`、`os.popen` 等。

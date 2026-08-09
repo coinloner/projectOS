@@ -1,12 +1,19 @@
+from __future__ import annotations
+
 import json
-from typing import Any, Callable, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.tool_manager.source import ToolSource
 
 
 class ToolRegistry:
-    """工具注册中心 —— Agent 通过它发现和调用工具。
+    """工具注册中心 —— 纯存储层。
 
-    当前阶段：人工注册（方案 A：启动时集中注册）
-    将来阶段：MCP 动态发现（内部实现切换，接口不变）
+    ToolManager 发现工具后通过 register() 存入，
+    Agent 通过 ToolManager 间接调用 list_tools() / call()。
+
+    不关心工具从哪来、何时加载、暴露给谁 —— 这些由 ToolManager 负责。
     """
 
     def __init__(self) -> None:
@@ -17,37 +24,25 @@ class ToolRegistry:
     def register(
         self,
         name: str,
-        fn: Callable,
-        description: str,
-        parameters: dict,
+        tool_def: dict,
+        source: ToolSource,
     ) -> None:
         """注册一个工具。
 
         Args:
             name: 工具名称（LLM 可见）
-            fn: 工具实现函数
-            description: 工具用途（LLM 据此判断何时调用）
-            parameters: JSON Schema 格式的参数定义
+            tool_def: OpenAI 格式的工具定义
+            source: 提供该工具的 ToolSource（执行时委托回去）
         """
         self._tools[name] = {
-            "fn": fn,
-            "def": {
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": description,
-                    "parameters": parameters,
-                },
-            },
+            "def": tool_def,
+            "source": source,
         }
 
     # ── 发现 ──────────────────────────────────
 
     def list_tools(self) -> Optional[list[dict]]:
-        """返回 OpenAI 格式的工具定义列表，供 LLM 使用。
-
-        Agent 通过此方法询问："有什么工具可用？"
-        """
+        """返回 OpenAI 格式的工具定义列表，供 LLM 使用。"""
         if not self._tools:
             return None
         return [t["def"] for t in self._tools.values()]
@@ -57,12 +52,8 @@ class ToolRegistry:
     def call(self, name: str, arguments: str) -> str:
         """执行已注册的工具并返回结果。
 
-        Args:
-            name: 工具名称
-            arguments: JSON 格式的参数
-
-        Returns:
-            工具执行结果字符串
+        委托给 ToolSource.execute() —— 本地函数和 MCP 远端
+        的执行路径在这里分叉。
         """
         tool = self._tools.get(name)
         if not tool:
@@ -74,7 +65,7 @@ class ToolRegistry:
                 if isinstance(arguments, str)
                 else arguments
             )
-            result = tool["fn"](**args)
-            return str(result)
+            source: ToolSource = tool["source"]
+            return source.execute(name, args)
         except Exception as e:
             return f"Error: 工具 '{name}' 执行失败: {e}"

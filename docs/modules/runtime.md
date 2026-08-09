@@ -2,20 +2,24 @@
 
 ## 概述
 
-`app.runtime.Runtime` 是 ProjectOS 的命令执行层。**所有模块的 shell 命令调用必须经由 `Runtime.run()`**，不得直接使用 `subprocess` 或其他方式。后续的权限校验、命令白名单、执行日志等功能均在此层统一实现。
+`app.runtime.Runtime` 是 ProjectOS 的命令执行层。所有命令调用必须经由 `Runtime`，不得直接使用 `subprocess` 或其他方式。
+
+未来 Workflow 的 Shell 逃生舱必须使用 `Runtime.run_checked()`，这样命令白名单、cwd 校验、日志审计可以集中在 Runtime 一处实现。
 
 ## 依赖
 
 | 模块 | 用途 |
 |---|---|
 | `subprocess` | 实际执行命令 |
+| `pathlib.Path` | cwd 解析和校验 |
 | `typing.Optional` | 类型标注 |
 
 ## 类设计
 
 ```
 Runtime
-└── run(command, cwd?) -> dict   # 静态方法：执行命令
+├── run(command, cwd?) -> dict
+└── run_checked(command, cwd, allowed_commands) -> dict
 ```
 
 ## 方法签名
@@ -41,3 +45,15 @@ Runtime
 
 - `command` 必须为列表形式，避免 shell 注入风险。
 - 调用方需自行检查 `returncode` 并决定如何处理非零退出。
+
+### `run_checked(command: list, cwd: str, allowed_commands: list) -> dict`
+
+经过基础权限校验后执行命令。
+
+| 校验 | 说明 |
+|---|---|
+| `command` | 必须是非空 `list[str]` |
+| 白名单 | `command[0]` 或其 basename 必须在 `allowed_commands` 中 |
+| `cwd` | 必须存在且是目录 |
+
+`run_checked()` 内部复用 `Runtime.run()`。它只负责基础命令安全，不负责用户确认；用户确认属于 Workflow。

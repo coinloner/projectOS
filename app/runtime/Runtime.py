@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 from typing import Optional
 
 
@@ -35,3 +36,32 @@ class Runtime:
             "stderr":     result.stderr,
             "returncode": result.returncode,
         }
+
+    @staticmethod
+    def run_checked(
+        command: list,
+        cwd: str,
+        allowed_commands: list,
+    ) -> dict:
+        """经过基础权限校验后执行命令。
+
+        该方法用于未来 Workflow 的人工确认 shell 逃生舱：
+        Workflow 负责询问用户是否允许，Runtime 负责统一校验和执行。
+        """
+        if not isinstance(command, list) or not command:
+            raise RuntimeError("❌ command 必须是非空 list")
+
+        if not all(isinstance(part, str) for part in command):
+            raise RuntimeError("❌ command 中的每一项都必须是字符串")
+
+        executable = Path(command[0]).name
+        if executable not in allowed_commands and command[0] not in allowed_commands:
+            raise PermissionError(
+                f"❌ 命令 '{command[0]}' 不在白名单中"
+            )
+
+        cwd_path = Path(cwd).resolve()
+        if not cwd_path.exists() or not cwd_path.is_dir():
+            raise RuntimeError(f"❌ cwd 不存在或不是目录: {cwd_path}")
+
+        return Runtime.run(command, cwd=str(cwd_path))

@@ -2,129 +2,88 @@
 
 ## 概述
 
-`app.agent` 是 ProjectOS 的 Agent 层 —— Workflow 与 Tool 之间的智能执行节点。每个 Agent 接收一个 task，通过 LLM 自主决定调用哪些 Tool、调几次，最后返回结果。
+`app.agent` 是 ProjectOS 的 Agent 层。Agent 是 Workflow 中的单节点智能执行单元：接收一个 task，通过 LLM 自主决定是否调用工具，并返回最终结果。
 
 ## 架构定位
 
 ```
-Workflow → Agent → ToolRegistry → Tool
-              ↑
-          BaseAgent
+Workflow → Agent → ToolManager → ToolRegistry / External Source → Tool
 ```
 
-Agent 不管理工具注册，不感知 provider 消息格式，不维护跨 `run()` 的会话状态。
-
-## 依赖
-
-| 模块 | 用途 |
-|---|---|
-| `app.llm.llm_client` | LLMClient + LLMResponse |
-| `app.tool_registry.registry` | ToolRegistry — 工具发现与调用 |
+Agent 不管理工具注册，不参与工具暴露半径决策，不维护跨 `run()` 的会话状态。
 
 ## 类设计
 
-### `BaseAgent`
-
 ```
 BaseAgent
-├── __init__(registry, system_prompt, max_iterations?)
-└── run(task) -> str                      # tool-calling loop
-```
+├── __init__(manager, domain, system_prompt, max_iterations?)
+└── run(task) -> str
 
-### `RequirementAgent`
-
-```
 RequirementAgent(BaseAgent)
-└── __init__(registry)
+└── __init__(manager)
 ```
 
----
-
-## BaseAgent
-
-### 职责边界
+## BaseAgent 职责
 
 | 负责 | 不负责 |
 |---|---|
-| 接收 task | 工具注册 → ToolRegistry |
-| 通过 Registry 发现可用工具 | Provider 格式 → LLMClient.build_*() |
-| LLM 自主决定调哪些 Tool | 跨节点编排 → Workflow |
-| 执行 Tool 并喂回结果 | 跨 Workflow → Planner |
-| 返回执行结果 | 会话记忆 → Memory |
-| | Prompt 模板 → Policy |
+| 接收单次 task | 工具注册 |
+| 调用 ToolManager 获取当前可用工具 | 本地 ToolSet 注册、external 激活 |
+| 调用 LLM 并处理 tool_calls | Workflow 编排 |
+| 执行工具并把结果喂回 LLM | 会话记忆 |
+| 返回最终文本结果 | Prompt 模板管理 |
 
-### `__init__(registry, system_prompt, max_iterations=10)`
-
-| 参数 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `registry` | `ToolRegistry` | 是 | 工具注册中心（外部注入） |
-| `system_prompt` | `str` | 是 | 系统提示词，定义 Agent 角色 |
-| `max_iterations` | `int` | 否 | 最大 tool-calling 迭代次数，默认 10 |
-
-### `run(task: str) -> str`
-
-Agent 的唯一入口。Workflow 调用此方法。
-
-**执行流程：**
+## 执行流程
 
 ```
-1. 构建 messages = [system_prompt, user_task]
-2. 通过 registry.list_tools() 获取可用工具列表
-3. LLM 请求 → LLMResponse
+1. 构建 system + user messages
+2. manager.list_tools(domain)
+3. llm.invoke(messages, tools)
    ├── 无 tool_calls → 返回 response.content
-   └── 有 tool_calls →
-        ├── llm.build_assistant_message() → 拼 provider 消息
-        ├── registry.call() → 执行工具
-        ├── llm.build_tool_result() → 拼结果消息
-        └── 循环回到步骤 3
-4. 超过 max_iterations → RuntimeError
+   └── 有 tool_calls
+        ├── llm.build_assistant_message()
+        ├── manager.call(name, arguments, domain)
+        ├── llm.build_tool_result()
+        └── 继续循环
 ```
-
-| 异常 | 触发条件 |
-|---|---|
-| `RuntimeError` | task 为空 |
-| `RuntimeError` | 超过最大迭代次数 |
-
----
 
 ## RequirementAgent
 
-### `__init__(registry: ToolRegistry)`
+`RequirementAgent` 固定使用 `domain="requirement"`，内置需求分析师 system prompt。
 
-继承 `BaseAgent`，内置需求分析师的 system prompt。不管理工具注册 —— registry 由调用方注入。
+当前流程：
 
-### System Prompt
+1. 用户输入自然语言需求
+2. LLM 生成结构化需求文档
+3. LLM 调用 `save_requirement`
+4. 工具写入 `requirement.md`
+5. Agent 返回最终文本
 
-- 角色：需求分析师
-- 工作流程：接收描述 → 生成需求文档 → 调用 `save_requirement` 保存
-- 修改流程：调用 `load_requirement` 读取 → 修改 → 保存
-- 原则：不添加用户没提到的功能
-
----
+确认、修改、多轮状态机后续由 `Workflow` 和 `Memory` 实现。
 
 ## 使用示例
 
 ```python
-from app.tool_registry.registry import ToolRegistry
-from app.requirement.requirement_tool import RequirementToolSet
 from app.agent.requirement_agent import RequirementAgent
+from app.tool_manager.manager import ToolManager
+from app.tool_manager.source import ToolDef, ToolSetSource
 
-# 启动时集中注册工具（方案 A）
-tools = RequirementToolSet("./projects/MyProject")
-registry = ToolRegistry()
-registry.register("save_requirement", tools.save, "保存需求文档", {...})
-registry.register("load_requirement", tools.load, "读取需求文档", {...})
+manager = ToolManager()
+manager.register_toolset(
+    domain="requirement",
+    name="base",
+    source=ToolSetSource([
+        (ToolDef("save_requirement", "保存需求文档", {...}), save_fn),
+    ]),
+)
 
-# Agent 注入 registry
-agent = RequirementAgent(registry)
+agent = RequirementAgent(manager)
 result = agent.run("我要一个博客系统")
 ```
 
----
-
 ## 设计原则
 
-- **Registry 注入，不管理注册**：Agent 接收已注册好的 Registry，不调用 `register()`
-- **单节点执行**：每次 `run()` 是独立的任务节点，不维护跨调用状态
-- **LLM 自主决策**：Agent 不预设调用顺序，LLM 根据 system prompt 自行决定调哪些 Tool
-- **Provider 无关**：拼消息通过 `LLMClient.build_*()` 完成，Agent 不碰 provider 格式
+- Agent 只消费 ToolManager，不直接依赖 ToolRegistry。
+- Agent 不控制 external，不决定是否接入远端工具。
+- 一个 Agent 类型对应一个 domain。
+- Provider 消息格式由 LLMClient 处理。

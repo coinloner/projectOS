@@ -1,123 +1,85 @@
-# ProjectOS 系统架构
+# ProjectOS Roadmap
 
-## 当前架构
+## 当前系统架构
 
 ```
-                          ┌─────────────────────┐
-                          │      Planner         │  □ 未来
-                          │   跨 Workflow 规划    │
-                          └──────────┬──────────┘
-                                     │
-                          ┌──────────▼──────────┐
-                          │      Workflow        │  □ 未来
-                          │   单流程状态机        │
-                          └──────────┬──────────┘
-                                     │
-          ┌──────────────────────────┼──────────────────────────┐
-          │                          │                          │
-  ┌───────▼───────┐         ┌───────▼───────┐         ┌───────▼───────┐
-  │ Requirement  │         │    Task       │         │    Code       │
-  │    Agent     │         │    Agent     │         │    Agent     │
-  │     ✅       │         │     □        │         │     □        │
-  └───────┬───────┘         └───────────────┘         └───────────────┘
-          │
-          │  "有什么工具可用？"
-          ▼
-  ┌───────────────┐
-  │ ToolRegistry  │  ✅  注册 / 发现 / 调用
-  └───────┬───────┘
-          │
-          │  list_tools() / call()
-          ▼
-  ┌───────────────┐     ┌───────────────┐     ┌───────────────┐
-  │  Requirement  │     │    Runtime    │     │    LLMClient  │
-  │   ToolSet     │     │     ✅        │     │      ✅       │
-  │     ✅        │     │  run()        │     │  invoke()     │
-  │ save / load   │     │               │     │  build_*()    │
-  └───────────────┘     └───────────────┘     └───────────────┘
+Planner □
+  ▼
+Workflow □
+  ▼
+RequirementAgent ✅
+  ▼
+ToolManager ✅
+  ├── Local ToolSet ✅        本地已知工具，默认暴露
+  └── External Source ◇       MCP 等远端动态工具，默认锁住
+  ▼
+ToolRegistry ✅
+  ▼
+Tool ✅
+  ├── RequirementToolSet ✅
+  ├── Runtime ✅
+  └── LLMClient ✅
 ```
 
-## 已完成的模块
+说明：
 
-| 层 | 模块 | 文件 | 职责 |
-|---|---|---|---|
-| **Agent** | `BaseAgent` | `app/agent/base_agent.py` | 智能执行节点基类，tool-calling loop |
-| | `RequirementAgent` | `app/agent/requirement_agent.py` | 接收自然语言，生成结构化需求文档 |
-| **ToolRegistry** | `ToolRegistry` | `app/tool_registry/registry.py` | 工具注册、发现、调用 |
-| **Tool** | `Requirement` | `app/requirement/requirement.py` | requirement.md 文件操作 |
-| | `RequirementToolSet` | `app/requirement/requirement_tool.py` | Agent 可调用的工具封装 |
-| | `Runtime` | `app/runtime/Runtime.py` | 命令统一执行入口 |
-| **LLM** | `LLMClient` | `app/llm/llm_client.py` | 大模型调用入口，invoke() + build_*() |
-| | `LLMResponse` | `app/llm/llm_client.py` | invoke() 统一返回值 |
-| | `config` | `app/llm/config.py` | 厂商预设，provider 切换 |
-| **Project** | `Project` | `app/project/project.py` | 项目创建、加载、删除、扫描 |
+- `✅` 已实现并跑通
+- `◇` 接口已预留，真实 MCP connector 后续实现
+- `□` 未来模块
 
-## 调用链路（已跑通）
+## 当前已完成
+
+| 模块 | 文件 | 状态 |
+|---|---|---|
+| Project | `app/project/project.py` | ✅ 项目创建、加载、删除、扫描 |
+| Runtime | `app/runtime/Runtime.py` | ✅ `run()` + `run_checked()` |
+| Requirement | `app/requirement/requirement.py` | ✅ `requirement.md` 读写 |
+| RequirementToolSet | `app/requirement/requirement_tool.py` | ✅ save/load 工具封装 |
+| LLMClient | `app/llm/llm_client.py` | ✅ `LLMResponse` + tool calls |
+| ToolRegistry | `app/tool_registry/registry.py` | ✅ 本地工具存储 + source.execute() |
+| ToolManager | `app/tool_manager/manager.py` | ✅ 本地 ToolSet + external 控制 |
+| RequirementAgent | `app/agent/requirement_agent.py` | ✅ 需求文档生成并保存 |
+
+## 已跑通链路
 
 ```
 main.py
-  │
-  ├── registry = ToolRegistry()
-  ├── registry.register("save_requirement", ...)
-  ├── registry.register("load_requirement", ...)
-  │
-  └── agent = RequirementAgent(registry)
-       │
-       agent.run("我要一个博客系统")
-         │
-         ├── registry.list_tools()           → 发现可用工具
-         ├── llm.invoke(messages, tools)      → LLMResponse
-         │     ├── is_tool_call → True        → LLM 请求调 save_requirement
-         │     └── is_tool_call → False       → LLM 返回文本，结束
-         ├── llm.build_assistant_message()    → provider 格式
-         ├── registry.call("save_requirement") → 执行工具
-         └── llm.build_tool_result()          → 结果喂回 LLM
-              │
-              ▼
-         projects/Test-Blog/requirement.md  ✅
+  ├── 创建 Project
+  ├── 注册 requirement ToolSet
+  ├── 创建 RequirementAgent
+  └── agent.run(task)
+       ├── ToolManager.list_tools("requirement")
+       ├── LLMClient.invoke(messages, tools)
+       ├── LLM 请求 save_requirement
+       ├── ToolManager.call(...)
+       └── 写入 projects/Mega_Shit/requirement.md
 ```
 
-## 待实现的模块
+## 下一阶段
 
-| 层 | 模块 | 职责 | 依赖 |
-|---|---|---|---|
-| **Planner** | Planner | 跨 Workflow 规划和动态调整 | Workflow |
-| **Workflow** | RequirementWorkflow | 需求流程状态机（草稿→确认→修改→保存） | Agent, Memory |
-| | TaskWorkflow | 需求 → 任务拆解流程 | Agent |
-| | CodeWorkflow | 任务 → 代码生成流程 | Agent, Runtime |
-| **Memory** | Memory | 会话记忆，跨 run() 持久化 | — |
-| **Policy** | Policy | Prompt 模板管理 | — |
-| **ContextBuilder** | ContextBuilder | Context 拼接策略 | Memory, Policy |
-| **Agent** | TaskAgent | 需求 → 任务拆解 | RequirementAgent（参考实现） |
-| | CodeAgent | 代码生成 | TaskAgent（参考实现） |
-| **Tool** | TaskToolSet | task.md 文件操作 | Requirement（参考实现） |
-| | CodeToolSet | 代码文件读写 | Requirement（参考实现） |
+| 阶段 | 目标 |
+|---|---|
+| RequirementWorkflow | 草稿 → 用户确认 → 保存 |
+| Memory | 保存跨轮上下文 |
+| Shell 逃生舱 | Workflow 人工确认后调用 `Runtime.run_checked()` |
+| External MCP | 实现 `ExternalDynamicSource` connector |
+| TaskWorkflow | 需求拆任务，生成 `task.md` |
+| CodeWorkflow | 代码生成和写入 |
+
+## Shell 设计原则
+
+Shell 不作为普通 Tool 自动暴露。只有 Workflow 获得用户确认后，才能通过 Runtime 执行：
+
+```
+Agent 返回需要命令
+  ↓
+Workflow 请求用户确认
+  ↓
+Runtime.run_checked(command, cwd, allowed_commands)
+```
 
 ## 技术演进
 
 ```
-MVP（当前）          CLI                FastAPI           Web Dashboard
-    │                  │                   │                   │
-    ▼                  ▼                   ▼                   ▼
- 单项目本地       命令行工具          REST API 服务       可视化管理台
- 单 Agent         多项目支持          远程调用            项目管理界面
- DeepSeek        批量处理            用户系统            实时日志
-                                                          
-    ──────────────────────────────────────────────────────────────►
-
-    Multi-Agent       Remote Runtime      Docker Runtime      Cloud
-        │                   │                   │               │
-        ▼                   ▼                   ▼               ▼
-    多 Agent 编排      远端命令执行        容器化隔离         云端项目
-    并行执行           安全沙箱            环境一致性         团队协作
+MVP → CLI → FastAPI → Web Dashboard → Multi-Agent → Remote Runtime → Docker Runtime → Cloud
 ```
-
-## 关键设计决策
-
-| 决策 | 选择 | 原因 |
-|---|---|---|
-| Tool 注册方式 | 方案 A（启动时集中注册） | 可见性优先，将来可切换 MCP |
-| Tool Calls 格式 | 方案 B（简化格式） | provider 无关，换模型 Agent 不动 |
-| Agent 管理注册 | 不管理，外部注入 Registry | 注册与使用分离 |
-| Provider 格式 | 收敛在 LLMClient.build_*() | Agent 不碰 provider 格式 |
-| 返回值类型 | LLMResponse（dataclass） | 不泄漏 SDK，不靠字符串猜测 |

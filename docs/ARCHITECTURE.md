@@ -3,83 +3,95 @@
 ## 分层架构
 
 ```
-Workflow    →  流程状态机（多轮交互：确认 → 修改 → 保存）
-  Agent     →  智能执行节点（单次 task → 自主调 Tool → 返回结果）
-    Tool    →  原子能力（文件读写、命令执行、LLM 调用）
+Planner（未来）       跨 Workflow 规划和调整
+  ↓
+Workflow（未来）      流程状态机，负责确认、修改、external 授权、shell 人工确认
+  ↓
+Agent                单节点智能执行，调用 LLM 并使用工具
+  ↓
+ToolManager          提供本地 ToolSet，控制 external
+  ↓
+ToolRegistry         本地 ToolSet 的持久存储和调用入口
+  ↓
+ToolSource / Tool    ToolSet 本地工具或 external 远端工具
 ```
-
-## 层级职责
-
-| 层 | 职责 | 不负责 |
-|---|---|---|
-| **Planner**（未来） | 跨 Workflow 规划和调整 | 单节点执行 |
-| **Workflow**（未来） | 单流程状态机，管理多轮对话 | 单节点智能决策 |
-| **Agent** | 接收 task → LLM 自主决定调哪些 Tool → 返回结果 | 工具注册、跨节点编排、会话记忆 |
-| **ToolRegistry** | 工具注册、发现、执行 | Agent 业务逻辑 |
-| **Tool** | 单一原子操作 | 决策、编排 |
 
 ## 当前模块
 
 ```
 app/
-├── agent/                    # Agent 层
-│   ├── base_agent.py         # BaseAgent — 智能执行节点基类
-│   └── requirement_agent.py  # RequirementAgent — 需求分析
-├── tool_registry/            # 工具注册中心
-│   └── registry.py           # ToolRegistry — 注册 / 发现 / 调用
-├── llm/                      # LLM 客户端
-│   ├── config.py             # 厂商预设、激活厂商
-│   └── llm_client.py         # LLMClient + LLMResponse
-├── requirement/              # 需求文档 Tool
-│   ├── requirement.py        # Requirement — 底层文件操作
-│   └── requirement_tool.py   # RequirementToolSet — Agent 可调用的工具集
-├── runtime/                  # 命令执行 Tool
-│   └── Runtime.py            # Runtime.run()
-└── project/                  # 项目管理 Tool
-    └── project.py            # Project — 创建/加载/删除/扫描
+├── agent/
+├── tool_manager/
+├── tool_registry/
+├── requirement/
+├── llm/
+├── runtime/
+└── project/
+```
+
+## 工具暴露模型
+
+### 本地 ToolSet
+
+本地工具以 ToolSet 为单位注册，默认暴露给对应 domain 的 Agent。
+
+```python
+manager.register_toolset("requirement", "base", ToolSetSource(...))
+```
+
+本地不做动态扫描。工具候选集大小由 ToolSet 设计控制。
+
+### External Source
+
+External 面向 MCP 等远端动态工具，默认锁住：
+
+```python
+manager.register_source("requirement", "mcp", ExternalDynamicSource())
+manager.enable_external("requirement")
+manager.activate_external("requirement")
+```
+
+External 工具每次 `list_tools()` 重新 discover，不写入 ToolRegistry。
+
+### Shell
+
+Shell 不作为普通 Tool 暴露。未来 Workflow 在人工确认后调用：
+
+```python
+Runtime.run_checked(command, cwd, allowed_commands)
 ```
 
 ## 调用链路
 
 ```
-main.py（方案 A：启动时集中注册工具）
-  │
-  ├── registry = ToolRegistry()
-  ├── registry.register("save_requirement", ...)
-  ├── registry.register("load_requirement", ...)
-  │
-  └── agent = RequirementAgent(registry)
+main.py
+  ├── manager = ToolManager()
+  ├── manager.register_toolset("requirement", "base", ToolSetSource(...))
+  └── agent = RequirementAgent(manager)
        │
-       agent.run("我要一个博客系统")
-         │
-         ├── registry.list_tools()                  → "有什么工具可用？"
-         ├── llm.invoke(messages, tools)             → LLMResponse
-         │     ├── response.is_tool_call == True     → LLM 请求调 tool
-         │     └── response.is_tool_call == False    → LLM 返回文本（结束）
-         ├── llm.build_assistant_message(tool_calls) → provider 格式
-         ├── registry.call(name, arguments)          → 执行工具
-         └── llm.build_tool_result(call_id, result)  → 结果消息
-              │
-              ▼
-         返回结果给 Workflow
+       agent.run(task)
+         ├── manager.list_tools("requirement")
+         ├── llm.invoke(messages, tools)
+         ├── manager.call(name, arguments, "requirement")
+         └── 返回最终文本给 Workflow
 ```
+
+## 职责边界
+
+| 层 | 负责 | 不负责 |
+|---|---|---|
+| Agent | 单次 task 执行、LLM tool-calling loop | 工具注册、external 授权、shell 权限 |
+| ToolManager | 本地 ToolSet 暴露、external 开关 | shell、人类确认 |
+| ToolRegistry | 存储本地 ToolSet 工具，委托 source 执行 | 暴露半径决策 |
+| ToolSource | discover + execute | Agent 业务逻辑 |
+| Runtime | 命令执行和基础命令校验 | 是否允许执行命令 |
+| Workflow | 流程状态、确认、升 external、shell 人工授权 | 底层命令执行 |
 
 ## 关键设计决策
 
-### Tool 注册：方案 A（启动时集中注册）
-
-工具在启动入口统一注册，Agent 不管理注册。将来切换到 MCP 动态发现时，只改 Registry 内部实现。
-
-### Tool Calls 格式：方案 B（简化格式）
-
-`LLMResponse.tool_calls` 使用 provider 无关的简化格式 `[{"id", "name", "arguments"}]`。拼 provider 消息时由 `LLMClient.build_*()` 完成转换，换模型只改这两个方法。
-
-### 不提前实现的模块
-
-| 模块 | 职责 | 当前状态 |
+| 决策 | 选择 | 原因 |
 |---|---|---|
-| Workflow | 流状态机，多轮对话 | 未实现 |
-| Memory | 会话记忆，跨 run() 持久化 | 未实现 |
-| Policy | Prompt 模板管理 | 未实现 |
-| Planner | 跨 Workflow 规划 | 未实现 |
-| ContextBuilder | Context 拼接 | 未实现 |
+| 本地工具 | 不动态扫描，以 ToolSet 为单位注册 | 本地能力是已知工程能力，重点是设计好 ToolSet |
+| External | enable + activate 两步 | 防止跳过本地工具直接接入远端动态工具 |
+| ToolDef | 不包含 `fn` | 兼容 MCP，执行逻辑归 Source |
+| Shell | 不作为自动 Tool | 必须人工确认后经 Runtime 执行 |
