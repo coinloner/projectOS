@@ -1,6 +1,6 @@
 # Requirement API 接口文档
 
-> **定位**：定义 `Requirement` 模块对外的公共契约。所有实现变更不得破坏此文档中声明的签名、返回值结构和异常语义。
+> **定位**：定义 `app.domain.requirement` 的公共契约。所有实现变更不得破坏此文档中声明的签名、返回值结构和异常语义。
 
 ## 1. RequirementDocument 数据结构
 
@@ -25,15 +25,15 @@ RequirementDocument.empty() -> RequirementDocument
 
 ---
 
-## 2. 保存需求文档
+## 2. 创建需求服务与保存文档
 
 ```python
-Requirement.save(project_path: str, document: RequirementDocument) -> None
+RequirementService(project_path: str)
+RequirementService.save(document: RequirementDocument) -> None
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `project_path` | `str` | 是 | 项目根目录路径 |
 | `document` | `RequirementDocument` | 是 | 待写入的需求文档对象 |
 
 - 写入路径：`{project_path}/requirement.md`
@@ -46,13 +46,11 @@ Requirement.save(project_path: str, document: RequirementDocument) -> None
 ## 3. 读取需求文档
 
 ```python
-Requirement.load(project_path: str) -> RequirementDocument
+RequirementService.load() -> RequirementDocument
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `project_path` | `str` | 是 | 项目根目录路径 |
-
 | 异常 | 触发条件 |
 |---|---|
 | `FileNotFoundError` | `{project_path}/requirement.md` 不存在 |
@@ -65,12 +63,11 @@ Requirement.load(project_path: str) -> RequirementDocument
 ## 4. 更新需求文档
 
 ```python
-Requirement.update(project_path: str, document: RequirementDocument) -> None
+RequirementService.update(document: RequirementDocument) -> None
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `project_path` | `str` | 是 | 项目根目录路径 |
 | `document` | `RequirementDocument` | 是 | 更新后的需求文档对象 |
 
 - 当前实现等价于 `save()`，为全量覆盖写入
@@ -78,37 +75,37 @@ Requirement.update(project_path: str, document: RequirementDocument) -> None
 
 ---
 
-## 5. RequirementToolSet（Agent 工具集）
+## 5. RequirementToolSet（Agent 本地适配）
 
-`RequirementToolSet` 将 `Requirement` 封装为 Agent 可调用的工具。
+`RequirementToolSet` 将 `RequirementService` 封装为 Agent 可调用的本地操作；同一 `tools.py` 中的注册函数再将其注册为 ToolGateway 工具。
 
 ### 构造函数
 
 ```python
-RequirementToolSet(project_path: str) -> RequirementToolSet
+RequirementToolSet(service: RequirementService) -> RequirementToolSet
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `project_path` | `str` | 是 | 项目根目录路径 |
+| `service` | `RequirementService` | 是 | 已绑定项目路径的需求领域服务 |
 
 ### save
 
 ```python
-RequirementToolSet.save(content: str) -> str
+RequirementToolSet.save_requirement(content: str) -> str
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `content` | `str` | 是 | 需求文档的 Markdown 内容 |
 
-- 返回 `"✅ 需求文档已保存"`
+- 返回 `"需求文档已保存"`
 - 不抛异常
 
 ### load
 
 ```python
-RequirementToolSet.load() -> str
+RequirementToolSet.load_requirement() -> str
 ```
 
 - 文件存在 → 返回文档内容
@@ -122,5 +119,5 @@ RequirementToolSet.load() -> str
 1. **数据结构稳定** —— `RequirementDocument` 的字段可扩展（增加可选字段），不得删除或修改 `content` 的类型。
 2. **异常类型不得降级** —— `load()` 在文件不存在时必须抛出 `FileNotFoundError`，不得静默返回空文档。
 3. **编码固定** —— 所有文件读写均使用 UTF-8 编码。
-4. **新增方法自由** —— 在保持已有方法不变的前提下，可以增加新的静态/类方法。
-5. **与 Project 模块的关系** —— `Requirement` 操作的文件位于 `Project.project_path` 下，但 `Requirement` 不依赖 `Project`，仅依赖路径字符串。
+4. **新增方法自由** —— 在保持已有方法不变的前提下，可以增加新的实例/类方法。
+5. **与 Project 模块的关系** —— `RequirementService` 操作的文件位于 `Project.project_path` 下，但不依赖 `Project`，仅在构造时接收路径字符串。

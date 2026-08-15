@@ -26,9 +26,9 @@ Project.create() -> None
 ```
 
 - 创建 `base_dir/name/`、`base_dir/name/workspace/`
-- 在 `workspace/` 下执行 `python -m venv .venv`
+- 写入 `runtime.yaml`，默认 Profile 为 `python-stdlib`
 - 写入 `base_dir/name/project.yaml`
-- 失败抛出 `RuntimeError`，`returncode` 见异常信息
+- 不在宿主机创建项目虚拟环境；依赖与测试由 Sandbox 管理
 
 ---
 
@@ -57,7 +57,7 @@ Project.delete(name: str, base_dir: str) -> None
 |---|---|
 | `FileNotFoundError` | `base_dir/name` 不存在 |
 
-- 递归删除整个项目目录（含 workspace 和虚拟环境）
+- 递归删除整个项目目录（含 workspace 和 sandbox 缓存）
 
 ---
 
@@ -88,4 +88,4 @@ Project.list(base_dir: str) -> list[str]
 1. **返回值结构不得改变** —— 公共方法的返回值类型一旦定义，后续版本只能扩展（加字段），不得修改或删除已有字段。
 2. **异常类型不得降级** —— 当前声明为 `FileNotFoundError` 的错误，后续不得改为静默忽略或无提示返回。
 3. **新增方法自由** —— 在保持已有方法不变的前提下，可以增加新的静态/实例方法。
-4. **依赖 Runtime 层** —— 所有 `subprocess` 调用必须通过 `Runtime.run()`，方便集中管控。
+4. **运行时隔离** —— 生成项目的构建、运行和测试必须经由 SandboxController，不得调用宿主机 `Runtime.run()`。

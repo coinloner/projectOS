@@ -2,17 +2,16 @@
 
 ## 概述
 
-`app.project.project.Project` 是 ProjectOS 的项目管理层，负责项目的创建、加载、删除、存在性判断及列表扫描。所有目录和文件操作均通过 `pathlib.Path` 完成，命令执行统一经由 `Runtime` 层。
+`app.project.project.Project` 是 ProjectOS 的项目管理层，负责项目的创建、加载、删除、存在性判断及列表扫描。新项目写入 `runtime.yaml` 声明默认 sandbox 运行时，不在宿主机创建项目虚拟环境。
 
 ## 依赖
 
 | 模块 | 用途 |
 |---|---|
 | `shutil` | 递归删除项目目录 |
-| `sys` | 获取当前 Python 解释器路径 |
 | `yaml` (PyYAML) | 项目配置文件读写 |
 | `pathlib.Path` | 跨平台路径操作 |
-| `app.runtime.Runtime` | 命令执行（创建虚拟环境） |
+| `app.runtime.manifest.RuntimeManifest` | 写入默认运行时声明 |
 
 ## 类设计
 
@@ -42,7 +41,7 @@ Project
 ```
 {base_dir}/{name}/
 ├── workspace/
-│   └── .venv/            ← 项目专属虚拟环境
+├── runtime.yaml          ← sandbox 运行时声明
 └── project.yaml          ← 项目元信息
 ```
 
@@ -55,10 +54,10 @@ Project
 ### `create()`
 
 1. 创建 `project_path` 和 `workspace_path`
-2. 在 `workspace_path` 下执行 `python -m venv .venv`
+2. 写入默认 `runtime.yaml`（`python-stdlib`）
 3. 写入 `project.yaml`
 
-失败时抛出 `RuntimeError`。
+运行时依赖、构建和测试由 Sandbox 管理，不回退到宿主机 `.venv`。
 
 ### `load(project_dir: str) -> Project`
 

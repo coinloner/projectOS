@@ -1,0 +1,126 @@
+"""TestAgent 的工具合同。"""
+
+from app.domain.test.service import TestService
+from app.tool_manager.gateway import ToolGateway
+from app.tool_manager.source import ToolDef, ToolSetSource
+
+
+class TestToolSet:
+    """将 TestService 适配为测试 Agent 的本地工具。"""
+
+    def __init__(self, service: TestService) -> None:
+        self._service = service
+
+    def load_artifact(self, artifact: str) -> str:
+        return self._service.load_artifact(artifact)
+
+    def save_tests(self, content: str) -> str:
+        return self._service.save_tests(content)
+
+    def list_workspace_files(self) -> str:
+        return self._service.list_workspace_files()
+
+    def read_workspace_file(self, path: str) -> str:
+        return self._service.read_workspace_file(path)
+
+    def write_test_file(self, path: str, content: str) -> str:
+        return self._service.write_test_file(path, content)
+
+    def run_sandbox_check(self) -> str:
+        return self._service.run_sandbox_check()
+
+
+def register_test_tools(gateway: ToolGateway, project_path: str) -> None:
+    """测试节点可读实现、仅能写 tests/，并只能运行固定 unittest 命令。"""
+    tools = TestToolSet(TestService(project_path))
+    gateway.register_toolset(
+        domain="test",
+        name="project_artifacts",
+        toolset=ToolSetSource(
+            [
+                (
+                    ToolDef(
+                        name="load_artifact",
+                        description="读取前置产物。可读取: requirement、tasks、implementation。",
+                        parameters={
+                            "type": "object",
+                            "properties": {"artifact": {"type": "string", "description": "前置产物标识"}},
+                            "required": ["artifact"],
+                        },
+                    ),
+                    tools.load_artifact,
+                ),
+                (
+                    ToolDef(
+                        name="save_tests",
+                        description="保存完整测试报告到 tests.md。",
+                        parameters={
+                            "type": "object",
+                            "properties": {"content": {"type": "string", "description": "完整 Markdown 内容"}},
+                            "required": ["content"],
+                        },
+                    ),
+                    tools.save_tests,
+                ),
+            ]
+        ),
+    )
+    gateway.register_toolset(
+        domain="test",
+        name="workspace",
+        toolset=ToolSetSource(
+            [
+                (
+                    ToolDef(
+                        name="list_workspace_files",
+                        description="列出 workspace 中允许访问的项目文件。",
+                        parameters={"type": "object", "properties": {}},
+                    ),
+                    tools.list_workspace_files,
+                ),
+                (
+                    ToolDef(
+                        name="read_workspace_file",
+                        description="读取 workspace 内允许访问的文本文件。",
+                        parameters={
+                            "type": "object",
+                            "properties": {"path": {"type": "string", "description": "workspace 相对路径"}},
+                            "required": ["path"],
+                        },
+                    ),
+                    tools.read_workspace_file,
+                ),
+            ]
+        ),
+    )
+    gateway.register_toolset(
+        domain="test",
+        name="test_runner",
+        toolset=ToolSetSource(
+            [
+                (
+                    ToolDef(
+                        name="write_test_file",
+                        description="仅在 workspace/tests/ 下写入 Python unittest 测试文件。",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "tests/ 下的相对路径"},
+                                "content": {"type": "string", "description": "完整测试文件内容"},
+                            },
+                            "required": ["path", "content"],
+                        },
+                    ),
+                    tools.write_test_file,
+                ),
+                (
+                    ToolDef(
+                        name="run_sandbox_check",
+                        description="在受控 Docker sandbox 中执行固定的 unit 检查。",
+                        parameters={"type": "object", "properties": {}},
+                    ),
+                    tools.run_sandbox_check,
+                ),
+            ]
+        ),
+    )

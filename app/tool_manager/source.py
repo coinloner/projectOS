@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Callable
+from enum import Enum
+from typing import Any, Callable, Protocol
 
 
 # ── ToolDef ────────────────────────────────────
@@ -18,6 +19,14 @@ class ToolDef:
     description: str
     parameters: dict
 
+class ToolExposure(str, Enum):
+    """工具向普通 Agent 暴露时的默认策略。"""
+
+    ALWAYS = "always"
+    ON_DEMAND = "on_demand"
+    CONFIRM = "confirm"
+    DENIED = "denied"
+
 
 # ── ToolSource 基类 ───────────────────────────
 
@@ -31,6 +40,8 @@ class ToolSource(ABC):
 
     本地函数、MCP 远端、命令行沙箱 —— 差别只在 execute() 里。
     """
+
+    is_dynamic = False
 
     @abstractmethod
     def discover(self) -> list[ToolDef]:
@@ -55,7 +66,7 @@ class ToolSetSource(ToolSource):
     """本地 ToolSet 工具来源。
 
     本地工具不做动态扫描。开发者以 ToolSet 为单位显式提供工具列表，
-    ToolManager 将其暴露给对应 domain 的 Agent。
+    ToolGateway 将其包装为 CrewAI 工具并暴露给对应 domain 的 Agent。
 
     使用示例::
 
@@ -69,6 +80,8 @@ class ToolSetSource(ToolSource):
         self._defs: list[ToolDef] = []
         self._fns: dict[str, Callable] = {}
         for tool_def, fn in tools:
+            if tool_def.name in self._fns:
+                raise ValueError(f"ToolSet 中存在重复工具名: '{tool_def.name}'")
             self._defs.append(tool_def)
             self._fns[tool_def.name] = fn
 
@@ -79,27 +92,64 @@ class ToolSetSource(ToolSource):
         fn = self._fns[name]
         return str(fn(**arguments))
 
-class ExternalDynamicSource(ToolSource):
+
+class MCPClient(Protocol):
+    """MCP 传输适配契约，避免工具层绑定某个 MCP SDK。"""
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        ...
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        ...
+
+
+class MCPToolSource(ToolSource):
     """外部动态发现的工具来源。
 
     通过 MCP 等协议从远端服务获取工具列表。
     用于本地工具也无法满足需求时的最后兜底。
 
-    External tier 的工具不持久化 —— 每次 list_tools()
-    都重新 discover()，用完即弃。
+    MCP 是动态来源：Catalog 在查询时刷新其声明，执行时仍由同一 source
+    调用远端。因此工具发现和工具调用共享同一个适配器。
 
     使用示例（将来）::
 
-        ExternalDynamicSource(connector=MCPConnector("http://code-mcp:8080"))
+        MCPToolSource(client=MCPConnector("http://code-mcp:8080"))
     """
 
-    def __init__(self, connector: object = None) -> None:
-        self._connector = connector  # 将来是 MCPConnector 或其他发现机制
+    is_dynamic = True
+
+    def __init__(
+        self,
+        client: MCPClient | None = None,
+        *,
+        connector: MCPClient | None = None,
+    ) -> None:
+        if client is not None and connector is not None:
+            raise ValueError("client 和 connector 不能同时提供")
+        self._client = client or connector
 
     def discover(self) -> list[ToolDef]:
-        # TODO: 通过 MCP 协议向远端请求工具列表
-        return []
+        if self._client is None:
+            return []
+        return [self._to_tool_def(tool) for tool in self._client.list_tools()]
 
     def execute(self, name: str, arguments: dict) -> str:
-        # TODO: 委托给 MCP connector 执行
-        return f"Error: MCP 工具 '{name}' 尚未实现"
+        if self._client is None:
+            raise RuntimeError("MCP client 尚未配置")
+        return str(self._client.call_tool(name, arguments))
+
+    @staticmethod
+    def _to_tool_def(tool: dict[str, Any]) -> ToolDef:
+        return ToolDef(
+            name=tool["name"],
+            description=tool.get("description", ""),
+            parameters=tool.get("inputSchema", tool.get("parameters", {})),
+        )
+
+
+class ExternalDynamicSource(MCPToolSource):
+    """已废弃的 MCPToolSource 兼容别名。"""
+
+    def __init__(self, connector: MCPClient | None = None) -> None:
+        super().__init__(connector=connector)

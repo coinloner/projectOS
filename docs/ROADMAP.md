@@ -1,85 +1,46 @@
 # ProjectOS Roadmap
 
-## 当前系统架构
+路线图以可演示的完整闭环为优先级，不以模块数量为目标。当前状态的详细矩阵见 [mvp-status](roadmap/mvp-status.md)。
 
-```
-Planner □
-  ▼
-Workflow □
-  ▼
-RequirementAgent ✅
-  ▼
-ToolManager ✅
-  ├── Local ToolSet ✅        本地已知工具，默认暴露
-  └── External Source ◇       MCP 等远端动态工具，默认锁住
-  ▼
-ToolRegistry ✅
-  ▼
-Tool ✅
-  ├── RequirementToolSet ✅
-  ├── Runtime ✅
-  └── LLMClient ✅
+## 当前已可运行的纵向链路
+
+```text
+Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 ```
 
-说明：
+- Planner v0 从已注册 Agent、模板摘要、artifact 元数据和 runtime 状态生成并校验计划。
+- GraphRunner 同步执行 DAG 节点，并处理失败和外部能力缺口的暂停结果。
+- 七个 domain 已有受限本地 ToolSet，代码和测试可写入被生成项目的 `workspace/`。
+- Test 通过 `SandboxController` 运行固定 Docker 检查；`python-stdlib` 已经完成真实 Docker 验证。
+- MCP、动态依赖解析和运行恢复都不会由 Agent 自动触发。
 
-- `✅` 已实现并跑通
-- `◇` 接口已预留，真实 MCP connector 后续实现
-- `□` 未来模块
+## MVP 闭环：下一阶段
 
-## 当前已完成
+目标：让系统能依据真实测试结果完成有限次数的修复与再验证。
 
-| 模块 | 文件 | 状态 |
+1. 引入 `WorkItem`：由 Planner 创建、更新和追踪任务，而不是只输出 `tasks.md`。
+2. 持久化 `SandboxEvidence`：保存 Docker check、profile、退出码、输出摘要和尝试次数。
+3. 增加 GraphRunner 状态转移：测试失败后暂停给 Planner，生成修复工作项，再回到 Code/Test。
+4. 定义终态：所有必需工作项完成、sandbox 通过、review 无阻塞项，或明确 `blocked`。
+5. 为 `python-pip` 接入“所有者批准 -> DependencyResolver 建 wheel cache -> 恢复执行”的控制面流程。
+
+## MVP 后的扩展顺序
+
+| 顺序 | 能力 | 原因 |
 |---|---|---|
-| Project | `app/project/project.py` | ✅ 项目创建、加载、删除、扫描 |
-| Runtime | `app/runtime/Runtime.py` | ✅ `run()` + `run_checked()` |
-| Requirement | `app/requirement/requirement.py` | ✅ `requirement.md` 读写 |
-| RequirementToolSet | `app/requirement/requirement_tool.py` | ✅ save/load 工具封装 |
-| LLMClient | `app/llm/llm_client.py` | ✅ `LLMResponse` + tool calls |
-| ToolRegistry | `app/tool_registry/registry.py` | ✅ 本地工具存储 + source.execute() |
-| ToolManager | `app/tool_manager/manager.py` | ✅ 本地 ToolSet + external 控制 |
-| RequirementAgent | `app/agent/requirement_agent.py` | ✅ 需求文档生成并保存 |
+| 1 | Runtime profile：FastAPI、Node/Vitest | 扩展可交付项目类型 |
+| 2 | 可配置且受控的 test discovery | 避免固定 `unittest tests/` 限制 |
+| 3 | MCP connector 与 source 审批恢复 | 扩展外部能力，同时保持最小权限 |
+| 4 | NodeQualityPolicy / QualityReport | 为节点产物添加可量化质量下限 |
+| 5 | Memory | 提供跨运行的上下文，而不污染当前计划状态 |
+| 6 | Workflow 模板沉淀与选择 | 将常见项目交付经验变成 Planner 可参考资产 |
+| 7 | CLI / API / Dashboard | 把已有控制面变为可操作产品界面 |
 
-## 已跑通链路
+## 不在当前 MVP 范围内
 
-```
-main.py
-  ├── 创建 Project
-  ├── 注册 requirement ToolSet
-  ├── 创建 RequirementAgent
-  └── agent.run(task)
-       ├── ToolManager.list_tools("requirement")
-       ├── LLMClient.invoke(messages, tools)
-       ├── LLM 请求 save_requirement
-       ├── ToolManager.call(...)
-       └── 写入 projects/Mega_Shit/requirement.md
-```
+- 任意 Shell 工具或宿主机命令执行
+- Agent 自动联网安装依赖
+- Agent 自动批准 MCP、依赖或运行时权限
+- 并发图执行、跨进程计划恢复、跨项目长期记忆
 
-## 下一阶段
-
-| 阶段 | 目标 |
-|---|---|
-| RequirementWorkflow | 草稿 → 用户确认 → 保存 |
-| Memory | 保存跨轮上下文 |
-| Shell 逃生舱 | Workflow 人工确认后调用 `Runtime.run_checked()` |
-| External MCP | 实现 `ExternalDynamicSource` connector |
-| TaskWorkflow | 需求拆任务，生成 `task.md` |
-| CodeWorkflow | 代码生成和写入 |
-
-## Shell 设计原则
-
-Shell 不作为普通 Tool 自动暴露。只有 Workflow 获得用户确认后，才能通过 Runtime 执行：
-
-```
-Agent 返回需要命令
-  ↓
-Workflow 请求用户确认
-  ↓
-Runtime.run_checked(command, cwd, allowed_commands)
-```
-
-## 技术演进
-
-```
-MVP → CLI → FastAPI → Web Dashboard → Multi-Agent → Remote Runtime → Docker Runtime → Cloud
-```
+这些能力会在执行证据、状态机和权限主体明确后逐步加入。

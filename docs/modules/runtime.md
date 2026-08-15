@@ -2,7 +2,7 @@
 
 ## 概述
 
-`app.runtime.Runtime` 是 ProjectOS 的命令执行层。所有命令调用必须经由 `Runtime`，不得直接使用 `subprocess` 或其他方式。
+`app.runtime.Runtime` 是 ProjectOS 自身的受控命令执行层，仅用于未来人工确认的 Shell 逃生舱。生成项目的构建、运行和测试必须使用 `SandboxController`，不能使用此模块。
 
 未来 Workflow 的 Shell 逃生舱必须使用 `Runtime.run_checked()`，这样命令白名单、cwd 校验、日志审计可以集中在 Runtime 一处实现。
 

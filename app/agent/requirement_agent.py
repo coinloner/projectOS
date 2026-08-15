@@ -1,25 +1,27 @@
 from app.agent.base_agent import BaseAgent
-from app.tool_manager.manager import ToolManager
+from app.tool_manager.gateway import ToolGateway
 
 
 class RequirementAgent(BaseAgent):
     """需求 Agent —— 接收自然语言需求，调用 LLM 标准化后写入项目。
 
-    工具由 ToolManager 按 domain × tier 提供。
-    Manager 在外部（启动入口）注册 ToolSource，Agent 不管理注册。
+    工具由 ToolGateway 按 domain 和当前暴露策略提供。
+    Gateway 在外部（启动入口）注册 ToolSource，Agent 不管理注册。
     """
 
-    def __init__(self, manager: ToolManager) -> None:
+    def __init__(self, gateway: ToolGateway) -> None:
         super().__init__(
-            manager=manager,
+            gateway=gateway,
             domain="requirement",
-            system_prompt=_SYSTEM_PROMPT,
+            role="需求分析师",
+            goal="将用户的自然语言需求转化为可执行、可验收的需求文档",
+            backstory=_BACKSTORY,
             max_iterations=5,
         )
 
 
-_SYSTEM_PROMPT = """\
-你是一个需求分析师。用户会描述他想做的系统，你的工作是将自然语言需求转化为结构化的需求文档。
+_BACKSTORY = """\
+你擅长将自然语言需求转化为结构化的需求文档。
 
 工作流程：
 1. 用户描述需求后，生成结构化的需求文档草稿
@@ -34,4 +36,4 @@ _SYSTEM_PROMPT = """\
 
 原则：
 - 不要添加用户没提到的功能
-- 生成文档后直接保存，然后告知用户"""
+- 生成文档后直接保存，并在最终回答中返回完整文档内容，供后续节点使用"""

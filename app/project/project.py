@@ -1,9 +1,8 @@
 import shutil
-import sys
 import yaml
 from pathlib import Path
 
-from app.runtime.Runtime import Runtime
+from app.runtime.manifest import RuntimeManifest
 
 
 class Project:
@@ -18,24 +17,18 @@ class Project:
 
     def create(self):
         # 第一步：创建项目根目录和 workspace 子目录
-        print(f"🚀 [1/4] 正在创建项目目录: {self.project_path} ...")
+        print(f"🚀 [1/3] 正在创建项目目录: {self.project_path} ...")
         self.project_path.mkdir(parents=True, exist_ok=True)
         self.workspace_path.mkdir(parents=True, exist_ok=True)
 
-        # 第二步：在 workspace 下通过 Runtime.run() 创建虚拟环境
-        print(f"📦 [2/4] 正在 workspace 下初始化 Python 虚拟环境 (.venv) ...")
-
-        result = Runtime.run(
-            [sys.executable, "-m", "venv", ".venv"],
-            cwd=str(self.workspace_path),
+        # 第二步：声明默认运行时。实际依赖与测试由 Sandbox 管理，不使用宿主 .venv。
+        print("📦 [2/3] 正在写入默认 sandbox 运行时声明 ...")
+        RuntimeManifest(version=1, profile="python-stdlib").save(
+            str(self.project_path)
         )
-        if result["returncode"] != 0:
-            raise RuntimeError(
-                f"❌ 创建虚拟环境失败: {result['stderr']}"
-            )
 
         # 第三步：生成初始的 YAML 配置文件
-        print(f"📄 [3/4] 正在生成项目配置 (project.yaml) ...")
+        print(f"📄 [3/3] 正在生成项目配置 (project.yaml) ...")
         # 利用 f-string 将当前的 self.name 动态注入进去
         config = {
             "name": self.name,

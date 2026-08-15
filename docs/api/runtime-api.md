@@ -1,6 +1,6 @@
 # Runtime API 接口文档
 
-> **定位**：定义 `Runtime` 模块对外的公共契约。`Runtime` 是 ProjectOS 唯一的命令执行入口。
+> **定位**：定义 ProjectOS 自身人工确认 Shell 逃生舱的公共契约。生成项目的构建、运行和测试不使用该模块，而使用 SandboxController。
 
 ## 1. 执行命令
 
@@ -87,4 +87,4 @@ Runtime.run_checked(
 2. **命令参数格式** —— `command` 必须为 `list` 类型，不支持字符串形式的 shell 命令，以避免 shell 注入风险。
 3. **不自动抛异常** —— `Runtime.run()` 不会因命令失败而抛出异常。调用方需自行检查 `returncode` 并决定处理策略。
 4. **安全入口** —— 需要权限校验的命令必须使用 `Runtime.run_checked()`。
-5. **唯一入口原则** —— 所有模块不得绕过 `Runtime` 直接使用 `subprocess`、`os.system`、`os.popen` 等。
+5. **生成项目隔离原则** —— 生成项目不得调用 `Runtime`；其构建、运行与测试必须通过 SandboxController。
