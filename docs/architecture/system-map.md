@@ -7,7 +7,7 @@
 | 层 | 关键模块 | 它回答的问题 |
 |---|---|---|
 | 控制层 | `app/planner/`、`app/workflow/` | 下一步由谁执行，何时结束或暂停？ |
-| 执行层 | `app/agent/`、`app/domain/`、`app/tool_manager/`、`app/tool_catalog/` | 某个 Agent 能做哪些受限动作？ |
+| 执行层 | `app/agent/`、`app/domain/`、`app/tool_manager/`、`app/llm/` | 某个 Agent 能做哪些受限动作，使用哪个模型？ |
 | 项目层 | `app/project/`、`app/artifact/`、`app/workspace/`、`app/runtime/` | 产物、源代码与运行时声明保存在哪里？ |
 | 隔离层 | `app/sandbox/` | 生成项目如何在不接触宿主机权限的前提下被测试？ |
 

@@ -20,6 +20,7 @@
 | [Sandbox](modules/sandbox.md) | Docker 执行隔离、依赖缓存与安全策略 |
 | [Runtime](modules/runtime.md) | runtime manifest、profile 与受控状态摘要 |
 | [ToolGateway](modules/tool_manager.md) | ToolSet、动态 source、Catalog 与访问策略 |
+| [LLM](modules/llm.md) | Provider 预设、环境变量和 CrewAI LLM 工厂 |
 | [Project](modules/project.md) | 项目目录和项目元信息 |
 
 ## API 契约
@@ -33,6 +34,7 @@
 | [Sandbox API](api/sandbox-api.md) | `SandboxController`、结果和依赖解析 |
 | [Runtime API](api/runtime-api.md) | `RuntimeManifest`、Profile 和状态快照 |
 | [ToolGateway API](api/tool_manager-api.md) | 本地 ToolSet、动态 source 与 CrewAI 工具暴露 |
+| [LLM API](api/llm-api.md) | Provider 配置与 `build_llm()` |
 | [Project API](api/project-api.md) | `Project` 生命周期接口 |
 
 `Requirement` 不再拥有单独的文档树。它是七个 domain 中的一个，和 Architecture、Task、Bootstrap、Code、Test、Review 使用同一套记录结构。

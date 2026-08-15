@@ -49,4 +49,4 @@ RuntimeSnapshot.as_text() -> str
 
 快照仅提供控制面摘要：manifest 是否存在、profile、是否声明依赖、依赖 wheel cache 是否就绪，以及可选错误信息。Planner、Code 和 Review 不读取运行时私密配置或 Docker 细节。
 
-`app.runtime.Runtime` 仍保留用于未来人工确认的宿主机 Shell 逃生舱；它不是当前生成项目的构建、运行或测试入口。
+当前系统不提供宿主机 Shell API。生成项目的构建、运行与测试只能通过 [Sandbox API](sandbox-api.md) 发起。

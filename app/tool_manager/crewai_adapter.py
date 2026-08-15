@@ -8,7 +8,7 @@ from typing import Any
 from crewai.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, create_model
 
-from app.tool_catalog.catalog import ToolRegistration
+from app.tool_manager.catalog import ToolRegistration
 from app.tool_manager.source import ToolDef
 
 

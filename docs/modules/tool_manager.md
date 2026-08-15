@@ -57,19 +57,7 @@ ToolDef JSON Schema -> Pydantic args_schema -> CrewAI BaseTool.run()
                                               -> ToolSource.execute()
 ```
 
-因此 ProjectOS 不再维护 `list_tools()`、`call()`、参数 JSON 解析或 tool-calling loop。Gateway 仍会在 `BaseTool` 实际执行时复查 source 授权，避免已撤销的 MCP 工具对象继续调用远端。旧的 `ToolManager` 仅是 `ToolGateway` 的兼容导入别名。
-
-## Shell
-
-Shell 不属于 ToolGateway。命令行能力由未来 GraphRunner 的上层在人工确认后调用 `Runtime.run_checked()` 完成。
-
-```
-Agent 返回需要命令
-  ↓
-GraphRunner 上层请求用户确认
-  ↓
-Runtime.run_checked(...)
-```
+因此 ProjectOS 不再维护 `list_tools()`、`call()`、参数 JSON 解析或 tool-calling loop。Gateway 会在 `BaseTool` 实际执行时复查 source 授权，避免已撤销的 MCP 工具对象继续调用远端。当前系统不提供宿主机 Shell 入口；生成项目的执行只能经由 Sandbox。
 
 ## 设计原则
 

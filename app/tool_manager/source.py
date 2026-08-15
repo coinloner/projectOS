@@ -146,10 +146,3 @@ class MCPToolSource(ToolSource):
             description=tool.get("description", ""),
             parameters=tool.get("inputSchema", tool.get("parameters", {})),
         )
-
-
-class ExternalDynamicSource(MCPToolSource):
-    """已废弃的 MCPToolSource 兼容别名。"""
-
-    def __init__(self, connector: MCPClient | None = None) -> None:
-        super().__init__(connector=connector)

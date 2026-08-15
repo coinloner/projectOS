@@ -8,7 +8,6 @@
 |---|---|
 | `manifest.py` | 校验 `runtime.yaml`，维护受信任的 `RuntimeCatalog` |
 | `state.py` | 将 manifest 和 wheel cache 转换为 Planner/Agent 可读的 `RuntimeSnapshot` |
-| `Runtime.py` | 遗留的宿主机受控命令入口，仅供未来人工确认的逃生舱 |
 
 ## 信任模型
 

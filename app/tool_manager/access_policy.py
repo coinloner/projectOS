@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.tool_catalog.catalog import ToolRegistration
+from app.tool_manager.catalog import ToolRegistration
 from app.tool_manager.source import ToolExposure
 
 

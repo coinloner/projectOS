@@ -1,3 +1,5 @@
+"""ToolGateway 使用的工具目录与来源注册记录。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

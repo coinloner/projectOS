@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from crewai.tools import BaseTool
 
-from app.tool_catalog.catalog import SourceRegistration, ToolCatalog
+from app.tool_manager.catalog import SourceRegistration, ToolCatalog
 from app.tool_manager.access_policy import ToolAccessPolicy
 from app.tool_manager.crewai_adapter import ProjectOSTool
 from app.tool_manager.source import ToolExposure, ToolSource
