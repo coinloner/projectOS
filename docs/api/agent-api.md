@@ -11,55 +11,45 @@ BaseAgent(
     backstory: str,
     max_iterations: int = 10,
 ) -> BaseAgent
-```
 
-| 参数 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `gateway` | `ToolGateway` | 是 | 外部注入的工具授权和 CrewAI 适配入口 |
-| `domain` | `str` | 是 | Agent 对应的工具域 |
-| `role` | `str` | 是 | CrewAI Agent 角色 |
-| `goal` | `str` | 是 | CrewAI Agent 目标 |
-| `backstory` | `str` | 是 | CrewAI Agent 的领域约束与工作方式 |
-| `max_iterations` | `int` | 否 | 最大 tool-calling 轮数 |
-
-### run
-
-```python
 BaseAgent.run(task: str) -> AgentResult
 ```
 
-| 参数 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `task` | `str` | 是 | GraphRunner 组装的节点任务描述 |
+`run()` 创建一个 CrewAI Agent 和 Task，并只注入 `ToolGateway.tools_for(domain)` 返回的已授权工具。空 task 或 CrewAI 执行失败时抛出 `RuntimeError`。
 
-返回结构化 `AgentResult`。
+## AgentResult
 
-| `status` | 含义 | 可用字段 |
+| `status` | 字段 | 含义 |
 |---|---|---|
-| `completed` | Agent 已完成当前任务 | `content` |
-| `needs_capability` | 当前可见工具缺少关键外部能力 | `capability_request.capability`、`capability_request.reason` |
+| `completed` | `content` | 节点完成后的最终文本 |
+| `needs_capability` | `capability_request.capability`、`reason` | 需要未提供的外部能力 |
 
-`needs_capability` 只在 LLM 返回严格能力请求 JSON 时产生；Agent 不会自行激活 MCP。
+严格的 capability request JSON 才会被解析为 `needs_capability`。Agent 不会自行连接或授权 MCP。
 
-| 异常 | 触发条件 |
-|---|---|
-| `RuntimeError` | `task` 为空 |
-| `RuntimeError` | CrewAI 执行失败或模型调用失败 |
-
-## RequirementAgent
+## AgentRegistry
 
 ```python
-RequirementAgent(gateway: ToolGateway) -> RequirementAgent
+AgentDefinition(id: str, domain: str, description: str, output_key: str)
+AgentRegistry.register(definition: AgentDefinition, factory: AgentFactory) -> None
+AgentRegistry.definition(agent_id: str) -> AgentDefinition | None
+AgentRegistry.definitions() -> tuple[AgentDefinition, ...]
+AgentRegistry.create(agent_id: str) -> AgentRunner
 ```
 
-- 固定 `domain="requirement"`
-- 固定 `max_iterations=5`
-- 继承 `BaseAgent.run(task) -> AgentResult`
+`register()` 拒绝重复 Agent id 和重复 output key。Planner 只能读取 `definition()` / `definitions()`；只有 GraphRunner 可以调用 `create()`，使 `ExecutionPlan` 不携带工厂、Python 类或工具。
 
-## 契约
+## 已注册 Agent
 
-1. 所有 Agent 暴露统一入口 `run(task: str) -> AgentResult`。
-2. Agent 不直接注册工具。
-3. Agent 不控制 MCP，也不参与远端工具授权。
-4. 一个 Agent 类型对应一个 domain。
-5. 工具调用由 CrewAI 负责，Agent 只能经由 `ToolGateway.tools_for()` 获得工具。
+所有领域 Agent 的构造函数形式一致：
+
+```python
+RequirementAgent(gateway: ToolGateway)
+ArchitectureAgent(gateway: ToolGateway)
+TaskAgent(gateway: ToolGateway)
+BootstrapAgent(gateway: ToolGateway)
+CodeAgent(gateway: ToolGateway)
+TestAgent(gateway: ToolGateway)
+ReviewAgent(gateway: ToolGateway)
+```
+
+它们均继承 `BaseAgent.run(task) -> AgentResult`，差异只在 domain、CrewAI 角色提示和最大迭代数。具体可用工具见 [Domain API](domain-api.md)。

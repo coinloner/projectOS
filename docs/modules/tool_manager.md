@@ -33,7 +33,7 @@ ToolGateway
 |---|---|
 | `ToolDef` | 描述工具：name / description / parameters |
 | `ToolSetSource` | 承载本地 ToolSet，保存 `ToolDef -> Callable` 映射 |
-| `MCPToolSource` | 通过可注入的 MCP client 发现和调用远端工具 |
+| 动态 `ToolSource` | 未来通过可注入的 MCP client 发现和调用远端工具 |
 | `ToolCatalog` | 保存工具声明与其注册上下文 |
 | `ToolAccessPolicy` | 判断工具是否可以向 Agent 暴露 |
 | `ProjectOSTool` | 持有注册记录，执行时委托对应 `ToolSource` |
@@ -46,7 +46,7 @@ ToolGateway
 | 本地 ToolSet | `always` | Catalog | session 持久 |
 | MCP Source | `on_demand` + `activate_source()` | Catalog 动态刷新 | 单次查询 |
 
-`register_toolset(..., toolset=ToolSetSource(...))` 中的 `toolset` 是本地工具集，不是远端来源；`register_source(..., source=MCPToolSource(...), capability="external_research")` 中的 `source` 才表示 MCP 等实际来源。`capability` 必须是 GraphRunner 与 Agent 约定的稳定标识。
+`register_toolset(..., toolset=ToolSetSource(...))` 中的 `toolset` 是本地工具集，不是远端来源；`register_source(..., source=dynamic_source, capability="external_research")` 中的 `source` 才表示 MCP 等实际来源。`capability` 必须是 GraphRunner 与 Agent 约定的稳定标识。当前只实现了动态 Source 的抽象与授权边界，尚未提供真实 MCP connector。
 
 ## CrewAI 边界
 

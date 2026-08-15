@@ -1,59 +1,30 @@
 # Runtime 模块
 
-## 概述
+`app.runtime` 定义生成项目的运行时声明与受控状态摘要。它不执行生成项目的代码，真正执行由 `app.sandbox` 完成。
 
-`app.runtime.Runtime` 是 ProjectOS 自身的受控命令执行层，仅用于未来人工确认的 Shell 逃生舱。生成项目的构建、运行和测试必须使用 `SandboxController`，不能使用此模块。
+## 组成
 
-未来 Workflow 的 Shell 逃生舱必须使用 `Runtime.run_checked()`，这样命令白名单、cwd 校验、日志审计可以集中在 Runtime 一处实现。
-
-## 依赖
-
-| 模块 | 用途 |
+| 模块 | 职责 |
 |---|---|
-| `subprocess` | 实际执行命令 |
-| `pathlib.Path` | cwd 解析和校验 |
-| `typing.Optional` | 类型标注 |
+| `manifest.py` | 校验 `runtime.yaml`，维护受信任的 `RuntimeCatalog` |
+| `state.py` | 将 manifest 和 wheel cache 转换为 Planner/Agent 可读的 `RuntimeSnapshot` |
+| `Runtime.py` | 遗留的宿主机受控命令入口，仅供未来人工确认的逃生舱 |
 
-## 类设计
+## 信任模型
 
+`runtime.yaml` 是由 BootstrapAgent 写入的输入，不是权限配置。它只能声明已白名单的 profile 与可选 `requirements.in`；镜像、检查命令、Docker 挂载、网络和资源限制都固定在 ProjectOS 代码中。
+
+```text
+runtime.yaml (untrusted)
+  -> RuntimeManifest validation
+  -> RuntimeCatalog profile
+  -> SandboxPolicy
+  -> Docker SandboxSpec (trusted)
 ```
-Runtime
-├── run(command, cwd?) -> dict
-└── run_checked(command, cwd, allowed_commands) -> dict
-```
 
-## 方法签名
+## 当前 Profile
 
-### `run(command: list, cwd: Optional[str] = None) -> dict`
+- `python-stdlib`：无第三方依赖，可执行固定 unittest check。
+- `python-pip`：需要已批准的 Resolver 创建 hash 对应 wheel cache，之后仍在无网测试容器中离线安装。
 
-**参数**
-
-| 参数 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `command` | `list` | 是 | 命令参数列表，例如 `["python", "--version"]` |
-| `cwd` | `str \| None` | 否 | 工作目录，不传则沿用进程当前目录 |
-
-**返回值**
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `stdout` | `str` | 标准输出 |
-| `stderr` | `str` | 标准错误 |
-| `returncode` | `int` | 退出码，0 表示成功 |
-
-**注意事项**
-
-- `command` 必须为列表形式，避免 shell 注入风险。
-- 调用方需自行检查 `returncode` 并决定如何处理非零退出。
-
-### `run_checked(command: list, cwd: str, allowed_commands: list) -> dict`
-
-经过基础权限校验后执行命令。
-
-| 校验 | 说明 |
-|---|---|
-| `command` | 必须是非空 `list[str]` |
-| 白名单 | `command[0]` 或其 basename 必须在 `allowed_commands` 中 |
-| `cwd` | 必须存在且是目录 |
-
-`run_checked()` 内部复用 `Runtime.run()`。它只负责基础命令安全，不负责用户确认；用户确认属于 Workflow。
+`RuntimeSnapshot` 只向 Planner、Code 和 Review 暴露“是否存在声明、profile、是否配置依赖、缓存是否就绪”等摘要，避免将 Docker 或宿主机细节泄露给 Agent。
