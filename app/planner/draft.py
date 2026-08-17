@@ -6,13 +6,25 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class PlannedStep(BaseModel):
-    """Planner 只能选择 Agent、描述目标并声明 Agent 级依赖。"""
+    """Planner 选择 Agent，并用临时 ref 描述本次工作项图。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    ref: str = Field(min_length=1, max_length=100)
     agent_id: str = Field(min_length=1, max_length=100)
     objective: str = Field(min_length=1, max_length=500)
     depends_on: list[str] = Field(default_factory=list, max_length=10)
+    acceptance_criteria: list[str] = Field(default_factory=list, max_length=5)
+
+
+class TemplateDependencyOverride(BaseModel):
+    """对默认模板依赖的显式移除说明。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    predecessor_agent_id: str = Field(min_length=1, max_length=100)
+    successor_agent_id: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class PlanDraft(BaseModel):
@@ -23,6 +35,9 @@ class PlanDraft(BaseModel):
     rationale: str = Field(min_length=1, max_length=1000)
     steps: list[PlannedStep] = Field(min_length=1, max_length=10)
     template_hint_id: str | None = Field(default=None, max_length=100)
+    template_dependency_overrides: list[TemplateDependencyOverride] = Field(
+        default_factory=list, max_length=10
+    )
 
     @classmethod
     def parse(cls, content: str) -> PlanDraft:

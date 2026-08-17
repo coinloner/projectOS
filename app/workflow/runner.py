@@ -6,8 +6,10 @@ from enum import Enum
 from app.agent.registry import AgentRegistry
 from app.tool_manager.gateway import ToolGateway
 from app.workflow.node_result import NodeResult, NodeStatus
-from app.workflow.plan import ExecutionPlan, TaskNode
+from app.workflow.plan import ExecutionPlan
 from app.workflow.state import RunState
+from app.workflow.trace import TraceStore
+from app.workflow.work_item import WorkItem
 
 
 class GraphRunStatus(str, Enum):
@@ -44,79 +46,147 @@ class GraphRunner:
     ``load_artifact`` 工具按需读取，避免每个节点重复注入长文档。
     """
 
-    def __init__(self, agents: AgentRegistry, tools: ToolGateway) -> None:
+    def __init__(
+        self,
+        agents: AgentRegistry,
+        tools: ToolGateway,
+        *,
+        traces: TraceStore | None = None,
+    ) -> None:
         self._agents = agents
         self._tools = tools
+        self._traces = traces
 
     def run(self, plan: ExecutionPlan) -> GraphRunResult:
         state = RunState(plan=plan)
+        if self._traces is not None:
+            self._traces.record_plan(plan)
 
         while not state.is_complete():
-            ready_nodes = state.ready_nodes()
-            if not ready_nodes:
-                return GraphRunResult(
+            ready_items = state.ready_items()
+            if not ready_items:
+                result = GraphRunResult(
                     status=GraphRunStatus.FAILED,
                     state=state,
                     error="没有可执行节点，计划依赖未能推进",
                 )
+                self._finish_trace(plan, result)
+                return result
 
-            for node in ready_nodes:
-                result = self._run_node(state, node)
-                state.record(node, result)
+            for item in ready_items:
+                self._record_event(plan, item, "work_item_started")
+                result = self._run_item(state, item)
+                state.record(item, result)
+                self._record_result(plan, item, result)
 
                 if result.status is NodeStatus.FAILED:
-                    return GraphRunResult(
+                    graph_result = GraphRunResult(
                         status=GraphRunStatus.FAILED,
                         state=state,
                         node_result=result,
                         error=result.error,
                     )
+                    self._finish_trace(plan, graph_result)
+                    return graph_result
                 if result.status is NodeStatus.NEEDS_CAPABILITY:
-                    return self._handle_capability_request(state, result)
+                    graph_result = self._handle_capability_request(state, result)
+                    self._finish_trace(plan, graph_result)
+                    return graph_result
 
-        return GraphRunResult(status=GraphRunStatus.COMPLETED, state=state)
+        graph_result = GraphRunResult(status=GraphRunStatus.COMPLETED, state=state)
+        self._finish_trace(plan, graph_result)
+        return graph_result
 
-    def _run_node(self, state: RunState, node: TaskNode) -> NodeResult:
-        definition = self._agents.definition(node.agent_id)
+    def _run_item(self, state: RunState, item: WorkItem) -> NodeResult:
+        definition = self._agents.definition(item.agent_id)
         if definition is None:
             return NodeResult.failed(
-                node_id=node.id,
-                agent_id=node.agent_id,
-                error=f"ExecutionPlan 引用了未注册 Agent: '{node.agent_id}'",
+                node_id=item.id,
+                agent_id=item.agent_id,
+                error=f"ExecutionPlan 引用了未注册 Agent: '{item.agent_id}'",
             )
 
         try:
-            agent_result = self._agents.create(node.agent_id).run(
-                self._build_task(state, node)
+            agent_result = self._agents.create(item.agent_id).run(
+                self._build_task(state, item)
             )
         except Exception as error:
             return NodeResult.failed(
-                node_id=node.id,
-                agent_id=node.agent_id,
-                error=f"节点 '{node.id}' 执行失败: {error}",
+                node_id=item.id,
+                agent_id=item.agent_id,
+                error=f"工作项 '{item.id}' 执行失败: {error}",
             )
 
         return NodeResult.from_agent_result(
-            node_id=node.id,
-            agent_id=node.agent_id,
+            node_id=item.id,
+            agent_id=item.agent_id,
             result=agent_result,
         )
 
     @staticmethod
-    def _build_task(state: RunState, node: TaskNode) -> str:
+    def _build_task(state: RunState, item: WorkItem) -> str:
         parts = [
             f"总体目标：{state.plan.goal}",
-            f"当前任务：{node.objective}",
+            f"当前工作项：{item.id}",
+            f"当前任务：{item.objective}",
         ]
-        if node.depends_on:
+        if item.acceptance_criteria:
+            parts.append("完成标准：")
+            parts.extend(f"- {criterion}" for criterion in item.acceptance_criteria)
+        if item.dependencies:
             parts.append("可用前置产物（按需调用 load_artifact 读取正文）：")
-            for dependency in node.depends_on:
-                dependency_node = state.plan.node(dependency)
-                if dependency_node is None:
+            for dependency in item.dependencies:
+                dependency_item = state.plan.work_item(dependency.work_item_id)
+                if dependency_item is None:
                     continue
-                if dependency_node.output_key in state.artifacts:
-                    parts.append(f"- {dependency_node.output_key}")
+                if dependency_item.output_key in state.artifacts:
+                    parts.append(f"- {dependency_item.output_key}")
         return "\n\n".join(parts)
+
+    def _record_result(
+        self, plan: ExecutionPlan, item: WorkItem, result: NodeResult
+    ) -> None:
+        if result.status is NodeStatus.COMPLETED:
+            self._record_event(plan, item, "work_item_completed")
+            definition = self._agents.definition(item.agent_id)
+            if (
+                self._traces is not None
+                and definition is not None
+                and definition.domain == "requirement"
+                and result.content is not None
+            ):
+                self._traces.snapshot_requirement(plan.trace, result.content)
+            return
+        if result.status is NodeStatus.NEEDS_CAPABILITY:
+            self._record_event(plan, item, "work_item_waiting_capability")
+            return
+        self._record_event(
+            plan,
+            item,
+            "work_item_failed",
+            details={"error": result.error or "unknown"},
+        )
+
+    def _record_event(
+        self,
+        plan: ExecutionPlan,
+        item: WorkItem,
+        event_type: str,
+        *,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        if self._traces is not None:
+            self._traces.record_event(
+                plan.trace, item.id, event_type, details=details
+            )
+
+    def _finish_trace(self, plan: ExecutionPlan, result: GraphRunResult) -> None:
+        if self._traces is not None:
+            self._traces.finish_trace(
+                plan.trace,
+                result.status.value,
+                error=result.error,
+            )
 
     def _handle_capability_request(
         self, state: RunState, result: NodeResult

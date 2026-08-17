@@ -4,7 +4,7 @@ from app.agent.registry import AgentDefinition, AgentRegistry
 from app.agent.result import AgentResult
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import MCPToolSource
-from app.workflow.plan import ExecutionPlan, TaskNode
+from app.workflow.plan import ExecutionPlan
 from app.workflow.runner import GraphRunner, GraphRunStatus
 from app.workflow.template import (
     TaskBlueprint,
@@ -12,6 +12,11 @@ from app.workflow.template import (
     WorkflowTemplateRegistry,
 )
 from app.workflow.templates import project_delivery_template
+from app.workflow.work_item import (
+    DependencySource,
+    WorkItem,
+    WorkItemDependency,
+)
 
 
 class FakeAgent:
@@ -44,13 +49,19 @@ def make_node(
     agent_id: str = "requirement_agent",
     output_key: str | None = None,
     depends_on: tuple[str, ...] = (),
-) -> TaskNode:
-    return TaskNode(
+) -> WorkItem:
+    return WorkItem(
         id=node_id,
         agent_id=agent_id,
         objective=f"完成 {node_id}",
         output_key=output_key or f"{node_id}_output",
-        depends_on=depends_on,
+        dependencies=tuple(
+            WorkItemDependency(
+                work_item_id=dependency,
+                source=DependencySource.PLANNER,
+            )
+            for dependency in depends_on
+        ),
     )
 
 
@@ -94,7 +105,7 @@ class GraphRunnerTest(unittest.TestCase):
         plan = ExecutionPlan(
             id="two-node-plan",
             goal="生成需求和架构",
-            nodes=(
+            work_items=(
                 make_node("requirement", output_key="requirement_draft"),
                 make_node(
                     "architecture",
@@ -120,7 +131,7 @@ class GraphRunnerTest(unittest.TestCase):
         plan = ExecutionPlan(
             id="unknown-agent-plan",
             goal="测试",
-            nodes=(make_node("requirement"),),
+            work_items=(make_node("requirement"),),
         )
 
         result = GraphRunner(self.agents, self.tools).run(plan)
@@ -146,7 +157,7 @@ class GraphRunnerTest(unittest.TestCase):
         plan = ExecutionPlan(
             id="capability-plan",
             goal="按最新规范生成需求",
-            nodes=(make_node("requirement"),),
+            work_items=(make_node("requirement"),),
         )
 
         result = GraphRunner(self.agents, self.tools).run(plan)
@@ -165,7 +176,7 @@ class GraphRunnerTest(unittest.TestCase):
         plan = ExecutionPlan(
             id="blocked-plan",
             goal="按最新规范生成需求",
-            nodes=(make_node("requirement"),),
+            work_items=(make_node("requirement"),),
         )
 
         result = GraphRunner(self.agents, self.tools).run(plan)
@@ -178,7 +189,7 @@ class GraphRunnerTest(unittest.TestCase):
         plan = ExecutionPlan(
             id="failure-plan",
             goal="测试失败",
-            nodes=(make_node("requirement"),),
+            work_items=(make_node("requirement"),),
         )
 
         result = GraphRunner(self.agents, self.tools).run(plan)
@@ -268,7 +279,7 @@ class WorkflowTemplateTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            [node.agent_id for node in plan.nodes],
+            [item.agent_id for item in plan.work_items],
             [
                 "requirement_agent",
                 "architecture_agent",
@@ -279,17 +290,25 @@ class WorkflowTemplateTest(unittest.TestCase):
                 "review_agent",
             ],
         )
-        self.assertEqual(plan.nodes[1].depends_on, ("requirement",))
-        self.assertEqual(plan.nodes[2].depends_on, ("requirement", "architecture"))
+        self.assertEqual(plan.work_items[1].dependency_ids, ("requirement",))
         self.assertEqual(
-            plan.nodes[3].depends_on,
+            plan.work_items[2].dependency_ids, ("requirement", "architecture")
+        )
+        self.assertEqual(
+            plan.work_items[3].dependency_ids,
             ("requirement", "architecture", "tasks"),
         )
-        self.assertEqual(plan.nodes[3].output_key, "environment")
-        self.assertEqual(plan.nodes[4].depends_on, ("requirement", "architecture", "tasks", "environment"))
-        self.assertEqual(plan.nodes[5].depends_on, ("requirement", "tasks", "environment", "implementation"))
+        self.assertEqual(plan.work_items[3].output_key, "environment")
         self.assertEqual(
-            plan.nodes[6].depends_on,
+            plan.work_items[4].dependency_ids,
+            ("requirement", "architecture", "tasks", "environment"),
+        )
+        self.assertEqual(
+            plan.work_items[5].dependency_ids,
+            ("requirement", "tasks", "environment", "implementation"),
+        )
+        self.assertEqual(
+            plan.work_items[6].dependency_ids,
             ("requirement", "architecture", "tasks", "environment", "implementation", "tests"),
         )
 
@@ -316,7 +335,7 @@ class WorkflowTemplateTest(unittest.TestCase):
         )
 
         self.assertEqual(plan.template_id, "requirement_generation")
-        self.assertEqual(plan.nodes[0].agent_id, "requirement_agent")
+        self.assertEqual(plan.work_items[0].agent_id, "requirement_agent")
         self.assertEqual(plan.goal, "生成健康网站需求")
 
     def test_template_registry_rejects_duplicate_ids(self) -> None:

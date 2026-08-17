@@ -8,8 +8,8 @@
 Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 ```
 
-- Planner v0 从已注册 Agent、模板摘要、artifact 元数据和 runtime 状态生成并校验计划。
-- GraphRunner 同步执行 DAG 节点，并处理失败和外部能力缺口的暂停结果。
+- Planner v0 从已注册 Agent、完整模板依赖、artifact 元数据和 runtime 状态生成 WorkItem 计划。
+- GraphRunner 同步执行 WorkItem DAG、写入 Trace 计划/事件，并处理失败和外部能力缺口的暂停结果。
 - 七个 domain 已有受限本地 ToolSet，代码和测试可写入被生成项目的 `workspace/`。
 - Test 通过 `SandboxController` 运行固定 Docker 检查；`python-stdlib` 已经完成真实 Docker 验证。
 - MCP、动态依赖解析和运行恢复都不会由 Agent 自动触发。
@@ -18,11 +18,10 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 
 目标：让系统能依据真实测试结果完成有限次数的修复与再验证。
 
-1. 引入 `WorkItem`：由 Planner 创建、更新和追踪任务，而不是只输出 `tasks.md`。
-2. 持久化 `SandboxEvidence`：保存 Docker check、profile、退出码、输出摘要和尝试次数。
-3. 增加 GraphRunner 状态转移：测试失败后暂停给 Planner，生成修复工作项，再回到 Code/Test。
-4. 定义终态：所有必需工作项完成、sandbox 通过、review 无阻塞项，或明确 `blocked`。
-5. 为 `python-pip` 接入“所有者批准 -> DependencyResolver 建 wheel cache -> 恢复执行”的控制面流程。
+1. 持久化 `SandboxEvidence`：保存 Docker check、profile、退出码、输出摘要和尝试次数。
+2. 增加 WorkItem 状态转移：测试失败后暂停给 Planner，生成修复工作项，再回到 Code/Test。
+3. 定义终态：所有必需工作项完成、sandbox 通过、review 无阻塞项，或明确 `blocked`。
+4. 为 `python-pip` 接入“所有者批准 -> DependencyResolver 建 wheel cache -> 恢复执行”的控制面流程。
 
 ## MVP 后的扩展顺序
 

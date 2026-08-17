@@ -1,57 +1,68 @@
 import unittest
 
-from app.workflow.plan import ExecutionPlan, TaskNode
+from app.workflow.plan import ExecutionPlan
+from app.workflow.work_item import (
+    DependencySource,
+    WorkItem,
+    WorkItemDependency,
+)
 
 
-def make_node(
-    node_id: str, *, depends_on: tuple[str, ...] = ()
-) -> TaskNode:
-    return TaskNode(
-        id=node_id,
+def make_item(
+    item_id: str, *, depends_on: tuple[str, ...] = ()
+) -> WorkItem:
+    return WorkItem(
+        id=item_id,
         agent_id="requirement_agent",
         objective="生成需求草稿",
-        output_key=f"{node_id}_output",
+        output_key=f"{item_id}_output",
         policy_id="requirement_draft_v1",
-        depends_on=depends_on,
+        dependencies=tuple(
+            WorkItemDependency(
+                work_item_id=dependency,
+                source=DependencySource.PLANNER,
+            )
+            for dependency in depends_on
+        ),
     )
 
 
 class ExecutionPlanTest(unittest.TestCase):
-    def test_plan_exposes_nodes_and_roots(self) -> None:
-        draft = make_node("requirement_draft")
-        review = make_node("requirement_review", depends_on=(draft.id,))
+    def test_plan_exposes_work_items_and_roots(self) -> None:
+        draft = make_item("requirement_draft")
+        review = make_item("requirement_review", depends_on=(draft.id,))
         plan = ExecutionPlan(
             id="requirement-plan",
             goal="生成可确认的需求草稿",
             template_id="requirement_draft",
-            nodes=(draft, review),
+            work_items=(draft, review),
         )
 
-        self.assertEqual(plan.node("requirement_review"), review)
-        self.assertIsNone(plan.node("missing"))
-        self.assertEqual(plan.root_nodes(), (draft,))
+        self.assertEqual(plan.work_item("requirement_review"), review)
+        self.assertIsNone(plan.work_item("missing"))
+        self.assertEqual(plan.root_items(), (draft,))
 
-    def test_node_rejects_self_and_duplicate_dependencies(self) -> None:
+    def test_item_rejects_self_and_duplicate_dependencies(self) -> None:
         with self.assertRaisesRegex(ValueError, "不能依赖自身"):
-            make_node("draft", depends_on=("draft",))
+            make_item("draft", depends_on=("draft",))
 
         with self.assertRaisesRegex(ValueError, "重复依赖"):
-            make_node("draft", depends_on=("input", "input"))
+            make_item("draft", depends_on=("input", "input"))
 
-    def test_plan_rejects_duplicate_node_ids(self) -> None:
-        with self.assertRaisesRegex(ValueError, "重复节点 id"):
+    def test_plan_rejects_duplicate_work_item_ids(self) -> None:
+        with self.assertRaisesRegex(ValueError, "重复 WorkItem id"):
             ExecutionPlan(
                 id="duplicate-plan",
                 goal="测试",
-                nodes=(make_node("draft"), make_node("draft")),
+                work_items=(make_item("draft"), make_item("draft")),
             )
 
     def test_plan_rejects_unknown_dependencies(self) -> None:
-        with self.assertRaisesRegex(ValueError, "依赖不存在的节点: missing"):
+        with self.assertRaisesRegex(ValueError, "依赖不存在的工作项: missing"):
             ExecutionPlan(
                 id="unknown-dependency-plan",
                 goal="测试",
-                nodes=(make_node("draft", depends_on=("missing",)),),
+                work_items=(make_item("draft", depends_on=("missing",)),),
             )
 
     def test_plan_rejects_cycles(self) -> None:
@@ -59,9 +70,9 @@ class ExecutionPlanTest(unittest.TestCase):
             ExecutionPlan(
                 id="cyclic-plan",
                 goal="测试",
-                nodes=(
-                    make_node("draft", depends_on=("review",)),
-                    make_node("review", depends_on=("draft",)),
+                work_items=(
+                    make_item("draft", depends_on=("review",)),
+                    make_item("review", depends_on=("draft",)),
                 ),
             )
 

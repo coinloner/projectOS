@@ -30,4 +30,4 @@ Agent 通过 `ToolGateway` 取得对应 ToolSet；ToolSet 再委托 Service 完�
 
 ## Task Domain 的过渡定位
 
-当前 Task domain 负责生成面向人和后续节点的 `tasks.md`。它不是长期的控制面任务系统：下一阶段会由 Planner 创建和推进结构化 `WorkItem`。保留 `tasks.md` 的价值是保存可阅读的实施计划和交接说明。
+当前 Task domain 负责生成面向人和后续节点的 `tasks.md`。Planner 已创建和调度结构化 `WorkItem`，因此 `tasks.md` 不再是控制面事实来源；它保留为可阅读的实施计划和交接说明。后续可改为由 WorkItem 确定性渲染，减少一次 LLM 转写。

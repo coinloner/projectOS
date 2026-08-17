@@ -1,4 +1,4 @@
-from app.workflow.plan import ExecutionPlan, TaskNode
+from app.workflow.plan import ExecutionPlan
 from app.workflow.node_result import NodeResult, NodeStatus
 from app.workflow.runner import (
     GraphRunner,
@@ -12,6 +12,12 @@ from app.workflow.template import (
     WorkflowTemplate,
     WorkflowTemplateRegistry,
 )
+from app.workflow.trace import TraceContext, TraceStore
+from app.workflow.work_item import (
+    DependencySource,
+    WorkItem,
+    WorkItemDependency,
+)
 
 __all__ = [
     "ExecutionPlan",
@@ -23,7 +29,11 @@ __all__ = [
     "RunState",
     "SourceCandidate",
     "TaskBlueprint",
-    "TaskNode",
+    "DependencySource",
+    "TraceContext",
+    "TraceStore",
+    "WorkItem",
+    "WorkItemDependency",
     "WorkflowTemplate",
     "WorkflowTemplateRegistry",
 ]

@@ -34,7 +34,7 @@ ProjectOS 是一个以 LLM Planner 为控制面的多 Agent 项目交付原型�
 Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 ```
 
-这七个节点都是可注册、可被 Planner 选择的 Agent。`project_delivery_template()` 提供默认顺序和依赖关系；Planner v0 可以在注册合同和校验规则范围内生成计划，但同一个 Agent 在一次计划中最多出现一次。
+这七个节点都是可注册、可被 Planner 选择的 Agent。Planner v0 将每次选择转换为带稳定 id 的 `WorkItem`；同一个 Agent 在一次初始计划中最多出现一次。`project_delivery_template()` 提供默认依赖，`DependencyPolicy` 再合并不可移除的系统依赖与 Planner 额外声明的依赖。
 
 各节点的磁盘产物为：
 
@@ -43,7 +43,7 @@ requirement.md -> architecture.md -> tasks.md -> environment.md
 workspace/     -> implementation.md -> tests.md -> review.md
 ```
 
-其中 `workspace/` 是生成项目的源代码与测试目录；其余 Markdown 是交接、审查和解释用的项目产物。`RunState.artifacts` 则只保存一次 GraphRunner 运行内的节点返回文本，不是持久化的工作流状态。
+其中 `workspace/` 是生成项目的源代码与测试目录；其余 Markdown 是交接、审查和解释用的项目产物。每次计划还有稳定 `trace_id`，其计划与事件保存在 `.projectos/runs/<trace_id>/`；`RunState.artifacts` 仍只保存一次进程内的节点返回文本。
 
 ## 工具与权限模型
 
@@ -74,7 +74,7 @@ CrewAI               管理 LLM tool-calling loop 和参数验证
 
 目前系统能完成一次线性项目交付：从需求走到 Docker 测试和 Review。它尚不是可自动纠偏的闭环，因为：
 
-- `TaskAgent` 仍输出 Markdown 任务清单，尚未被 Planner 拆成结构化 `WorkItem`。
+- Planner 已使用结构化 `WorkItem`；`TaskAgent` 仍输出给人阅读的 `tasks.md`，暂未改为 WorkItem 的确定性投影。
 - `SandboxResult` 尚未持久化为 Planner 可消费的结构化执行证据。
 - GraphRunner 遇到节点失败会结束，尚未进行局部重规划、代码修复和重测。
 - `Review` 读取的是测试报告与项目文件，不是稳定的原始执行证据。

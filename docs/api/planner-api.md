@@ -3,29 +3,31 @@
 ## 不可信草案模型
 
 ```python
-PlannedStep(agent_id: str, objective: str, depends_on: list[str] = [])
-PlanDraft(rationale: str, steps: list[PlannedStep], template_hint_id: str | None = None)
-PlanDraft.parse(content: str) -> PlanDraft
+PlannedStep(
+    ref: str,
+    agent_id: str,
+    objective: str,
+    depends_on: list[str] = [],
+    acceptance_criteria: list[str] = [],
+)
+
+PlanDraft(
+    rationale: str,
+    steps: list[PlannedStep],
+    template_hint_id: str | None = None,
+    template_dependency_overrides: list[TemplateDependencyOverride] = [],
+)
 ```
 
-`PlanDraft` 是 LLM 返回的窄 JSON schema。它不能包含 node id、output key、文件路径、工具或可执行对象；未知字段、空字符串和超出长度限制会被 Pydantic 拒绝，并以 `PlanDraftError` 对外报告。
+`ref` 只在一份草案内引用其他 step，最终 WorkItem id 由 `PlanValidator` 生成。Planner 不能生成可信 trace/work item 身份、产物 key、文件路径、工具或可执行对象。
+
+`TemplateDependencyOverride` 只能移除已选择 Agent 间真实存在的模板默认依赖，并必须提供原因；它不能移除系统依赖。
 
 ## PlanningContext
 
-```python
-PlanningContext.build(
-    goal: str,
-    agents: AgentRegistry,
-    templates: WorkflowTemplateRegistry,
-    artifacts: ArtifactStore,
-) -> PlanningContext
+Planner 可读取目标、artifact 是否存在、Agent 合同摘要、完整模板节点与默认依赖、workspace 实现文件数量和 `RuntimeSnapshot`。它不读取 artifact/源码正文、factory、Tool、MCP client 或 Docker 配置。
 
-PlanningContext.as_prompt_json() -> str
-```
-
-规划上下文只包含目标、artifact 是否存在、Agent 合同摘要、Template 摘要、workspace 实现文件数量和 `RuntimeSnapshot`。它不包含 artifact 或源码正文、factory、Tool、MCP client 或 Docker 配置。
-
-## PlannerService
+## PlannerService 与依赖策略
 
 ```python
 PlannerService(
@@ -34,11 +36,16 @@ PlannerService(
     templates: WorkflowTemplateRegistry,
     artifacts: ArtifactStore,
     validator: PlanValidator | None = None,
+    traces: TraceStore | None = None,
 )
 
 PlannerService.plan(goal: str, plan_id: str) -> PlannerResult
 ```
 
-`plan()` 调用 `PlannerRuntime.generate()` 生成草案，再由 `PlanValidator` 转换为 `ExecutionPlan`。非法草案会带校验错误重试一次；第二次仍非法则抛出 `PlannerFailure`。
+`plan()` 先建立项目 Trace，再调用 LLM 生成草案。`PlanValidator` 验证 schema、Agent、临时 ref 和 DAG，并由 `DependencyPolicy` 合并：
 
-`PlanValidator` 当前拒绝未知/重复 Agent、未知模板、非法依赖与循环图；在 workspace 尚无实现时还会要求 Code、Test、Review 的必要前置依赖，并在 runtime 缺失时要求 Bootstrap。
+1. Planner 显式依赖。
+2. 当前 Template 对已选择步骤的默认依赖。
+3. 系统强制依赖，例如无实现时 `Code -> Test -> Review`、无 runtime 时 `Bootstrap -> Code/Test`。
+
+非法草案会带校验错误重试一次；第二次仍非法则抛出 `PlannerFailure`。Planner v0 仍限制同一 Agent 在一份初始计划中只出现一次。

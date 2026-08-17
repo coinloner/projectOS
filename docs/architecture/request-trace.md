@@ -26,12 +26,13 @@ goal
   -> CrewAIPlannerRuntime.generate()
   -> PlanDraft.parse()
   -> PlanValidator.validate()
+  -> DependencyPolicy.resolve()
   -> ExecutionPlan
 ```
 
-Planner 看到的是控制面摘要：目标、已注册 Agent 的 `id/domain/description/output_key`、模板摘要、artifact 是否存在、workspace 文件计数与 runtime 摘要。它看不到源代码、artifact 正文、factory、工具对象、Docker 或 MCP client。
+Planner 看到的是控制面摘要：目标、已注册 Agent 的 `id/domain/description/output_key`、完整模板节点和默认依赖、artifact 是否存在、workspace 文件计数与 runtime 摘要。它看不到源代码、artifact 正文、factory、工具对象、Docker 或 MCP client。
 
-Planner 输出不可信 JSON。`PlanValidator` 会拒绝未知 Agent、重复 Agent、非法依赖、循环图，以及缺少 Bootstrap/Code/Test 前置条件的计划；一次错误草案可请求 LLM 修复一次。
+Planner 输出不可信 JSON。它用临时 `ref` 描述步骤间依赖；`PlanValidator` 生成可信 WorkItem id，并合并 Planner、Template 与系统三类依赖。一次错误草案可请求 LLM 修复一次。
 
 ## 2. 调度七个节点
 
@@ -47,7 +48,7 @@ requirement
   -> review
 ```
 
-GraphRunner 只根据 `ExecutionPlan` 的 DAG 找到 ready node。对每个节点，它通过 `AgentRegistry.create(agent_id)` 创建一个新的 Agent 实例，并把总体目标、当前目标与可用前置 artifact key 组成 task 文本。
+GraphRunner 只根据 `ExecutionPlan` 的 WorkItem DAG 找到 ready item。对每个 WorkItem，它通过 `AgentRegistry.create(agent_id)` 创建一个新的 Agent 实例，并把总体目标、WorkItem id、当前目标与可用前置 artifact key 组成 task 文本。
 
 Agent 不会直接获得前置文件正文。它必须使用自己的 `load_artifact` 工具按需读取，这让每个 domain 的读取范围可以单独限制。
 
@@ -94,9 +95,20 @@ python -m unittest discover -s tests -v
 
 它在 Docker 容器的 `/workspace` 中执行。Agent 无法修改命令、镜像、挂载、网络或容器权限。
 
-## 5. 节点结果与结束
+## 5. Trace、结果与结束
 
-每个 Agent 最终返回 `AgentResult`。GraphRunner 将它转换为 `NodeResult` 并记录进本次 `RunState`：
+`PlannerService` 为每次计划创建一个 `trace_id`，并复用项目稳定的 `requirement_id`。GraphRunner 将 `plan.json` 与 WorkItem 事件写入：
+
+```text
+projects/<project>/.projectos/
+  requirement.json
+  requirements/revision-<n>.md
+  runs/<trace_id>/trace.json
+  runs/<trace_id>/plan.json
+  runs/<trace_id>/events.jsonl
+```
+
+每个 Agent 最终返回 `AgentResult`。GraphRunner 将它转换为 `NodeResult` 并记录进本次 `RunState` 与 Trace：
 
 - 成功：把节点最终文本放入 `RunState.artifacts[output_key]`。
 - 能力缺口：查询候选动态 source，返回 `waiting_for_capability_approval` 或 `blocked`。

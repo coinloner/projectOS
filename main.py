@@ -21,6 +21,7 @@ from app.agent.review_agent import ReviewAgent
 from app.workflow.runner import GraphRunner, GraphRunStatus
 from app.workflow.template import WorkflowTemplateRegistry
 from app.workflow.templates import project_delivery_template
+from app.workflow.trace import TraceStore
 from app.planner.planner import CrewAIPlannerRuntime
 from app.planner.service import PlannerFailure, PlannerService
 
@@ -109,12 +110,14 @@ def main():
 
     templates = WorkflowTemplateRegistry()
     templates.register(project_delivery_template())
+    traces = TraceStore(project_path)
     goal = "我要做一个检测粪便健康的网站，请完成需求、架构、任务、首版代码、基础测试和交付审查。"
     planner = PlannerService(
         runtime=CrewAIPlannerRuntime(),
         agents=agents,
         templates=templates,
         artifacts=ArtifactStore(project_path),
+        traces=traces,
     )
     try:
         planning = planner.plan(goal=goal, plan_id="project-delivery-demo")
@@ -123,8 +126,8 @@ def main():
         return
 
     plan = planning.plan
-    print("规划节点: " + " -> ".join(node.agent_id for node in plan.nodes))
-    result = GraphRunner(agents, gateway).run(plan)
+    print("规划工作项: " + " -> ".join(item.agent_id for item in plan.work_items))
+    result = GraphRunner(agents, gateway, traces=traces).run(plan)
 
     print("=" * 60)
     print(result.state.artifacts.get("review") or result.error or "流程未返回内容")

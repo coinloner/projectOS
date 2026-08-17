@@ -18,6 +18,8 @@ Planner -> ExecutionPlan -> GraphRunner -> AgentRegistry -> Domain Agent
                                                    -> ToolGateway -> ToolCatalog / AccessPolicy
 Domain Agent -> Domain ToolSet -> Domain Service -> ArtifactStore / WorkspaceToolSet / SandboxController
 SandboxController -> SandboxPolicy -> DockerSandboxProvider
+
+TraceStore <- PlannerService / GraphRunner
 ```
 
 上层可以请求下层提供能力；下层不应反向 import Planner、GraphRunner 或 CrewAI。尤其是 `app/domain/<domain>/service.py` 不应依赖 Agent、Gateway 或 LLM。
@@ -67,6 +69,7 @@ projects/<project>/
   review.md
   workspace/                   被生成项目的源代码和测试
   .sandbox/wheels/<digest>/    仅 DependencyResolver 写入的依赖缓存
+  .projectos/                  ProjectOS 私有 Trace、计划、事件和需求修订
 ```
 
 ## 运行时与安全边界
@@ -80,7 +83,8 @@ projects/<project>/
 | 能力 | 状态 |
 |---|---|
 | 七领域 Agent、ToolSet 与线性执行 | 已实现 |
-| Planner 受控草案和计划校验 | 已实现（v0） |
+| Planner 受控草案、WorkItem 与三类依赖校验 | 已实现（v0） |
+| Requirement/Trace/WorkItem 基础追溯 | 已实现 |
 | Python 标准库 Docker 测试 | 已实现并真实验证 |
 | 测试失败后的局部重规划与重试 | 未实现 |
 | 持久化执行证据 | 未实现 |

@@ -38,7 +38,16 @@ class TemplateHint:
     id: str
     name: str
     description: str
-    agent_ids: tuple[str, ...]
+    nodes: tuple["TemplateNodeHint", ...]
+
+
+@dataclass(frozen=True)
+class TemplateNodeHint:
+    """Planner 可见的模板节点与默认依赖。"""
+
+    agent_id: str
+    objective: str
+    depends_on: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -92,13 +101,7 @@ class PlanningContext:
             for key in artifact_keys
         )
         template_hints = tuple(
-            TemplateHint(
-                id=template.id,
-                name=template.name,
-                description=template.description,
-                agent_ids=tuple(node.agent_id for node in template.nodes),
-            )
-            for template in templates.templates()
+            _template_hint(template) for template in templates.templates()
         )
         workspace = WorkspaceStore(artifacts.project_path)
         return cls(
@@ -122,7 +125,13 @@ class PlanningContext:
                 "templates": [
                     {
                         **template.__dict__,
-                        "agent_ids": list(template.agent_ids),
+                        "nodes": [
+                            {
+                                **node.__dict__,
+                                "depends_on": list(node.depends_on),
+                            }
+                            for node in template.nodes
+                        ],
                     }
                     for template in self.templates
                 ],
@@ -132,3 +141,23 @@ class PlanningContext:
             ensure_ascii=False,
             indent=2,
         )
+
+
+def _template_hint(template: "WorkflowTemplate") -> TemplateHint:
+    nodes_by_id = {node.id: node for node in template.nodes}
+    return TemplateHint(
+        id=template.id,
+        name=template.name,
+        description=template.description,
+        nodes=tuple(
+            TemplateNodeHint(
+                agent_id=node.agent_id,
+                objective=node.objective,
+                depends_on=tuple(
+                    nodes_by_id[dependency].agent_id
+                    for dependency in node.depends_on
+                ),
+            )
+            for node in template.nodes
+        ),
+    )

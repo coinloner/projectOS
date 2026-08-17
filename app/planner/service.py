@@ -8,10 +8,12 @@ from app.agent.registry import AgentRegistry
 from app.artifact.store import ArtifactStore
 from app.planner.context import PlanningContext
 from app.planner.draft import PlanDraft, PlanDraftError
+from app.planner.errors import PlanValidationError
 from app.planner.planner import PlannerRuntime
-from app.planner.validator import PlanValidationError, PlanValidator
+from app.planner.validator import PlanValidator
 from app.workflow.plan import ExecutionPlan
 from app.workflow.template import WorkflowTemplateRegistry
+from app.workflow.trace import TraceStore
 
 
 @dataclass(frozen=True)
@@ -39,12 +41,14 @@ class PlannerService:
         templates: WorkflowTemplateRegistry,
         artifacts: ArtifactStore,
         validator: PlanValidator | None = None,
+        traces: TraceStore | None = None,
     ) -> None:
         self._runtime = runtime
         self._agents = agents
         self._templates = templates
         self._artifacts = artifacts
         self._validator = validator or PlanValidator()
+        self._traces = traces or TraceStore(artifacts.project_path)
 
     def plan(self, *, goal: str, plan_id: str) -> PlannerResult:
         context = PlanningContext.build(
@@ -54,6 +58,7 @@ class PlannerService:
             artifacts=self._artifacts,
         )
         prompt = _planning_prompt(context)
+        trace = self._traces.start_trace(goal.strip())
 
         for attempt in (1, 2):
             raw_draft = self._runtime.generate(prompt)
@@ -63,6 +68,7 @@ class PlannerService:
                     draft,
                     context=context,
                     plan_id=plan_id,
+                    trace=trace,
                 )
                 return PlannerResult(
                     plan=plan,

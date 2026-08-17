@@ -4,9 +4,9 @@
 
 | 模块 | 已实现 | 当前限制 | 下一步 |
 |---|---|---|---|
-| Project | 项目根目录、`workspace/`、`project.yaml`、默认 `runtime.yaml` | 无项目生命周期状态持久化 | 引入项目运行记录 |
-| Planner v0 | 受控上下文、JSON 草案、一次修复、DAG 与交付前置校验 | 每 Agent 每计划一次；无运行反馈重规划 | `WorkItem` 与 PlanPatch |
-| Workflow | `ExecutionPlan`、同步 GraphRunner、节点状态、能力缺口暂停 | 不持久化、不可恢复、无并发/重试 | 状态机与恢复接口 |
+| Project | 项目根目录、`workspace/`、`project.yaml`、默认 `runtime.yaml` | 项目级生命周期状态未统一持久化 | 统一项目运行记录 |
+| Planner v0 | 受控上下文、JSON 草案、一次修复、WorkItem 与三类依赖校验 | 每 Agent 每计划一次；无运行反馈重规划 | PlanPatch |
+| Workflow | WorkItem DAG、同步 GraphRunner、Trace 计划/事件、能力缺口暂停 | RunState 不可恢复、无并发/重试 | 状态机与恢复接口 |
 | Domain Agents | Requirement、Architecture、Task、Bootstrap、Code、Test、Review | 领域 prompt 和产出质量仍是基础版本 | 按真实项目案例迭代工具与 policy |
 | Local ToolSet | domain 隔离、artifact 读写限制、workspace 写入限制 | 没有跨 domain 复合能力 | 保持小工具集，按需要增量扩展 |
 | ToolGateway | 静态本地注册、动态 source 授权、CrewAI 适配 | 真实 MCP client 未接入 | MCP connector 与审批恢复 |
@@ -19,7 +19,7 @@
 
 完成下面五项后，ProjectOS 可以作为“动态编排多 Agent 项目交付”的完整 MVP 展示：
 
-1. Planner 以结构化 WorkItem 表达任务、依赖、状态和完成条件。
+1. Planner 以带来源的结构化 WorkItem 表达任务和依赖，且 Trace 可追溯。
 2. Test 将 Docker 结果保存为结构化 `SandboxEvidence`。
 3. 失败证据可驱动 Planner 创建一次或多次受限修复步骤。
 4. 系统在通过、达到重试上限或缺少批准时进入明确终态。
@@ -28,8 +28,7 @@
 ## 当前最短开发路径
 
 ```text
-WorkItem model
-  -> SandboxEvidence persistence
+SandboxEvidence persistence
   -> GraphRunner pause / replan / resume
   -> Code/Test retry policy
   -> terminal delivery report
