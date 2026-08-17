@@ -6,10 +6,10 @@ from pathlib import Path
 from app.agent.registry import AgentDefinition, AgentRegistry
 from app.agent.result import AgentResult
 from app.tool_manager.gateway import ToolGateway
-from app.workflow.plan import ExecutionPlan
-from app.workflow.runner import GraphRunner, GraphRunStatus
-from app.workflow.trace import TraceStore
-from app.workflow.work_item import WorkItem
+from app.orchestration.plan import ExecutionPlan
+from app.orchestration.runner import GraphRunner, GraphRunStatus
+from app.orchestration.trace import TraceStore
+from app.orchestration.work_item import WorkItem
 
 
 class CompletedRequirementAgent:

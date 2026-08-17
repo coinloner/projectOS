@@ -5,11 +5,11 @@ from enum import Enum
 
 from app.agent.registry import AgentRegistry
 from app.tool_manager.gateway import ToolGateway
-from app.workflow.node_result import NodeResult, NodeStatus
-from app.workflow.plan import ExecutionPlan
-from app.workflow.state import RunState
-from app.workflow.trace import TraceStore
-from app.workflow.work_item import WorkItem
+from app.orchestration.node_result import NodeResult, NodeStatus
+from app.orchestration.plan import ExecutionPlan
+from app.orchestration.state import RunState
+from app.orchestration.trace import TraceStore
+from app.orchestration.work_item import WorkItem
 
 
 class GraphRunStatus(str, Enum):

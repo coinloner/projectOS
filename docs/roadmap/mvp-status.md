@@ -6,7 +6,8 @@
 |---|---|---|---|
 | Project | 项目根目录、`workspace/`、`project.yaml`、默认 `runtime.yaml` | 项目级生命周期状态未统一持久化 | 统一项目运行记录 |
 | Planner v0 | 受控上下文、JSON 草案、一次修复、WorkItem 与三类依赖校验 | 每 Agent 每计划一次；无运行反馈重规划 | PlanPatch |
-| Workflow | WorkItem DAG、同步 GraphRunner、Trace 计划/事件、能力缺口暂停 | RunState 不可恢复、无并发/重试 | 状态机与恢复接口 |
+| Workflow | 可复用 Template、Blueprint 与默认依赖经验 | 未按项目类型沉淀更多模板 | 增加常见交付模板 |
+| Orchestration | WorkItem DAG、同步 GraphRunner、Trace 计划/事件、能力缺口暂停 | RunState 不可恢复、无并发/重试 | 状态机与恢复接口 |
 | Domain Agents | Requirement、Architecture、Task、Bootstrap、Code、Test、Review | 领域 prompt 和产出质量仍是基础版本 | 按真实项目案例迭代工具与 policy |
 | Local ToolSet | domain 隔离、artifact 读写限制、workspace 写入限制 | 没有跨 domain 复合能力 | 保持小工具集，按需要增量扩展 |
 | ToolGateway | 静态本地注册、动态 source 授权、CrewAI 适配 | 真实 MCP client 未接入 | MCP connector 与审批恢复 |

@@ -5,7 +5,7 @@ from __future__ import annotations
 from app.planner.context import PlanningContext, TemplateHint
 from app.planner.draft import PlanDraft
 from app.planner.errors import PlanValidationError
-from app.workflow.work_item import DependencySource, WorkItemDependency
+from app.orchestration.work_item import DependencySource, WorkItemDependency
 
 
 class DependencyPolicy:

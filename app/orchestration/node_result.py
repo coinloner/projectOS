@@ -1,3 +1,5 @@
+"""Agent 结果到编排层结果的边界模型。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -4,15 +4,15 @@ from app.agent.registry import AgentDefinition, AgentRegistry
 from app.agent.result import AgentResult
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import MCPToolSource
-from app.workflow.plan import ExecutionPlan
-from app.workflow.runner import GraphRunner, GraphRunStatus
+from app.orchestration.plan import ExecutionPlan
+from app.orchestration.runner import GraphRunner, GraphRunStatus
 from app.workflow.template import (
     TaskBlueprint,
     WorkflowTemplate,
     WorkflowTemplateRegistry,
 )
 from app.workflow.templates import project_delivery_template
-from app.workflow.work_item import (
+from app.orchestration.work_item import (
     DependencySource,
     WorkItem,
     WorkItemDependency,
@@ -61,6 +61,30 @@ def make_node(
                 source=DependencySource.PLANNER,
             )
             for dependency in depends_on
+        ),
+    )
+
+
+def plan_from_template(template: WorkflowTemplate) -> ExecutionPlan:
+    return ExecutionPlan(
+        id=f"{template.id}-execution",
+        goal="从零交付一个项目",
+        template_id=template.id,
+        work_items=tuple(
+            WorkItem(
+                id=blueprint.id,
+                agent_id=blueprint.agent_id,
+                objective=blueprint.objective,
+                output_key=blueprint.output_key,
+                dependencies=tuple(
+                    WorkItemDependency(
+                        work_item_id=dependency,
+                        source=DependencySource.TEMPLATE,
+                    )
+                    for dependency in blueprint.depends_on
+                ),
+            )
+            for blueprint in template.nodes
         ),
     )
 
@@ -242,10 +266,7 @@ class WorkflowTemplateTest(unittest.TestCase):
             )
             created[agent_id] = instances
 
-        plan = project_delivery_template().instantiate(
-            plan_id="project-001",
-            goal="从零交付一个项目",
-        )
+        plan = plan_from_template(project_delivery_template())
         result = GraphRunner(agents, gateway).run(plan)
 
         self.assertEqual(result.status, GraphRunStatus.COMPLETED)
@@ -273,13 +294,10 @@ class WorkflowTemplateTest(unittest.TestCase):
         self.assertIn("- tests", review_prompt)
 
     def test_project_delivery_template_defines_a_seven_agent_dag(self) -> None:
-        plan = project_delivery_template().instantiate(
-            plan_id="project-001",
-            goal="从零交付一个项目",
-        )
+        template = project_delivery_template()
 
         self.assertEqual(
-            [item.agent_id for item in plan.work_items],
+            [node.agent_id for node in template.nodes],
             [
                 "requirement_agent",
                 "architecture_agent",
@@ -290,29 +308,29 @@ class WorkflowTemplateTest(unittest.TestCase):
                 "review_agent",
             ],
         )
-        self.assertEqual(plan.work_items[1].dependency_ids, ("requirement",))
+        self.assertEqual(template.nodes[1].depends_on, ("requirement",))
         self.assertEqual(
-            plan.work_items[2].dependency_ids, ("requirement", "architecture")
+            template.nodes[2].depends_on, ("requirement", "architecture")
         )
         self.assertEqual(
-            plan.work_items[3].dependency_ids,
+            template.nodes[3].depends_on,
             ("requirement", "architecture", "tasks"),
         )
-        self.assertEqual(plan.work_items[3].output_key, "environment")
+        self.assertEqual(template.nodes[3].output_key, "environment")
         self.assertEqual(
-            plan.work_items[4].dependency_ids,
+            template.nodes[4].depends_on,
             ("requirement", "architecture", "tasks", "environment"),
         )
         self.assertEqual(
-            plan.work_items[5].dependency_ids,
+            template.nodes[5].depends_on,
             ("requirement", "tasks", "environment", "implementation"),
         )
         self.assertEqual(
-            plan.work_items[6].dependency_ids,
+            template.nodes[6].depends_on,
             ("requirement", "architecture", "tasks", "environment", "implementation", "tests"),
         )
 
-    def test_template_instantiates_an_independent_plan(self) -> None:
+    def test_template_registry_returns_template_experience(self) -> None:
         template = WorkflowTemplate(
             id="requirement_generation",
             name="需求生成",
@@ -329,14 +347,10 @@ class WorkflowTemplateTest(unittest.TestCase):
         registry = WorkflowTemplateRegistry()
         registry.register(template)
 
-        plan = registry.get("requirement_generation").instantiate(
-            plan_id="run-001",
-            goal="生成健康网站需求",
-        )
+        registered = registry.get("requirement_generation")
 
-        self.assertEqual(plan.template_id, "requirement_generation")
-        self.assertEqual(plan.work_items[0].agent_id, "requirement_agent")
-        self.assertEqual(plan.goal, "生成健康网站需求")
+        self.assertEqual(registered, template)
+        self.assertEqual(registered.nodes[0].agent_id, "requirement_agent")
 
     def test_template_registry_rejects_duplicate_ids(self) -> None:
         registry = WorkflowTemplateRegistry()

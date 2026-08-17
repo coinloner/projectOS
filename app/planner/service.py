@@ -11,9 +11,9 @@ from app.planner.draft import PlanDraft, PlanDraftError
 from app.planner.errors import PlanValidationError
 from app.planner.planner import PlannerRuntime
 from app.planner.validator import PlanValidator
-from app.workflow.plan import ExecutionPlan
 from app.workflow.template import WorkflowTemplateRegistry
-from app.workflow.trace import TraceStore
+from app.orchestration.plan import ExecutionPlan
+from app.orchestration.trace import TraceStore
 
 
 @dataclass(frozen=True)

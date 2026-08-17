@@ -8,8 +8,8 @@
 
 1. 为七个 domain 注册本地 ToolSet。
 2. 向 `AgentRegistry` 注册七个 `AgentDefinition` 和各自 factory。
-3. 注册 `project_delivery_template()` 作为 Planner 的流程经验。
-4. 创建 `PlannerService` 和 `GraphRunner`。
+3. 注册 `project_delivery_template()` 作为纯 Workflow 经验。
+4. 创建 `PlannerService` 和 Orchestration 层的 `GraphRunner`。
 
 项目创建时会建立 `workspace/`，并写入默认的 `runtime.yaml`：
 

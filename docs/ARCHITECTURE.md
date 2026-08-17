@@ -8,9 +8,10 @@ ProjectOS 是一个以 LLM Planner 为控制面的多 Agent 项目交付原型�
 
 ```text
 用户目标
+  -> WorkflowTemplate（经验参考）
   -> Planner v0
   -> ExecutionPlan
-  -> GraphRunner
+  -> Orchestration / GraphRunner
   -> Domain Agent (CrewAI)
   -> ToolGateway
   -> ToolCatalog + ToolAccessPolicy
@@ -22,7 +23,8 @@ ProjectOS 是一个以 LLM Planner 为控制面的多 Agent 项目交付原型�
 | 层 | 当前职责 | 不负责 |
 |---|---|---|
 | Planner v0 | 从受控上下文生成并校验一次 `ExecutionPlan` | 写项目文件、调用工具、直接执行节点 |
-| Workflow | 保存流程经验，调度计划节点并记录运行内状态 | 领域业务、测试判定、质量评价 |
+| Workflow | 保存可复用流程经验与默认依赖 | 计划执行、运行状态、Trace |
+| Orchestration | 调度 WorkItem、记录 RunState 与 Trace | 领域业务、流程模板选择、质量评价 |
 | Domain Agent | 用 LLM 完成一个领域节点，并通过受限工具读写产物 | 跨节点调度、工具授权、Docker 控制 |
 | ToolGateway | 按 domain 和授权状态把工具包装为 CrewAI 工具 | 业务执行、工具循环、依赖安装 |
 | Domain Service | 实现本地读写和受限项目操作 | LLM、CrewAI、计划编排 |

@@ -1,9 +1,11 @@
+"""一次 Trace 的可执行 WorkItem 计划。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.workflow.trace import TraceContext
-from app.workflow.work_item import WorkItem
+from app.orchestration.trace import TraceContext
+from app.orchestration.work_item import WorkItem
 
 
 @dataclass(frozen=True)

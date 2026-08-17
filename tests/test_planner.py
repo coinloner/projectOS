@@ -12,7 +12,7 @@ from app.workflow.template import (
     WorkflowTemplateRegistry,
 )
 from app.workflow.templates import project_delivery_template
-from app.workflow.work_item import DependencySource
+from app.orchestration.work_item import DependencySource
 
 
 class FakePlannerRuntime:

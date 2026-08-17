@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.workflow.plan import ExecutionPlan
-from app.workflow.trace import TraceContext
-from app.workflow.work_item import DependencySource, WorkItem, WorkItemDependency
 
 
 @dataclass(frozen=True)
@@ -17,24 +14,6 @@ class TaskBlueprint:
     output_key: str
     depends_on: tuple[str, ...] = ()
     policy_id: str | None = None
-
-    def instantiate(self) -> WorkItem:
-        return WorkItem(
-            id=self.id,
-            agent_id=self.agent_id,
-            objective=self.objective,
-            output_key=self.output_key,
-            dependencies=tuple(
-                WorkItemDependency(
-                    work_item_id=dependency,
-                    source=DependencySource.TEMPLATE,
-                    rule_id=f"template:{dependency}->{self.id}",
-                )
-                for dependency in self.depends_on
-            ),
-            policy_id=self.policy_id,
-        )
-
 
 @dataclass(frozen=True)
 class WorkflowTemplate:
@@ -52,23 +31,6 @@ class WorkflowTemplate:
                 raise ValueError(f"WorkflowTemplate.{field_name} 不能为空")
         if not self.nodes:
             raise ValueError("WorkflowTemplate 至少需要一个节点")
-
-    def instantiate(
-        self,
-        *,
-        plan_id: str,
-        goal: str,
-        trace: TraceContext | None = None,
-    ) -> ExecutionPlan:
-        """以模板为骨架创建本次运行的独立 ExecutionPlan。"""
-        return ExecutionPlan(
-            id=plan_id,
-            goal=goal,
-            template_id=self.id,
-            work_items=tuple(node.instantiate() for node in self.nodes),
-            trace=trace or TraceContext.ephemeral(),
-        )
-
 
 class WorkflowTemplateRegistry:
     """Planner 可查询的流程经验目录。"""

@@ -1,7 +1,7 @@
 import unittest
 
-from app.workflow.plan import ExecutionPlan
-from app.workflow.work_item import (
+from app.orchestration.plan import ExecutionPlan
+from app.orchestration.work_item import (
     DependencySource,
     WorkItem,
     WorkItemDependency,

@@ -1,3 +1,5 @@
+"""编排执行层的 WorkItem 与依赖模型。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

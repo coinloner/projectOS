@@ -6,9 +6,9 @@ from app.planner.context import PlanningContext
 from app.planner.dependency_policy import DependencyPolicy
 from app.planner.draft import PlanDraft
 from app.planner.errors import PlanValidationError
-from app.workflow.plan import ExecutionPlan
-from app.workflow.trace import TraceContext
-from app.workflow.work_item import WorkItem
+from app.orchestration.plan import ExecutionPlan
+from app.orchestration.trace import TraceContext
+from app.orchestration.work_item import WorkItem
 
 
 class PlanValidator:

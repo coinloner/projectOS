@@ -16,7 +16,8 @@
 |---|---|
 | [Agent](modules/agent.md) | 七个领域 Agent、Registry 和 CrewAI 边界 |
 | [Domain](modules/domain.md) | 七个 domain 的本地能力、输入输出和权限边界 |
-| [Workflow](modules/workflow.md) | Template、ExecutionPlan、GraphRunner 与运行状态 |
+| [Workflow](modules/workflow.md) | Template、Blueprint 与默认依赖经验 |
+| [Orchestration](modules/orchestration.md) | WorkItem、计划执行、运行状态与 Trace |
 | [Sandbox](modules/sandbox.md) | Docker 执行隔离、依赖缓存与安全策略 |
 | [Runtime](modules/runtime.md) | runtime manifest、profile 与受控状态摘要 |
 | [ToolGateway](modules/tool_manager.md) | ToolSet、动态 source、Catalog 与访问策略 |
@@ -30,7 +31,8 @@
 | [Agent API](api/agent-api.md) | `BaseAgent`、`AgentRegistry`、`AgentResult` |
 | [Domain API](api/domain-api.md) | 七个 domain 的 service、ToolSet 和注册入口 |
 | [Planner API](api/planner-api.md) | `PlanDraft`、`PlanningContext`、`PlannerService` |
-| [Workflow API](api/workflow-api.md) | 计划数据模型、Template 和 GraphRunner |
+| [Workflow API](api/workflow-api.md) | Template、Blueprint 与默认依赖经验 |
+| [Orchestration API](api/orchestration-api.md) | WorkItem、ExecutionPlan、GraphRunner 与 Trace |
 | [Sandbox API](api/sandbox-api.md) | `SandboxController`、结果和依赖解析 |
 | [Runtime API](api/runtime-api.md) | `RuntimeManifest`、Profile 和状态快照 |
 | [ToolGateway API](api/tool_manager-api.md) | 本地 ToolSet、动态 source 与 CrewAI 工具暴露 |

@@ -1,7 +1,7 @@
 import unittest
 
 from app.agent.result import AgentResult
-from app.workflow.node_result import NodeResult, NodeStatus
+from app.orchestration.node_result import NodeResult, NodeStatus
 
 
 class NodeResultTest(unittest.TestCase):
