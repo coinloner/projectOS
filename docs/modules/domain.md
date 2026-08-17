@@ -19,8 +19,8 @@ Agent 通过 `ToolGateway` 取得对应 ToolSet；ToolSet 再委托 Service 完�
 | task | 管理实施任务清单 | 读取 requirement/architecture，保存 tasks | 拆分 GraphRunner 状态、写 workspace | `tasks.md` |
 | bootstrap | 管理运行时声明 | 读取前置 artifact，声明 profile/依赖，保存环境报告 | 安装依赖、联网、Docker 执行 | `runtime.yaml`、可选 `requirements.in`、`environment.md` |
 | code | 管理实现交接和代码编辑 | 读取前置 artifact，读写允许的 workspace 文件，读取 runtime 摘要 | Docker、shell、依赖安装 | `workspace/`、`implementation.md` |
-| test | 管理测试与测试报告 | 读取前置 artifact，写 `workspace/tests/`，请求固定 unit check | 写普通源码、任意命令、Docker 参数 | `workspace/tests/`、`tests.md` |
-| review | 管理交付审查 | 受限读取 artifact、workspace 与 runtime 摘要，保存审查 | 修改 workspace、运行命令 | `review.md` |
+| test | 管理测试、测试报告与 Docker 执行证据 | 读取前置 artifact，写 `workspace/tests/`，请求固定 unit check | 写普通源码、任意命令、Docker 参数 | `workspace/tests/`、`tests.md`、当前 Trace 的 `SandboxEvidence` |
+| review | 管理交付审查 | 受限读取 artifact、workspace、runtime 摘要与当前 Trace evidence，保存审查 | 修改 workspace、运行命令或修改 evidence | `review.md` |
 
 ## 输入输出边界
 

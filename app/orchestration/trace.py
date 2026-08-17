@@ -9,6 +9,10 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
+from app.execution_context import ExecutionContext
+from app.orchestration.evidence import SandboxEvidence
+from app.sandbox.result import SandboxResult, SandboxStatus
+
 
 @dataclass(frozen=True)
 class TraceContext:
@@ -93,18 +97,12 @@ class TraceStore:
         *,
         details: dict[str, object] | None = None,
     ) -> None:
-        path = self._trace_path(trace) / "events.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        event = {
-            "event_id": f"evt-{uuid4().hex[:12]}",
-            "trace_id": trace.trace_id,
-            "work_item_id": work_item_id,
-            "type": event_type,
-            "created_at": self._now(),
-            "details": details or {},
-        }
-        with path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+        self._record_event_for_trace_id(
+            trace_id=trace.trace_id,
+            work_item_id=work_item_id,
+            event_type=event_type,
+            details=details,
+        )
 
     def finish_trace(
         self,
@@ -142,6 +140,55 @@ class TraceStore:
         self._update_trace_requirement_revision(trace, revision)
         return revision
 
+    def record_sandbox_evidence(
+        self,
+        context: ExecutionContext,
+        result: SandboxResult,
+    ) -> SandboxEvidence:
+        """保存 Docker 原始结果，并将证据 ID 写入当前 WorkItem 的 Trace 事件。"""
+        evidence = SandboxEvidence.from_sandbox_result(
+            evidence_id=f"ev-{uuid4().hex[:12]}",
+            context=context,
+            result=result,
+            created_at=self._now(),
+        )
+        self._write_json(
+            self._evidence_path(context.trace_id, evidence.id), evidence.as_dict()
+        )
+        self._record_event_for_trace_id(
+            trace_id=context.trace_id,
+            work_item_id=context.work_item_id,
+            event_type="sandbox_evidence_recorded",
+            details={
+                "evidence_id": evidence.id,
+                "status": evidence.status.value,
+                "check_id": evidence.check_id,
+            },
+        )
+        return evidence
+
+    def list_sandbox_evidence(
+        self, context: ExecutionContext
+    ) -> tuple[SandboxEvidence, ...]:
+        directory = self._trace_root(context.trace_id) / "evidence"
+        if not directory.is_dir():
+            return ()
+        return tuple(
+            self._load_sandbox_evidence(path)
+            for path in sorted(directory.glob("ev-*.json"))
+        )
+
+    def load_sandbox_evidence(
+        self, context: ExecutionContext, evidence_id: str
+    ) -> SandboxEvidence:
+        """仅允许在当前 Trace 中读取指定的 Docker 执行证据。"""
+        if not evidence_id.startswith("ev-") or "/" in evidence_id or "\\" in evidence_id:
+            raise ValueError("无效的 sandbox evidence id")
+        path = self._evidence_path(context.trace_id, evidence_id)
+        if not path.is_file():
+            raise FileNotFoundError(f"当前 Trace 中不存在 sandbox evidence: '{evidence_id}'")
+        return self._load_sandbox_evidence(path)
+
     @property
     def _requirement_metadata_path(self) -> Path:
         return self._root / "requirement.json"
@@ -162,7 +209,40 @@ class TraceStore:
         return datetime.now(timezone.utc).isoformat()
 
     def _trace_path(self, trace: TraceContext) -> Path:
-        return self._root / "runs" / trace.trace_id
+        return self._trace_root(trace.trace_id)
+
+    def _trace_root(self, trace_id: str) -> Path:
+        return self._root / "runs" / trace_id
+
+    def _evidence_path(self, trace_id: str, evidence_id: str) -> Path:
+        return self._trace_root(trace_id) / "evidence" / f"{evidence_id}.json"
+
+    @staticmethod
+    def _load_sandbox_evidence(path: Path) -> SandboxEvidence:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["status"] = SandboxStatus(payload["status"])
+        return SandboxEvidence(**payload)
+
+    def _record_event_for_trace_id(
+        self,
+        *,
+        trace_id: str,
+        work_item_id: str,
+        event_type: str,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        path = self._trace_root(trace_id) / "events.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "event_id": f"evt-{uuid4().hex[:12]}",
+            "trace_id": trace_id,
+            "work_item_id": work_item_id,
+            "type": event_type,
+            "created_at": self._now(),
+            "details": details or {},
+        }
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     def _update_trace_requirement_revision(
         self, trace: TraceContext, revision: int

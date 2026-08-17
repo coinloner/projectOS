@@ -24,7 +24,7 @@ ProjectOS 是一个以 LLM Planner 为控制面的多 Agent 项目交付原型�
 |---|---|---|
 | Planner v0 | 从受控上下文生成并校验一次 `ExecutionPlan` | 写项目文件、调用工具、直接执行节点 |
 | Workflow | 保存可复用流程经验与默认依赖 | 计划执行、运行状态、Trace |
-| Orchestration | 调度 WorkItem、记录 RunState 与 Trace | 领域业务、流程模板选择、质量评价 |
+| Orchestration | 调度 WorkItem、绑定可信执行身份、记录 RunState/Trace/Evidence | 领域业务、流程模板选择、质量评价 |
 | Domain Agent | 用 LLM 完成一个领域节点，并通过受限工具读写产物 | 跨节点调度、工具授权、Docker 控制 |
 | ToolGateway | 按 domain 和授权状态把工具包装为 CrewAI 工具 | 业务执行、工具循环、依赖安装 |
 | Domain Service | 实现本地读写和受限项目操作 | LLM、CrewAI、计划编排 |
@@ -45,7 +45,7 @@ requirement.md -> architecture.md -> tasks.md -> environment.md
 workspace/     -> implementation.md -> tests.md -> review.md
 ```
 
-其中 `workspace/` 是生成项目的源代码与测试目录；其余 Markdown 是交接、审查和解释用的项目产物。每次计划还有稳定 `trace_id`，其计划与事件保存在 `.projectos/runs/<trace_id>/`；`RunState.artifacts` 仍只保存一次进程内的节点返回文本。
+其中 `workspace/` 是生成项目的源代码与测试目录；其余 Markdown 是交接、审查和解释用的项目产物。每次计划还有稳定 `trace_id`，其计划、事件和 Docker 证据保存在 `.projectos/runs/<trace_id>/`；`RunState.artifacts` 仍只保存一次进程内的节点返回文本。
 
 ## 工具与权限模型
 
@@ -62,6 +62,8 @@ CrewAI               管理 LLM tool-calling loop 和参数验证
 
 `ToolDef` 不保存 Python 函数；函数或远端调用逻辑属于 `ToolSource`。因此本地工具与 MCP 可以使用同一套发现、授权和 CrewAI 适配边界。
 
+普通 `ToolSetSource` 只接收模型 schema 中的业务参数。少数需要追溯归属的工具使用 `ExecutionToolSetSource`；`GraphRunner` 创建 `ExecutionContext(trace_id, work_item_id, agent_id)` 并由 Gateway 绑定，模型看不到也不能伪造这些字段。
+
 当前 MCP connector 和“批准后恢复执行”尚未实现。查询候选 source 不会连接 MCP，也不会自动扩大 Agent 权限。
 
 ## 执行安全模型
@@ -77,8 +79,7 @@ CrewAI               管理 LLM tool-calling loop 和参数验证
 目前系统能完成一次线性项目交付：从需求走到 Docker 测试和 Review。它尚不是可自动纠偏的闭环，因为：
 
 - Planner 已使用结构化 `WorkItem`；`TaskAgent` 仍输出给人阅读的 `tasks.md`，暂未改为 WorkItem 的确定性投影。
-- `SandboxResult` 尚未持久化为 Planner 可消费的结构化执行证据。
+- `SandboxResult` 已作为带 Trace 和 WorkItem 归属的 `SandboxEvidence` 持久化；Review 可只读原始证据。
 - GraphRunner 遇到节点失败会结束，尚未进行局部重规划、代码修复和重测。
-- `Review` 读取的是测试报告与项目文件，不是稳定的原始执行证据。
 
 下一阶段的目标不是增加更多 Agent，而是完成“测试失败 -> 证据 -> Planner 重排 -> Code 修复 -> Docker 重测 -> 交付判定”的最小循环。

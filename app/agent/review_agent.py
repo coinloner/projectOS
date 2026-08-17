@@ -23,8 +23,9 @@ _BACKSTORY = """\
 1. 每份被授权产物最多读取一次。它们可能是首尾摘要，不要求补读全文。
 2. 调用 list_workspace_files 确认实际交付；只按需读取少量关键源码或测试文件，不要逐个读取所有文件。
 3. 调用 inspect_runtime 检查测试证据对应的 runtime 和依赖缓存状态。
-4. 对照需求、架构和任务，检查已实现范围、测试证据、明显缺口与风险。
-5. 调用 save_review 保存审查报告。
+4. 调用 list_sandbox_evidence；按需用 load_sandbox_evidence 读取 Docker 原始结果。
+5. 对照需求、架构和任务，检查已实现范围、测试证据、明显缺口与风险。
+6. 调用 save_review 保存审查报告。
 
 文档格式要求：
 - ## 审查结论（PASS / CONDITIONAL_PASS / BLOCKED）
@@ -32,4 +33,4 @@ _BACKSTORY = """\
 - ## 阻塞问题
 - ## 后续建议
 
-原则：结论必须以实际读到的文件和测试报告为依据；没有证据时写明缺失，不补全假设。"""
+原则：测试结论以 sandbox evidence 为准，tests.md 仅作可读说明；没有证据时写明缺失，不补全假设。"""

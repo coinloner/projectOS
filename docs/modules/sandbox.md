@@ -32,8 +32,10 @@ RuntimeManifest -> SandboxPolicy -> SandboxSpec -> DockerSandboxProvider
 
 ## 当前结果边界
 
-`SandboxController.run_check()` 返回结构化 `SandboxResult`，其中包含状态、check id、runtime profile、退出码、耗时和受限长度的标准输出/错误输出。`TestAgent` 当前把它转换为文本写入 `tests.md`。
+`SandboxController.run_check()` 返回结构化 `SandboxResult`，其中包含状态、check id、runtime profile、退出码、耗时和受限长度的标准输出/错误输出。Test 的 `run_sandbox_check` 工具在返回给 Agent 前会将其记录为 `SandboxEvidence`。
 
-这意味着 Docker 的实际执行已受控，但结果还没有作为独立 `SandboxEvidence` 持久化，也不会自动触发 Planner 的修复决策。下一阶段会把执行证据、重试次数和终态接入 Workflow 控制面。
+证据文件位于 `.projectos/runs/<trace_id>/evidence/<evidence_id>.json`，记录生成它的 WorkItem 和 Agent。工具返回值保留 `evidence_id` 与可读摘要，`tests.md` 是人读报告而非结果真相来源；Review 可读取同一 Trace 的原始证据。
+
+测试失败仍不会自动触发 Planner 修复。下一阶段只需在已有证据基础上接入重试次数、PlanPatch 和终态状态机。
 
 `python-pip` 的 Resolver 已实现依赖格式校验和 wheel cache 准备；“请求所有者批准、解析依赖并恢复 GraphRunner”的流程尚未实现。Agent 不能自动触发这个网络阶段。

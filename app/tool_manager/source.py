@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Protocol
 
+from app.execution_context import ExecutionContext
+
 
 # ── ToolDef ────────────────────────────────────
 
@@ -49,7 +51,13 @@ class ToolSource(ABC):
         ...
 
     @abstractmethod
-    def execute(self, name: str, arguments: dict) -> str:
+    def execute(
+        self,
+        name: str,
+        arguments: dict,
+        *,
+        context: ExecutionContext | None = None,
+    ) -> str:
         """执行工具并返回结果。
 
         Args:
@@ -88,9 +96,47 @@ class ToolSetSource(ToolSource):
     def discover(self) -> list[ToolDef]:
         return self._defs
 
-    def execute(self, name: str, arguments: dict) -> str:
+    def execute(
+        self,
+        name: str,
+        arguments: dict,
+        *,
+        context: ExecutionContext | None = None,
+    ) -> str:
         fn = self._fns[name]
         return str(fn(**arguments))
+
+
+class ExecutionToolSetSource(ToolSource):
+    """需要编排层可信上下文的本地工具来源。
+
+    与 ``ToolSetSource`` 相比，函数第一个参数固定为 ``ExecutionContext``。
+    ``ProjectOSTool`` 会在运行时注入它；LLM 只看到 ToolDef 中声明的业务参数，
+    因而无法指定 trace、WorkItem 或 Agent 身份。
+    """
+
+    def __init__(self, tools: list[tuple[ToolDef, Callable]]) -> None:
+        self._defs: list[ToolDef] = []
+        self._fns: dict[str, Callable] = {}
+        for tool_def, fn in tools:
+            if tool_def.name in self._fns:
+                raise ValueError(f"ToolSet 中存在重复工具名: '{tool_def.name}'")
+            self._defs.append(tool_def)
+            self._fns[tool_def.name] = fn
+
+    def discover(self) -> list[ToolDef]:
+        return self._defs
+
+    def execute(
+        self,
+        name: str,
+        arguments: dict,
+        *,
+        context: ExecutionContext | None = None,
+    ) -> str:
+        if context is None:
+            raise RuntimeError(f"工具 '{name}' 必须由 GraphRunner 在 Trace 中执行")
+        return str(self._fns[name](context, **arguments))
 
 
 class MCPClient(Protocol):
@@ -134,7 +180,13 @@ class MCPToolSource(ToolSource):
             return []
         return [self._to_tool_def(tool) for tool in self._client.list_tools()]
 
-    def execute(self, name: str, arguments: dict) -> str:
+    def execute(
+        self,
+        name: str,
+        arguments: dict,
+        *,
+        context: ExecutionContext | None = None,
+    ) -> str:
         if self._client is None:
             raise RuntimeError("MCP client 尚未配置")
         return str(self._client.call_tool(name, arguments))

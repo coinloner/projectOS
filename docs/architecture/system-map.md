@@ -20,6 +20,7 @@ Domain Agent -> Domain ToolSet -> Domain Service -> ArtifactStore / WorkspaceToo
 SandboxController -> SandboxPolicy -> DockerSandboxProvider
 
 TraceStore <- PlannerService / GraphRunner
+ExecutionContext <- GraphRunner -> ToolGateway -> ExecutionToolSetSource
 ```
 
 上层可以请求下层提供能力；下层不应反向 import Planner、GraphRunner 或 CrewAI。尤其是 `app/domain/<domain>/service.py` 不应依赖 Agent、Gateway 或 LLM。
@@ -33,8 +34,8 @@ TraceStore <- PlannerService / GraphRunner
 | task | `tasks.md` | requirement、architecture | 保存任务清单 |
 | bootstrap | `environment.md`、`runtime.yaml`、可选 `requirements.in` | requirement、architecture、tasks | 声明 profile 和依赖意图；不安装、不联网 |
 | code | `implementation.md`、`workspace/` 源文件 | requirement、architecture、tasks、runtime 状态 | 读写允许的 workspace 文件；不运行命令 |
-| test | `tests.md`、`workspace/tests/` | requirement、tasks、implementation | 写测试；请求固定 sandbox `unit` check |
-| review | `review.md` | requirement、architecture、tasks、implementation、tests、runtime 状态、workspace | 只读审查并保存报告 |
+| test | `tests.md`、`workspace/tests/`、SandboxEvidence | requirement、tasks、environment、implementation | 写测试；请求固定 sandbox `unit` check 并记录证据 |
+| review | `review.md` | requirement、architecture、tasks、environment、implementation、tests、runtime 状态、workspace、当前 Trace evidence | 只读审查并保存报告 |
 
 `TaskAgent` 的当前职责是生成给人和后续 Agent 使用的 `tasks.md`。它会在下一个闭环阶段被 `WorkItem` 控制面逐步替代；Planner 才是任务拆分与状态推进的最终所有者。
 
@@ -69,7 +70,7 @@ projects/<project>/
   review.md
   workspace/                   被生成项目的源代码和测试
   .sandbox/wheels/<digest>/    仅 DependencyResolver 写入的依赖缓存
-  .projectos/                  ProjectOS 私有 Trace、计划、事件和需求修订
+  .projectos/                  ProjectOS 私有 Trace、计划、事件、执行证据和需求修订
 ```
 
 ## 运行时与安全边界
@@ -87,6 +88,6 @@ projects/<project>/
 | Requirement/Trace/WorkItem 基础追溯 | 已实现 |
 | Python 标准库 Docker 测试 | 已实现并真实验证 |
 | 测试失败后的局部重规划与重试 | 未实现 |
-| 持久化执行证据 | 未实现 |
+| 持久化 Docker 执行证据与 Review 读取 | 已实现 |
 | `python-pip` 批准与恢复 | Resolver 已有，Workflow 未接入 |
 | 真实 MCP connector | 未实现 |

@@ -6,6 +6,7 @@ from app.tool_manager.catalog import SourceRegistration, ToolCatalog
 from app.tool_manager.access_policy import ToolAccessPolicy
 from app.tool_manager.crewai_adapter import ProjectOSTool
 from app.tool_manager.source import ToolExposure, ToolSource
+from app.execution_context import ExecutionContext
 
 
 class ToolGateway:
@@ -70,7 +71,9 @@ class ToolGateway:
         """撤销一个按需来源的会话授权。"""
         self._policy.deactivate_source(domain, name)
 
-    def tools_for(self, domain: str) -> list[BaseTool]:
+    def tools_for(
+        self, domain: str, *, context: ExecutionContext | None = None
+    ) -> list[BaseTool]:
         """返回当前 domain 可交给 CrewAI Agent 的已授权工具。"""
         registrations = self._catalog.list_registrations(
             domain,
@@ -80,6 +83,7 @@ class ToolGateway:
             ProjectOSTool.from_registration(
                 registration,
                 is_authorized=self._policy.is_visible,
+                context=context,
             )
             for registration in registrations
             if self._policy.is_visible(registration)

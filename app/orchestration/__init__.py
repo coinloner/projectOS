@@ -9,6 +9,8 @@ from app.orchestration.runner import (
     SourceCandidate,
 )
 from app.orchestration.state import RunState
+from app.execution_context import ExecutionContext
+from app.orchestration.evidence import SandboxEvidence
 from app.orchestration.trace import TraceContext, TraceStore
 from app.orchestration.work_item import (
     DependencySource,
@@ -18,6 +20,7 @@ from app.orchestration.work_item import (
 
 __all__ = [
     "DependencySource",
+    "ExecutionContext",
     "ExecutionPlan",
     "GraphRunner",
     "GraphRunResult",
@@ -25,6 +28,7 @@ __all__ = [
     "NodeResult",
     "NodeStatus",
     "RunState",
+    "SandboxEvidence",
     "SourceCandidate",
     "TraceContext",
     "TraceStore",

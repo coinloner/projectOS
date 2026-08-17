@@ -8,12 +8,15 @@ from app.agent.result import AgentResult
 from app.tool_manager.gateway import ToolGateway
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.runner import GraphRunner, GraphRunStatus
+from app.execution_context import ExecutionContext
 from app.orchestration.trace import TraceStore
 from app.orchestration.work_item import WorkItem
 
 
 class CompletedRequirementAgent:
-    def run(self, task: str) -> AgentResult:
+    def run(
+        self, task: str, *, context: ExecutionContext | None = None
+    ) -> AgentResult:
         return AgentResult.completed("# Requirement\n\nFirst revision")
 
 

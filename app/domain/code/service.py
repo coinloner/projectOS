@@ -2,7 +2,7 @@
 
 from app.artifact.toolset import ArtifactToolSet
 from app.runtime.state import runtime_snapshot
-from app.workspace.toolset import WorkspaceToolSet
+from app.workspace.toolset import CodeWorkspaceToolSet
 
 
 class CodeService:
@@ -13,9 +13,9 @@ class CodeService:
         self._artifacts = ArtifactToolSet(
             project_path,
             output_artifact="implementation",
-            readable_artifacts=("requirement", "architecture", "tasks"),
+            readable_artifacts=("requirement", "architecture", "tasks", "environment"),
         )
-        self._workspace = WorkspaceToolSet(project_path)
+        self._workspace = CodeWorkspaceToolSet(project_path, read_char_limit=4_000)
 
     def load_artifact(self, artifact: str) -> str:
         return self._artifacts.load(artifact)

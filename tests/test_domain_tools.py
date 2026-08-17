@@ -59,6 +59,8 @@ class DomainToolContractTest(unittest.TestCase):
                 "list_workspace_files",
                 "read_workspace_file",
                 "inspect_runtime",
+                "list_sandbox_evidence",
+                "load_sandbox_evidence",
             },
         }
 

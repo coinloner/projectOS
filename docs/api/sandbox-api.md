@@ -27,10 +27,11 @@ SandboxResult(
     message: str | None = None,
 )
 
-SandboxResult.as_agent_text() -> str
 ```
 
-状态枚举：`passed`、`failed`、`setup_failed`、`timed_out`。输出会受策略长度限制。当前结果只转成文本给 TestAgent；尚未持久化为 `SandboxEvidence`。
+状态枚举：`passed`、`failed`、`setup_failed`、`timed_out`。输出会受策略长度限制。
+
+通过 Test domain 的 `run_sandbox_check()` 调用时，结果会由 `TraceStore` 写为 `SandboxEvidence`，而不是仅由 LLM 写进 `tests.md`。证据还保存 `id`、`trace_id`、`work_item_id`、`agent_id` 与创建时间；Review 可在当前 Trace 内只读它。
 
 ## Dependency Resolver
 

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, create_model
 
 from app.tool_manager.catalog import ToolRegistration
 from app.tool_manager.source import ToolDef
+from app.execution_context import ExecutionContext
 
 
 class ProjectOSTool(BaseTool):
@@ -22,6 +23,7 @@ class ProjectOSTool(BaseTool):
 
     _registration: ToolRegistration = PrivateAttr()
     _is_authorized: Callable[[ToolRegistration], bool] = PrivateAttr()
+    _context: ExecutionContext | None = PrivateAttr(default=None)
 
     @classmethod
     def from_registration(
@@ -29,6 +31,7 @@ class ProjectOSTool(BaseTool):
         registration: ToolRegistration,
         *,
         is_authorized: Callable[[ToolRegistration], bool],
+        context: ExecutionContext | None = None,
     ) -> ProjectOSTool:
         tool = cls(
             name=registration.definition.name,
@@ -37,6 +40,7 @@ class ProjectOSTool(BaseTool):
         )
         tool._registration = registration
         tool._is_authorized = is_authorized
+        tool._context = context
         return tool
 
     def _run(self, **arguments: Any) -> str:
@@ -46,7 +50,7 @@ class ProjectOSTool(BaseTool):
             )
         return str(
             self._registration.source.execute(
-                self._registration.definition.name, arguments
+                self._registration.definition.name, arguments, context=self._context
             )
         )
 

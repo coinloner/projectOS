@@ -8,6 +8,7 @@ from app.tool_manager.gateway import ToolGateway
 from app.orchestration.node_result import NodeResult, NodeStatus
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.state import RunState
+from app.execution_context import ExecutionContext
 from app.orchestration.trace import TraceStore
 from app.orchestration.work_item import WorkItem
 
@@ -107,8 +108,13 @@ class GraphRunner:
             )
 
         try:
+            context = ExecutionContext(
+                trace_id=state.plan.trace.trace_id,
+                work_item_id=item.id,
+                agent_id=item.agent_id,
+            )
             agent_result = self._agents.create(item.agent_id).run(
-                self._build_task(state, item)
+                self._build_task(state, item), context=context
             )
         except Exception as error:
             return NodeResult.failed(

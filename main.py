@@ -35,13 +35,14 @@ def main():
         print()
 
     gateway = ToolGateway()
+    traces = TraceStore(project_path)
     register_requirement_tools(gateway, project_path)
     register_architecture_tools(gateway, project_path)
     register_task_tools(gateway, project_path)
     register_bootstrap_tools(gateway, project_path)
     register_code_tools(gateway, project_path)
-    register_test_tools(gateway, project_path)
-    register_review_tools(gateway, project_path)
+    register_test_tools(gateway, project_path, traces=traces)
+    register_review_tools(gateway, project_path, traces=traces)
 
     agents = AgentRegistry()
     agents.register(
@@ -110,7 +111,6 @@ def main():
 
     templates = WorkflowTemplateRegistry()
     templates.register(project_delivery_template())
-    traces = TraceStore(project_path)
     goal = "我要做一个检测粪便健康的网站，请完成需求、架构、任务、首版代码、基础测试和交付审查。"
     planner = PlannerService(
         runtime=CrewAIPlannerRuntime(),

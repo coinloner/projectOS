@@ -48,7 +48,7 @@ requirement
   -> review
 ```
 
-GraphRunner 只根据 `ExecutionPlan` 的 WorkItem DAG 找到 ready item。对每个 WorkItem，它通过 `AgentRegistry.create(agent_id)` 创建一个新的 Agent 实例，并把总体目标、WorkItem id、当前目标与可用前置 artifact key 组成 task 文本。
+GraphRunner 只根据 `ExecutionPlan` 的 WorkItem DAG 找到 ready item。对每个 WorkItem，它通过 `AgentRegistry.create(agent_id)` 创建一个新的 Agent 实例，并把总体目标、WorkItem id、当前目标与可用前置 artifact key 组成 task 文本。同时它创建 `ExecutionContext(trace_id, work_item_id, agent_id)`，只通过 ToolGateway 绑定到本次 Agent 的工具对象。
 
 Agent 不会直接获得前置文件正文。它必须使用自己的 `load_artifact` 工具按需读取，这让每个 domain 的读取范围可以单独限制。
 
@@ -78,13 +78,16 @@ BootstrapAgent 可以调整 `runtime.yaml`，并在选择 `python-pip` 时写入
 TestAgent 写入 `workspace/tests/` 后，只能调用无参数的 `run_sandbox_check`：
 
 ```text
-TestToolSet.run_sandbox_check()
+GraphRunner-created ExecutionContext
+  -> ExecutionToolSetSource.run_sandbox_check()
   -> TestService.run_sandbox_check()
   -> SandboxController.run_check(project_path, "unit")
   -> RuntimeManifest.load()
   -> SandboxPolicy.create_spec()
   -> DockerSandboxProvider.run_check()
   -> SandboxResult
+  -> TraceStore.record_sandbox_evidence()
+  -> .projectos/runs/<trace_id>/evidence/<evidence_id>.json
 ```
 
 对 `python-stdlib`，固定检查为：
@@ -106,6 +109,7 @@ projects/<project>/.projectos/
   runs/<trace_id>/trace.json
   runs/<trace_id>/plan.json
   runs/<trace_id>/events.jsonl
+  runs/<trace_id>/evidence/<evidence_id>.json
 ```
 
 每个 Agent 最终返回 `AgentResult`。GraphRunner 将它转换为 `NodeResult` 并记录进本次 `RunState` 与 Trace：
@@ -118,7 +122,7 @@ projects/<project>/.projectos/
 
 ## 6. 当前断点：为什么还不是完整闭环
 
-当 Docker 测试失败时，`SandboxResult` 只会以文本形式返回给 TestAgent，由它写进 `tests.md`。GraphRunner 不理解测试失败的业务含义，也不会把失败证据交给 Planner。因此执行会继续到 Review 或在节点异常时直接结束，而不会稳定地产生修复任务并重试。
+当 Docker 测试结束时，原始 `SandboxResult` 会被保存为带 Trace、WorkItem 和 Agent 归属的 `SandboxEvidence`。TestAgent 仍可将可读摘要写入 `tests.md`，但 Review 用 `list_sandbox_evidence` 和 `load_sandbox_evidence` 读取原始结果。GraphRunner 目前不解释失败的业务含义，也不会把证据交给 Planner 生成修复步骤。
 
 要形成闭环，需要在 Test 后加入如下状态转移：
 

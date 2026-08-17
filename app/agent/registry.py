@@ -4,12 +4,15 @@ from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from app.agent.result import AgentResult
+from app.execution_context import ExecutionContext
 
 
 class AgentRunner(Protocol):
     """GraphRunner 需要的最小 Agent 运行契约。"""
 
-    def run(self, task: str) -> AgentResult:
+    def run(
+        self, task: str, *, context: ExecutionContext | None = None
+    ) -> AgentResult:
         ...
 
 

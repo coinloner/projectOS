@@ -1,8 +1,10 @@
 """TestAgent 的工具合同。"""
 
 from app.domain.test.service import TestService
+from app.execution_context import ExecutionContext
+from app.orchestration.trace import TraceStore
 from app.tool_manager.gateway import ToolGateway
-from app.tool_manager.source import ToolDef, ToolSetSource
+from app.tool_manager.source import ExecutionToolSetSource, ToolDef, ToolSetSource
 
 
 class TestToolSet:
@@ -26,13 +28,32 @@ class TestToolSet:
     def write_test_file(self, path: str, content: str) -> str:
         return self._service.write_test_file(path, content)
 
-    def run_sandbox_check(self) -> str:
-        return self._service.run_sandbox_check()
+
+class SandboxEvidenceToolSet:
+    """把固定 Docker check 绑定到当前 WorkItem 的 Trace 证据。"""
+
+    def __init__(self, service: TestService, traces: TraceStore) -> None:
+        self._service = service
+        self._traces = traces
+
+    def run_sandbox_check(self, context: ExecutionContext) -> str:
+        result = self._service.run_sandbox_check()
+        evidence = self._traces.record_sandbox_evidence(context, result)
+        return evidence.as_agent_text()
 
 
-def register_test_tools(gateway: ToolGateway, project_path: str) -> None:
+def register_test_tools(
+    gateway: ToolGateway,
+    project_path: str,
+    *,
+    traces: TraceStore | None = None,
+) -> None:
     """测试节点可读实现、仅能写 tests/，并只能运行固定 unittest 命令。"""
-    tools = TestToolSet(TestService(project_path))
+    service = TestService(project_path)
+    tools = TestToolSet(service)
+    evidence_tools = SandboxEvidenceToolSet(
+        service, traces or TraceStore(project_path)
+    )
     gateway.register_toolset(
         domain="test",
         name="project_artifacts",
@@ -41,7 +62,7 @@ def register_test_tools(gateway: ToolGateway, project_path: str) -> None:
                 (
                     ToolDef(
                         name="load_artifact",
-                        description="读取前置产物。可读取: requirement、tasks、implementation。",
+                        description="读取前置产物。可读取: requirement、tasks、environment、implementation。",
                         parameters={
                             "type": "object",
                             "properties": {"artifact": {"type": "string", "description": "前置产物标识"}},
@@ -95,7 +116,7 @@ def register_test_tools(gateway: ToolGateway, project_path: str) -> None:
     )
     gateway.register_toolset(
         domain="test",
-        name="test_runner",
+        name="test_writer",
         toolset=ToolSetSource(
             [
                 (
@@ -113,13 +134,21 @@ def register_test_tools(gateway: ToolGateway, project_path: str) -> None:
                     ),
                     tools.write_test_file,
                 ),
+            ]
+        ),
+    )
+    gateway.register_toolset(
+        domain="test",
+        name="test_runner",
+        toolset=ExecutionToolSetSource(
+            [
                 (
                     ToolDef(
                         name="run_sandbox_check",
                         description="在受控 Docker sandbox 中执行固定的 unit 检查。",
                         parameters={"type": "object", "properties": {}},
                     ),
-                    tools.run_sandbox_check,
+                    evidence_tools.run_sandbox_check,
                 ),
             ]
         ),

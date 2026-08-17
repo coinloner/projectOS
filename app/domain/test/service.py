@@ -2,6 +2,7 @@
 
 from app.artifact.toolset import ArtifactToolSet
 from app.sandbox.controller import SandboxController
+from app.sandbox.result import SandboxResult
 from app.workspace.toolset import TestToolSet
 
 
@@ -18,9 +19,9 @@ class TestService:
         self._artifacts = ArtifactToolSet(
             project_path,
             output_artifact="tests",
-            readable_artifacts=("requirement", "tasks", "implementation"),
+            readable_artifacts=("requirement", "tasks", "environment", "implementation"),
         )
-        self._workspace = TestToolSet(project_path)
+        self._workspace = TestToolSet(project_path, read_char_limit=4_000)
         self._sandbox = sandbox or SandboxController()
 
     def load_artifact(self, artifact: str) -> str:
@@ -38,6 +39,6 @@ class TestService:
     def write_test_file(self, path: str, content: str) -> str:
         return self._workspace.write_test_file(path, content)
 
-    def run_sandbox_check(self) -> str:
+    def run_sandbox_check(self) -> SandboxResult:
         """测试只能请求 policy 固定的 unit check，不能传递宿主机命令。"""
-        return self._sandbox.run_check(self._project_path, "unit").as_agent_text()
+        return self._sandbox.run_check(self._project_path, "unit")

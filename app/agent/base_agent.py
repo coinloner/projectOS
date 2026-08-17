@@ -2,6 +2,7 @@ from crewai import Agent, Task
 
 from app.agent.result import AgentResult, from_llm_content
 from app.llm.factory import build_llm
+from app.execution_context import ExecutionContext
 from app.tool_manager.gateway import ToolGateway
 
 
@@ -43,7 +44,9 @@ class BaseAgent:
 
     # ── 入口 ──────────────────────────────────
 
-    def run(self, task: str) -> AgentResult:
+    def run(
+        self, task: str, *, context: ExecutionContext | None = None
+    ) -> AgentResult:
         """执行单个任务节点。
 
         Agent 不参与暴露策略决策。它只从 Gateway 取得当前可用工具；Gateway
@@ -60,7 +63,7 @@ class BaseAgent:
             goal=self._goal,
             backstory=f"{self._backstory}\n\n{_CAPABILITY_REQUEST_PROMPT}",
             llm=build_llm(),
-            tools=self._gateway.tools_for(self._domain),
+            tools=self._gateway.tools_for(self._domain, context=context),
             max_iter=self._max_iterations,
             verbose=False,
             allow_delegation=False,

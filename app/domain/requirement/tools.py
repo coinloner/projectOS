@@ -1,6 +1,6 @@
 """RequirementAgent 的工具合同。"""
 
-from app.domain.requirement.service import RequirementDocument, RequirementService
+from app.domain.requirement.service import RequirementService
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import MCPToolSource, ToolDef, ToolSetSource
 
@@ -12,14 +12,10 @@ class RequirementToolSet:
         self._service = service
 
     def save_requirement(self, content: str) -> str:
-        self._service.save(RequirementDocument(content=content))
-        return "需求文档已保存"
+        return self._service.save_requirement(content)
 
     def load_requirement(self) -> str:
-        try:
-            return self._service.load().content
-        except FileNotFoundError:
-            return "（尚未创建需求文档）"
+        return self._service.load_requirement()
 
 
 def register_requirement_tools(gateway: ToolGateway, project_path: str) -> None:

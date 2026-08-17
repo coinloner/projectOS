@@ -13,7 +13,7 @@ class ReviewService:
         self._artifacts = ArtifactToolSet(
             project_path,
             output_artifact="review",
-            readable_artifacts=("requirement", "architecture", "tasks", "implementation", "tests"),
+            readable_artifacts=("requirement", "architecture", "tasks", "environment", "implementation", "tests"),
             read_char_limit=3_000,
         )
         self._workspace = WorkspaceToolSet(project_path, read_char_limit=4_000)

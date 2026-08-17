@@ -41,7 +41,7 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                 (
                     ToolDef(
                         name="load_artifact",
-                        description="读取前置产物。可读取: requirement、architecture、tasks。",
+                        description="读取前置产物。可读取: requirement、architecture、tasks、environment。",
                         parameters={
                             "type": "object",
                             "properties": {"artifact": {"type": "string", "description": "前置产物标识"}},
@@ -93,7 +93,7 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                 (
                     ToolDef(
                         name="write_workspace_file",
-                        description="在 workspace 内写入允许的文本项目文件。",
+                        description="在 workspace 内写入允许的文本项目文件，不能写 tests/（测试目录归测试节点）。",
                         parameters={
                             "type": "object",
                             "properties": {

@@ -33,6 +33,7 @@ ToolGateway
 |---|---|
 | `ToolDef` | 描述工具：name / description / parameters |
 | `ToolSetSource` | 承载本地 ToolSet，保存 `ToolDef -> Callable` 映射 |
+| `ExecutionToolSetSource` | 承载需要可信执行身份的本地工具，系统注入 `ExecutionContext` |
 | 动态 `ToolSource` | 未来通过可注入的 MCP client 发现和调用远端工具 |
 | `ToolCatalog` | 保存工具声明与其注册上下文 |
 | `ToolAccessPolicy` | 判断工具是否可以向 Agent 暴露 |
@@ -50,12 +51,14 @@ ToolGateway
 
 ## CrewAI 边界
 
-`ToolGateway.tools_for(domain)` 的输出是 `list[BaseTool]`。每个适配工具在 CrewAI 完成参数校验后，直接调用原始 `ToolSource.execute(name, arguments)`：
+`ToolGateway.tools_for(domain, context=...)` 的输出是 `list[BaseTool]`。每个适配工具在 CrewAI 完成参数校验后，直接调用原始 `ToolSource.execute(name, arguments, context=...)`：
 
 ```text
 ToolDef JSON Schema -> Pydantic args_schema -> CrewAI BaseTool.run()
                                               -> ToolSource.execute()
 ```
+
+`context` 只能由 GraphRunner 创建和绑定，不属于 JSON Schema。普通 `ToolSetSource` 忽略它；`ExecutionToolSetSource` 拒绝缺少它的调用，用于 Sandbox evidence 等必须追溯到 Trace 和 WorkItem 的动作。
 
 因此 ProjectOS 不再维护 `list_tools()`、`call()`、参数 JSON 解析或 tool-calling loop。Gateway 会在 `BaseTool` 实际执行时复查 source 授权，避免已撤销的 MCP 工具对象继续调用远端。当前系统不提供宿主机 Shell 入口；生成项目的执行只能经由 Sandbox。
 

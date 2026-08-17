@@ -6,6 +6,7 @@ from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import MCPToolSource
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.runner import GraphRunner, GraphRunStatus
+from app.execution_context import ExecutionContext
 from app.workflow.template import (
     TaskBlueprint,
     WorkflowTemplate,
@@ -24,8 +25,11 @@ class FakeAgent:
         self._result = result
         self.tasks: list[str] = []
 
-    def run(self, task: str) -> AgentResult:
+    def run(
+        self, task: str, *, context: ExecutionContext | None = None
+    ) -> AgentResult:
         self.tasks.append(task)
+        self.context = context
         if isinstance(self._result, Exception):
             raise self._result
         return self._result
@@ -149,6 +153,9 @@ class GraphRunnerTest(unittest.TestCase):
         self.assertIn("可用前置产物", second_agents[0].tasks[0])
         self.assertIn("- requirement_draft", second_agents[0].tasks[0])
         self.assertNotIn("需求草稿", second_agents[0].tasks[0])
+        self.assertEqual(second_agents[0].context.trace_id, plan.trace.trace_id)
+        self.assertEqual(second_agents[0].context.work_item_id, "architecture")
+        self.assertEqual(second_agents[0].context.agent_id, "architecture_agent")
         self.assertEqual(len(first_agents), 1)
 
     def test_runner_fails_for_an_unregistered_agent(self) -> None:

@@ -6,10 +6,7 @@ from app.artifact.store import ArtifactStore
 from app.domain.architecture.service import ArchitectureService
 from app.domain.bootstrap.service import BootstrapService
 from app.domain.code.service import CodeService
-from app.domain.requirement.service import (
-    RequirementDocument,
-    RequirementService,
-)
+from app.domain.requirement.service import RequirementService
 from app.domain.requirement.tools import RequirementToolSet
 from app.domain.review.service import ReviewService
 from app.domain.task.service import TaskService
@@ -26,6 +23,7 @@ class DomainServiceTest(unittest.TestCase):
         self.store.save("tasks", "# Tasks")
         self.store.save("implementation", "# Implementation")
         self.store.save("tests", "# Tests")
+        self.store.save("environment", "# Environment")
 
     def tearDown(self) -> None:
         self._directory.cleanup()
@@ -35,11 +33,11 @@ class DomainServiceTest(unittest.TestCase):
         service = RequirementService(self.project_path)
         tools = RequirementToolSet(service)
 
-        self.assertEqual(tools.load_requirement(), "（尚未创建需求文档）")
+        self.assertEqual(tools.load_requirement(), "（尚未创建 requirement.md）")
         self.assertEqual(
-            tools.save_requirement("# New requirement"), "需求文档已保存"
+            tools.save_requirement("# New requirement"), "已保存 requirement.md"
         )
-        self.assertEqual(service.load(), RequirementDocument("# New requirement"))
+        self.assertEqual(service.load_requirement(), "# New requirement")
 
     def test_architecture_and_task_services_enforce_their_artifact_contracts(self) -> None:
         architecture = ArchitectureService(self.project_path)
@@ -65,6 +63,11 @@ class DomainServiceTest(unittest.TestCase):
         self.assertIn("VALUE = 1", review.read_workspace_file("src/app.py"))
         with self.assertRaises(PermissionError):
             test.write_test_file("src/app.py", "VALUE = 2\n")
+        with self.assertRaises(PermissionError):
+            code.write_workspace_file("tests/planted.py", "x = 1\n")
+        self.assertEqual(code.load_artifact("environment"), "# Environment")
+        self.assertEqual(test.load_artifact("environment"), "# Environment")
+        self.assertEqual(review.load_artifact("environment"), "# Environment")
         self.assertEqual(review.save_review("# Review"), "已保存 review.md")
         self.assertEqual(
             (Path(self.project_path) / "review.md").read_text(encoding="utf-8"),
