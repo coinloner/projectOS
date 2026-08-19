@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from app.artifact.repository import ArtifactRef
+from app.execution_context import ExecutionMode
+from app.orchestration.retry import FailurePackage
+
 
 class DependencySource(str, Enum):
     SYSTEM = "system"
@@ -35,15 +39,28 @@ class WorkItem:
     agent_id: str
     objective: str
     output_key: str
+    artifact_key: str | None = None
+    failure_package: FailurePackage | None = None
     dependencies: tuple[WorkItemDependency, ...] = ()
     acceptance_criteria: tuple[str, ...] = ()
+    constraints: tuple[str, ...] = ()
+    non_goals: tuple[str, ...] = ()
     policy_id: str | None = None
+    execution_mode: ExecutionMode = ExecutionMode.EXCLUSIVE
+    input_refs: tuple[ArtifactRef, ...] = ()
+    output_slot: str | None = None
+    publish_target: str | None = None
+    candidate_from_work_item_id: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("id", "agent_id", "objective", "output_key"):
             value = getattr(self, field_name)
             if not value or not value.strip():
                 raise ValueError(f"WorkItem.{field_name} 不能为空")
+        if self.artifact_key is None:
+            object.__setattr__(self, "artifact_key", self.output_key)
+        elif not self.artifact_key.strip():
+            raise ValueError("WorkItem.artifact_key 不能为空")
         if self.policy_id is not None and not self.policy_id.strip():
             raise ValueError("WorkItem.policy_id 不能是空字符串")
         dependency_ids = self.dependency_ids
@@ -53,7 +70,36 @@ class WorkItem:
             raise ValueError(f"WorkItem '{self.id}' 不能依赖自身")
         if any(not criterion.strip() for criterion in self.acceptance_criteria):
             raise ValueError("WorkItem.acceptance_criteria 不能包含空字符串")
+        if any(not constraint.strip() for constraint in self.constraints):
+            raise ValueError("WorkItem.constraints 不能包含空字符串")
+        if any(not non_goal.strip() for non_goal in self.non_goals):
+            raise ValueError("WorkItem.non_goals 不能包含空字符串")
+        self._validate_execution_grant()
 
     @property
     def dependency_ids(self) -> tuple[str, ...]:
         return tuple(dependency.work_item_id for dependency in self.dependencies)
+
+    def _validate_execution_grant(self) -> None:
+        if self.execution_mode is ExecutionMode.PARTITIONED:
+            if not self.output_slot or not self.output_slot.strip():
+                raise ValueError("PARTITIONED WorkItem 必须指定 output_slot")
+            if self.publish_target is not None or self.candidate_from_work_item_id is not None:
+                raise ValueError("PARTITIONED WorkItem 不能携带发布授权")
+            return
+        if self.execution_mode is ExecutionMode.INTEGRATION:
+            if not self.publish_target or not self.publish_target.strip():
+                raise ValueError("INTEGRATION WorkItem 必须指定 publish_target")
+            if self.output_slot is not None or self.candidate_from_work_item_id is not None:
+                raise ValueError("INTEGRATION WorkItem 不能携带暂存或质量门授权")
+            return
+        if self.execution_mode is ExecutionMode.QUALITY_GATE:
+            if not self.publish_target or not self.publish_target.strip():
+                raise ValueError("QUALITY_GATE WorkItem 必须指定 publish_target")
+            if not self.candidate_from_work_item_id or not self.candidate_from_work_item_id.strip():
+                raise ValueError("QUALITY_GATE WorkItem 必须指定候选来源工作项")
+            if self.output_slot is not None:
+                raise ValueError("QUALITY_GATE WorkItem 不能携带暂存 slot")
+            return
+        if any(value is not None for value in (self.output_slot, self.publish_target, self.candidate_from_work_item_id)):
+            raise ValueError("EXCLUSIVE WorkItem 不能携带分区、集成或发布授权")

@@ -31,13 +31,14 @@ ExecutionContext <- GraphRunner -> ToolGateway -> ExecutionToolSetSource
 |---|---|---|---|
 | requirement | `requirement.md` | 无前置 artifact | 保存、加载需求 |
 | architecture | `architecture.md` | requirement | 保存架构文档 |
-| task | `tasks.md` | requirement、architecture | 保存任务清单 |
+| task | `tasks.md` | 受信 requirement、architecture 引用 | 暂存任务决策包，创建候选并由质量门发布 |
 | bootstrap | `environment.md`、`runtime.yaml`、可选 `requirements.in` | requirement、architecture、tasks | 声明 profile 和依赖意图；不安装、不联网 |
-| code | `implementation.md`、`workspace/` 源文件 | requirement、architecture、tasks、runtime 状态 | 读写允许的 workspace 文件；不运行命令 |
+| code | `implementation.md`、Git ChangeSet、`workspace/` 源文件 | requirement、architecture、tasks、runtime 状态 | 分区写入 task worktree；Integration 受控三方合并并发布；不运行命令 |
 | test | `tests.md`、`workspace/tests/`、SandboxEvidence | requirement、tasks、environment、implementation | 写测试；请求固定 sandbox `unit` check 并记录证据 |
 | review | `review.md` | requirement、architecture、tasks、environment、implementation、tests、runtime 状态、workspace、当前 Trace evidence | 只读审查并保存报告 |
 
-`TaskAgent` 的当前职责是生成给人和后续 Agent 使用的 `tasks.md`。它会在下一个闭环阶段被 `WorkItem` 控制面逐步替代；Planner 才是任务拆分与状态推进的最终所有者。
+`TaskAgent` 生成给人和后续 Agent 使用的 `tasks.md`，但不拥有根目录发布权限。它必须走
+`PARTITIONED -> INTEGRATION -> QUALITY_GATE` 产物链路；Planner 才是任务拆分与状态推进的最终所有者。
 
 ## 工具路径
 
@@ -72,6 +73,10 @@ projects/<project>/
   .sandbox/wheels/<digest>/    仅 DependencyResolver 写入的依赖缓存
   .projectos/                  ProjectOS 私有 Trace、计划、事件、执行证据和需求修订
 ```
+
+Code 并行交付额外使用 `.projectos/worktrees/` 保存受控 task/integration worktree，
+并在 `.projectos/runs/<trace_id>/git/` 保存 baseline 与 ChangeSet 元数据。正式
+`workspace/` 只由 Integration 控制面发布 Git 提交中的变更，分区 Agent 不直接写入。
 
 ## 运行时与安全边界
 

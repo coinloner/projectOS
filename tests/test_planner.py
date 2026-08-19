@@ -9,9 +9,31 @@ from app.planner.draft import PlanDraft
 from app.planner.service import PlannerFailure, PlannerService
 from app.planner.validator import PlanValidationError, PlanValidator
 from app.workflow.template import (
+    TaskBlueprint,
+    WorkflowTemplate,
     WorkflowTemplateRegistry,
 )
-from app.workflow.templates import project_delivery_template
+def planning_template() -> WorkflowTemplate:
+    return WorkflowTemplate(
+        id="planning_baseline",
+        name="规划基线",
+        description="普通 Planner 依赖测试模板",
+        nodes=(
+            TaskBlueprint(
+                id="requirement",
+                agent_id="requirement_agent",
+                objective="整理需求",
+                output_key="requirement",
+            ),
+            TaskBlueprint(
+                id="architecture",
+                agent_id="architecture_agent",
+                objective="设计架构",
+                output_key="architecture",
+                depends_on=("requirement",),
+            ),
+        ),
+    )
 from app.orchestration.work_item import DependencySource
 
 
@@ -50,7 +72,7 @@ def build_agents() -> AgentRegistry:
 
 def build_templates() -> WorkflowTemplateRegistry:
     registry = WorkflowTemplateRegistry()
-    registry.register(project_delivery_template())
+    registry.register(planning_template())
     return registry
 
 
@@ -72,7 +94,7 @@ class PlanningContextTest(unittest.TestCase):
         prompt_json = context.as_prompt_json()
         self.assertNotIn("secret requirement content", prompt_json)
         self.assertIn('"output_key": "architecture"', prompt_json)
-        self.assertIn('"id": "project_delivery"', prompt_json)
+        self.assertIn('"id": "planning_baseline"', prompt_json)
         self.assertIn('"implementation_file_count": 0', prompt_json)
         self.assertIn('"manifest_exists": false', prompt_json)
 
@@ -102,6 +124,34 @@ class PlanningContextTest(unittest.TestCase):
 
 
 class PlanValidatorTest(unittest.TestCase):
+    def test_validator_allows_repeated_agent_with_distinct_work_item_results(self) -> None:
+        draft = PlanDraft.parse(
+            """{
+                "rationale": "将需求拆成独立的初稿和补充",
+                "steps": [
+                    {"ref": "draft", "agent_id": "requirement_agent", "objective": "整理核心需求"},
+                    {"ref": "refine", "agent_id": "requirement_agent", "objective": "补充边界条件", "depends_on": ["draft"]}
+                ]
+            }"""
+        )
+
+        plan = self.validator.validate(draft, context=self.context, plan_id="repeat")
+
+        self.assertEqual(
+            [item.agent_id for item in plan.work_items],
+            ["requirement_agent", "requirement_agent"],
+        )
+        self.assertEqual(
+            [item.output_key for item in plan.work_items],
+            ["requirement_01", "requirement_02"],
+        )
+        self.assertEqual(
+            [item.artifact_key for item in plan.work_items],
+            ["requirement", "requirement"],
+        )
+        self.assertEqual(
+            plan.work_items[1].dependency_ids, (plan.work_items[0].id,)
+        )
     def setUp(self) -> None:
         self._directory = tempfile.TemporaryDirectory()
         self.context = PlanningContext.build(
@@ -119,7 +169,7 @@ class PlanValidatorTest(unittest.TestCase):
         draft = PlanDraft.model_validate(
             {
                 "rationale": "需要先定义需求再设计架构",
-                "template_hint_id": "project_delivery",
+                "template_hint_id": "planning_baseline",
                 "steps": [
                     {
                         "ref": "requirement",
@@ -248,7 +298,7 @@ class PlanValidatorTest(unittest.TestCase):
         draft = PlanDraft.model_validate(
             {
                 "rationale": "架构探索与需求文档可并行进行",
-                "template_hint_id": "project_delivery",
+                "template_hint_id": "planning_baseline",
                 "template_dependency_overrides": [
                     {
                         "predecessor_agent_id": "requirement_agent",
@@ -362,6 +412,41 @@ class PlannerServiceTest(unittest.TestCase):
 
         with self.assertRaisesRegex(PlannerFailure, "修复后"):
             service.plan(goal="test", plan_id="invalid")
+
+    def test_planner_creates_a_new_plan_for_a_trusted_failure_signal(self) -> None:
+        runtime = FakePlannerRuntime(
+            [
+                '{"rationale": "初始", "steps": [{"ref": "requirement", "agent_id": "requirement_agent", "objective": "整理需求"}]}',
+                '{"rationale": "准备环境、修复并重跑验证", "steps": [{"ref": "bootstrap", "agent_id": "bootstrap_agent", "objective": "准备受控运行时"}, {"ref": "fix", "agent_id": "code_agent", "objective": "修复失败原因", "depends_on": ["bootstrap"]}, {"ref": "verify", "agent_id": "test_agent", "objective": "重新验证修复", "depends_on": ["fix"]}]}',
+            ]
+        )
+        service = PlannerService(
+            runtime=runtime,
+            agents=self.agents,
+            templates=self.templates,
+            artifacts=self.artifacts,
+        )
+        initial = service.plan(goal="测试", plan_id="initial")
+
+        from app.orchestration.retry import FailureKind, FailureSignal
+
+        repair = service.plan_repair(
+            previous_plan=initial.plan,
+            failure=FailureSignal(FailureKind.TEST_FAILURE, "assertion failed", "ev-1"),
+            plan_id="initial-repair-1",
+        )
+
+        self.assertEqual(repair.plan.trace, initial.plan.trace)
+        self.assertEqual(repair.plan.id, "initial-repair-1")
+        self.assertEqual(
+            [item.agent_id for item in repair.plan.work_items],
+            ["bootstrap_agent", "code_agent", "test_agent"],
+        )
+        self.assertIsNone(repair.plan.work_items[0].failure_package)
+        self.assertEqual(
+            repair.plan.work_items[1].failure_package.signal.evidence_id, "ev-1"
+        )
+        self.assertIn("可信控制面数据", runtime.prompts[1])
 
 
 if __name__ == "__main__":

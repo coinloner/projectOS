@@ -5,9 +5,11 @@ from app.workflow.template import (
     WorkflowTemplate,
     WorkflowTemplateRegistry,
 )
+from app.workflow.compiler import TemplateCompiler
 
 __all__ = [
     "TaskBlueprint",
     "WorkflowTemplate",
     "WorkflowTemplateRegistry",
+    "TemplateCompiler",
 ]

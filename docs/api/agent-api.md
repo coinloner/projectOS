@@ -52,4 +52,6 @@ TestAgent(gateway: ToolGateway)
 ReviewAgent(gateway: ToolGateway)
 ```
 
-它们均继承 `BaseAgent.run(task) -> AgentResult`，差异只在 domain、CrewAI 角色提示和最大迭代数。具体可用工具见 [Domain API](domain-api.md)。
+它们均继承 `BaseAgent.run(task) -> AgentResult`，差异只在 domain、CrewAI 角色提示和最大迭代数。
+TaskAgent 的任务产物遵循 `PARTITIONED -> INTEGRATION -> QUALITY_GATE` 标准执行方式，不再提供
+旧的 `load_artifact/save_tasks` 独占工具。具体可用工具见 [Domain API](domain-api.md)。

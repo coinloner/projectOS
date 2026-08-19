@@ -55,6 +55,24 @@ class SubprocessDockerExecutor:
         )
 
 
+def ensure_image_available(
+    executor: DockerExecutor, image: str, *, timeout_seconds: int = 10
+) -> CommandResult:
+    """确认受信任镜像存在；兼容 Docker Desktop 的 inspect 标签异常。"""
+    inspected = executor.run(
+        ["docker", "image", "inspect", image], timeout_seconds=timeout_seconds
+    )
+    if inspected.exit_code == 0:
+        return inspected
+    listed = executor.run(
+        ["docker", "image", "ls", "--format={{.Repository}}:{{.Tag}}", image],
+        timeout_seconds=timeout_seconds,
+    )
+    if listed.exit_code == 0 and image in listed.stdout.splitlines():
+        return CommandResult(exit_code=0, stdout=listed.stdout)
+    return listed if listed.exit_code != 0 else inspected
+
+
 class DockerSandboxProvider:
     """以固定 Docker 安全参数运行已获批准的 SandboxSpec。"""
 
@@ -63,10 +81,7 @@ class DockerSandboxProvider:
 
     def run_check(self, spec: SandboxSpec) -> SandboxResult:
         started = time.monotonic()
-        image_check = self._executor.run(
-            ["docker", "image", "inspect", spec.profile.image],
-            timeout_seconds=10,
-        )
+        image_check = ensure_image_available(self._executor, spec.profile.image)
         if image_check.exit_code != 0:
             return self._result(
                 spec,

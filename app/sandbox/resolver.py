@@ -9,7 +9,11 @@ from pathlib import Path
 import tempfile
 
 from app.runtime.manifest import RuntimeCatalog, RuntimeManifest
-from app.sandbox.docker_provider import DockerExecutor, SubprocessDockerExecutor
+from app.sandbox.docker_provider import (
+    DockerExecutor,
+    SubprocessDockerExecutor,
+    ensure_image_available,
+)
 
 
 @dataclass(frozen=True)
@@ -49,9 +53,7 @@ class DockerDependencyResolver:
         digest = hashlib.sha256(dependencies.read_bytes()).hexdigest()
         cache = root / ".sandbox" / "wheels" / digest
         cache.mkdir(parents=True, exist_ok=True)
-        image_check = self._executor.run(
-            ["docker", "image", "inspect", profile.image], timeout_seconds=10
-        )
+        image_check = ensure_image_available(self._executor, profile.image)
         if image_check.exit_code != 0:
             return DependencyResolutionResult(
                 ok=False,

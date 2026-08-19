@@ -2,7 +2,9 @@
 
 ## 概述
 
-Sandbox 用于执行 Agent 生成的项目代码。Agent 只能请求固定 check，不能获得 Docker Socket、宿主机 shell、容器镜像名、挂载路径或网络策略。
+Sandbox 用于执行和运行 Agent 生成的项目代码。Agent 只能请求固定 check，不能获得 Docker Socket、宿主机 shell、容器镜像名、挂载路径或网络策略。
+
+应用启动由 `DockerApplicationRunner` 统一执行。它只接受项目路径，应用服务的镜像、命令、端口、挂载和权限由 `ApplicationCatalog` 固定定义；HTTP 层和 Agent 都不能覆盖这些字段。
 
 ## 执行链路
 
@@ -36,6 +38,8 @@ RuntimeManifest -> SandboxPolicy -> SandboxSpec -> DockerSandboxProvider
 
 证据文件位于 `.projectos/runs/<trace_id>/evidence/<evidence_id>.json`，记录生成它的 WorkItem 和 Agent。工具返回值保留 `evidence_id` 与可读摘要，`tests.md` 是人读报告而非结果真相来源；Review 可读取同一 Trace 的原始证据。
 
-测试失败仍不会自动触发 Planner 修复。下一阶段只需在已有证据基础上接入重试次数、PlanPatch 和终态状态机。
+测试失败会触发 `needs_replan`，主入口最多请求两轮 Repair Plan。更完整的跨进程恢复、持久化预算和可变 DAG 状态机仍未实现。
+
+Test WorkItem 的完成还要求至少存在一条由当前 WorkItem 产生的 `SandboxEvidence`。没有证据时，Runner 只进行有限重跑，之后以 `test_evidence_missing` 失败，而不会接受 LLM 的文字声明。
 
 `python-pip` 的 Resolver 已实现依赖格式校验和 wheel cache 准备；“请求所有者批准、解析依赖并恢复 GraphRunner”的流程尚未实现。Agent 不能自动触发这个网络阶段。

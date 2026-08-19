@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from app.agent.result import AgentResult, AgentStatus, CapabilityRequest
+from app.orchestration.retry import FailureSignal
 
 
 class NodeStatus(str, Enum):
@@ -13,6 +14,7 @@ class NodeStatus(str, Enum):
 
     COMPLETED = "completed"
     NEEDS_CAPABILITY = "needs_capability"
+    NEEDS_REPLAN = "needs_replan"
     FAILED = "failed"
 
 
@@ -29,6 +31,7 @@ class NodeResult:
     status: NodeStatus
     content: str | None = None
     capability_request: CapabilityRequest | None = None
+    failure_signal: FailureSignal | None = None
     error: str | None = None
 
     @classmethod
@@ -66,4 +69,24 @@ class NodeResult:
             agent_id=agent_id,
             status=NodeStatus.FAILED,
             error=error,
+        )
+
+    @classmethod
+    def completed(cls, *, node_id: str, agent_id: str, content: str) -> NodeResult:
+        return cls(
+            node_id=node_id,
+            agent_id=agent_id,
+            status=NodeStatus.COMPLETED,
+            content=content,
+        )
+
+    @classmethod
+    def needs_replan(
+        cls, *, node_id: str, agent_id: str, signal: FailureSignal
+    ) -> NodeResult:
+        return cls(
+            node_id=node_id,
+            agent_id=agent_id,
+            status=NodeStatus.NEEDS_REPLAN,
+            failure_signal=signal,
         )

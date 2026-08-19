@@ -5,7 +5,7 @@ from crewai.tools import BaseTool
 from app.tool_manager.catalog import SourceRegistration, ToolCatalog
 from app.tool_manager.access_policy import ToolAccessPolicy
 from app.tool_manager.crewai_adapter import ProjectOSTool
-from app.tool_manager.source import ToolExposure, ToolSource
+from app.tool_manager.source import ToolDef, ToolExposure, ToolSource
 from app.execution_context import ExecutionContext
 
 
@@ -87,6 +87,7 @@ class ToolGateway:
             )
             for registration in registrations
             if self._policy.is_visible(registration)
+            and _visible_in_execution_context(registration.definition, context)
         ]
 
     def find_sources_for_capability(
@@ -106,3 +107,12 @@ class ToolGateway:
     def deactivate_external(self, domain: str) -> None:
         for source_name in self._catalog.source_names(domain, dynamic_only=True):
             self.deactivate_source(domain, source_name)
+
+
+def _visible_in_execution_context(
+    definition: "ToolDef", context: ExecutionContext | None
+) -> bool:
+    """模式是 Runner 发放的可信授权，不是 LLM 可选择的工具参数。"""
+    if context is None or definition.execution_modes is None:
+        return True
+    return context.execution_mode.value in definition.execution_modes

@@ -3,13 +3,16 @@ import unittest
 from pathlib import Path
 
 from app.artifact.store import ArtifactStore
+from app.artifact.repository import ArtifactRef
 from app.domain.architecture.service import ArchitectureService
+from app.domain.architecture.service import ArchitectureArtifactWorkflow
+from app.execution_context import ExecutionContext, ExecutionMode
 from app.domain.bootstrap.service import BootstrapService
 from app.domain.code.service import CodeService
 from app.domain.requirement.service import RequirementService
 from app.domain.requirement.tools import RequirementToolSet
 from app.domain.review.service import ReviewService
-from app.domain.task.service import TaskService
+from app.domain.task.service import TaskArtifactWorkflow
 from app.domain.test.service import TestService
 
 
@@ -41,14 +44,35 @@ class DomainServiceTest(unittest.TestCase):
 
     def test_architecture_and_task_services_enforce_their_artifact_contracts(self) -> None:
         architecture = ArchitectureService(self.project_path)
-        task = TaskService(self.project_path)
+        task = TaskArtifactWorkflow(self.project_path)
 
         self.assertEqual(architecture.load_artifact("requirement"), "# Requirement")
         self.assertEqual(architecture.save_architecture("# Updated"), "已保存 architecture.md")
-        self.assertEqual(task.load_artifact("architecture"), "# Updated")
-        self.assertEqual(task.save_tasks("# Updated tasks"), "已保存 tasks.md")
+        context = ExecutionContext(
+            trace_id="tr-task",
+            work_item_id="tasks-plan",
+            agent_id="task_agent",
+            execution_mode=ExecutionMode.PARTITIONED,
+            input_refs=(ArtifactRef.published("architecture"),),
+            output_slot="plan",
+        )
+        self.assertEqual(
+            task.load_input(context, "published:architecture:current"), "# Updated"
+        )
+        self.assertIn("已写入任务暂存输出", task.write_staged(context, "# Updated tasks"))
         with self.assertRaises(PermissionError):
             architecture.load_artifact("tasks")
+
+    def test_architecture_staging_rejects_an_oversized_scope_package(self) -> None:
+        workflow = ArchitectureArtifactWorkflow(self.project_path)
+        context = ExecutionContext(
+            trace_id="tr-architecture", work_item_id="architecture-api",
+            agent_id="architecture_agent", execution_mode=ExecutionMode.PARTITIONED,
+            output_slot="api",
+        )
+
+        with self.assertRaisesRegex(ValueError, "字符上限"):
+            workflow.write_staged(context, "A" * 4201)
 
     def test_code_test_and_review_services_keep_distinct_workspace_permissions(self) -> None:
         code = CodeService(self.project_path)

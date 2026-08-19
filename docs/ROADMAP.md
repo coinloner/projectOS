@@ -12,6 +12,7 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 - GraphRunner 同步执行 WorkItem DAG、写入 Trace 计划/事件，并处理失败和外部能力缺口的暂停结果。
 - 七个 domain 已有受限本地 ToolSet，代码和测试可写入被生成项目的 `workspace/`。
 - Test 通过 `SandboxController` 运行固定 Docker 检查并持久化 `SandboxEvidence`；Review 可读取当前 Trace 的原始结果。
+- Trace 级 Memory 已记录目标、Planner/Agent/Tool 事件和 checkpoint；SQLite/FTS5、可选向量混合召回、运行摘要、预算化上下文组装以及 durable candidate 审批控制面已接入。
 - MCP、动态依赖解析和运行恢复都不会由 Agent 自动触发。
 
 ## MVP 闭环：下一阶段
@@ -31,7 +32,7 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 | 2 | 可配置且受控的 test discovery | 避免固定 `unittest tests/` 限制 |
 | 3 | MCP connector 与 source 审批恢复 | 扩展外部能力，同时保持最小权限 |
 | 4 | NodeQualityPolicy / QualityReport | 为节点产物添加可量化质量下限 |
-| 5 | Memory | 提供跨运行的上下文，而不污染当前计划状态 |
+| 5 | Memory | 受控跨 Trace 召回、摘要质量评估、断点恢复和归档；不改变 Policy/Artifact 的事实边界 |
 | 6 | Workflow 模板沉淀与选择 | 将常见项目交付经验变成 Planner 可参考资产 |
 | 7 | CLI / API / Dashboard | 把已有控制面变为可操作产品界面 |
 
@@ -40,6 +41,6 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 - 任意 Shell 工具或宿主机命令执行
 - Agent 自动联网安装依赖
 - Agent 自动批准 MCP、依赖或运行时权限
-- 并发图执行、跨进程计划恢复、跨项目长期记忆
+- 并发图执行、跨进程计划恢复、自动跨项目长期记忆
 
 这些能力会在执行证据、状态机和权限主体明确后逐步加入。

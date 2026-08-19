@@ -7,6 +7,8 @@ from pathlib import Path
 
 import yaml
 
+from app.runtime.application import ApplicationCatalog
+
 
 @dataclass(frozen=True)
 class RuntimeProfile:
@@ -71,6 +73,7 @@ class RuntimeManifest:
     version: int
     profile: str
     dependencies_file: str | None = None
+    application: str | None = None
 
     FILENAME = "runtime.yaml"
 
@@ -89,33 +92,43 @@ class RuntimeManifest:
     def from_dict(cls, payload: object) -> "RuntimeManifest":
         if not isinstance(payload, dict):
             raise ValueError("runtime.yaml 必须是 object")
-        allowed = {"version", "profile", "dependencies_file"}
+        allowed = {"version", "profile", "dependencies_file", "application"}
         unknown = set(payload) - allowed
         if unknown:
             raise ValueError(f"runtime.yaml 包含未知字段: {', '.join(sorted(unknown))}")
         version = payload.get("version")
         profile = payload.get("profile")
         dependencies_file = payload.get("dependencies_file")
+        application = payload.get("application")
         if version != 1:
             raise ValueError("runtime.yaml.version 当前必须为 1")
         if not isinstance(profile, str) or not profile.strip():
             raise ValueError("runtime.yaml.profile 必须是非空字符串")
         if dependencies_file is not None and dependencies_file != "requirements.in":
             raise ValueError("当前只允许 dependencies_file: requirements.in")
+        if application is not None and (
+            not isinstance(application, str) or not application.strip()
+        ):
+            raise ValueError("runtime.yaml.application 必须是非空字符串")
         manifest = cls(
             version=version,
             profile=profile.strip(),
             dependencies_file=dependencies_file,
+            application=application.strip() if application else None,
         )
         runtime_profile = RuntimeCatalog.get(manifest.profile)
         if manifest.dependencies_file and not runtime_profile.supports_dependencies:
             raise ValueError(f"profile '{manifest.profile}' 不支持第三方依赖")
+        if manifest.application:
+            ApplicationCatalog.get(manifest.application)
         return manifest
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {"version": self.version, "profile": self.profile}
         if self.dependencies_file is not None:
             payload["dependencies_file"] = self.dependencies_file
+        if self.application is not None:
+            payload["application"] = self.application
         return payload
 
     def save(self, project_path: str) -> None:

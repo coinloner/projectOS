@@ -24,7 +24,7 @@ GraphRunner -> AgentRegistry -> BaseAgent -> ToolGateway -> CrewAI Agent + Task
 |---|---|---|---|
 | `RequirementAgent` | requirement | `requirement.md` | 需求文档读写 |
 | `ArchitectureAgent` | architecture | `architecture.md` | 读取 requirement，写架构文档 |
-| `TaskAgent` | task | `tasks.md` | 读取 requirement/architecture，写任务清单 |
+| `TaskAgent` | task | `tasks.md` | 读取授权 ArtifactRef，写任务暂存并创建候选；不能直接发布 |
 | `BootstrapAgent` | bootstrap | `environment.md`、runtime 声明 | 只能声明 profile/依赖，不能安装或运行 Docker |
 | `CodeAgent` | code | `workspace/`、`implementation.md` | 读前置 artifact，受限读写 workspace；不能执行命令 |
 | `TestAgent` | test | `workspace/tests/`、`tests.md`、SandboxEvidence | 写测试，只能请求固定 sandbox check；原始结果由系统记录 |

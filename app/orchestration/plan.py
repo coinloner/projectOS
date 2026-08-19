@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from app.orchestration.trace import TraceContext
 from app.orchestration.work_item import WorkItem
+from app.execution_context import ExecutionMode
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,13 @@ class ExecutionPlan:
                 names = ", ".join(sorted(unknown_dependencies))
                 raise ValueError(
                     f"WorkItem '{item.id}' 依赖不存在的工作项: {names}"
+                )
+            if (
+                item.execution_mode is ExecutionMode.QUALITY_GATE
+                and item.candidate_from_work_item_id not in item.dependency_ids
+            ):
+                raise ValueError(
+                    f"QUALITY_GATE WorkItem '{item.id}' 必须依赖候选来源工作项"
                 )
 
         self._ensure_acyclic()

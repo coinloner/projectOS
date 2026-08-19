@@ -30,12 +30,18 @@ class AgentDefinition:
     domain: str
     description: str
     output_key: str
+    max_parallel_instances: int = 1
+    artifact_key: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("id", "domain", "description", "output_key"):
             value = getattr(self, field_name)
             if not value or not value.strip():
                 raise ValueError(f"AgentDefinition.{field_name} 不能为空")
+        if self.max_parallel_instances < 1:
+            raise ValueError("AgentDefinition.max_parallel_instances 至少为 1")
+        if self.artifact_key is not None and not self.artifact_key.strip():
+            raise ValueError("AgentDefinition.artifact_key 不能是空字符串")
 
 
 class AgentRegistry:

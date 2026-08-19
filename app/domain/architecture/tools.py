@@ -1,8 +1,8 @@
 """ArchitectureAgent 的工具合同。"""
 
-from app.domain.architecture.service import ArchitectureService
+from app.domain.architecture.service import ArchitectureArtifactWorkflow, ArchitectureService
 from app.tool_manager.gateway import ToolGateway
-from app.tool_manager.source import ToolDef, ToolSetSource
+from app.tool_manager.source import ExecutionToolSetSource, ToolDef, ToolSetSource
 
 
 class ArchitectureToolSet:
@@ -19,7 +19,7 @@ class ArchitectureToolSet:
 
 
 def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None:
-    """架构节点只能读取需求，并写入 architecture.md。"""
+    """注册兼容的独占工具和新分区/集成工具。"""
     tools = ArchitectureToolSet(ArchitectureService(project_path))
     gateway.register_toolset(
         domain="architecture",
@@ -40,6 +40,7 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                             },
                             "required": ["artifact"],
                         },
+                        execution_modes=("exclusive",),
                     ),
                     tools.load_artifact,
                 ),
@@ -54,8 +55,62 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                             },
                             "required": ["content"],
                         },
+                        execution_modes=("exclusive",),
                     ),
                     tools.save_architecture,
+                ),
+            ]
+        ),
+    )
+    workflow = ArchitectureArtifactWorkflow(project_path)
+    gateway.register_toolset(
+        domain="architecture",
+        name="artifact_workflow",
+        toolset=ExecutionToolSetSource(
+            [
+                (
+                    ToolDef(
+                        name="load_architecture_input",
+                        description="读取当前工作项已授权的冻结产物引用。",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "ref_id": {"type": "string", "description": "任务中列出的产物引用"}
+                            },
+                            "required": ["ref_id"],
+                            "additionalProperties": False,
+                        },
+                        execution_modes=("partitioned", "integration"),
+                    ),
+                    workflow.load_input,
+                ),
+                (
+                    ToolDef(
+                        name="write_staged_architecture",
+                        description="将完整架构 Markdown 写入本工作项唯一的暂存 slot，不会发布。",
+                        parameters={
+                            "type": "object",
+                            "properties": {"content": {"type": "string", "description": "完整 Markdown 内容"}},
+                            "required": ["content"],
+                            "additionalProperties": False,
+                        },
+                        execution_modes=("partitioned",),
+                    ),
+                    workflow.write_staged,
+                ),
+                (
+                    ToolDef(
+                        name="create_architecture_candidate",
+                        description="基于当前已授权暂存输出创建架构候选版本，不会直接发布。",
+                        parameters={
+                            "type": "object",
+                            "properties": {"content": {"type": "string", "description": "整合后的完整 Markdown 内容"}},
+                            "required": ["content"],
+                            "additionalProperties": False,
+                        },
+                        execution_modes=("integration",),
+                    ),
+                    workflow.create_candidate,
                 ),
             ]
         ),

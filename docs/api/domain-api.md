@@ -27,7 +27,7 @@ RequirementService.load_requirement() -> str
 | Domain | 对 Agent 暴露的工具 |
 |---|---|
 | architecture | `load_artifact(artifact)`、`save_architecture(content)` |
-| task | `load_artifact(artifact)`、`save_tasks(content)` |
+| task | `load_task_input(ref_id)`、`write_staged_tasks(content)`、`create_tasks_candidate(content)` |
 | bootstrap | `load_artifact(artifact)`、`configure_runtime(profile, dependencies="")`、`inspect_runtime()`、`save_environment(content)` |
 | code | `load_artifact(artifact)`、`save_implementation(content)`、`list_workspace_files()`、`read_workspace_file(path)`、`write_workspace_file(path, content)`、`inspect_runtime()` |
 | test | `load_artifact(artifact)`、`save_tests(content)`、`list_workspace_files()`、`read_workspace_file(path)`、`write_test_file(path, content)`、`run_sandbox_check()` |
@@ -35,7 +35,8 @@ RequirementService.load_requirement() -> str
 
 ### 领域限制
 
-- `load_artifact()` 只能读取构造时配置的 artifact key；越权 key 返回错误文本。
+- Task 的输入工具只能读取当前 `ExecutionContext.input_refs` 中列出的 `ref_id`；暂存写入和候选创建
+  也分别要求 `PARTITIONED`、`INTEGRATION` 执行模式，不能绕过质量门发布。
 - `write_workspace_file()` 只能在 `workspace/` 内写入允许的文本文件，且不能写 `tests/`（测试目录归测试节点）。
 - `write_test_file()` 只能写 `workspace/tests/`。
 - `run_sandbox_check()` 不接收命令参数，固定请求 `SandboxController.run_check(project_path, "unit")`，并由系统绑定的 `ExecutionContext` 将结果持久化为当前 Trace 的 `SandboxEvidence`。

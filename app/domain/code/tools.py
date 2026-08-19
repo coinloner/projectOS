@@ -1,8 +1,8 @@
 """CodeAgent 的工具合同。"""
 
-from app.domain.code.service import CodeService
+from app.domain.code.service import CodeService, CodeStagingService
 from app.tool_manager.gateway import ToolGateway
-from app.tool_manager.source import ToolDef, ToolSetSource
+from app.tool_manager.source import ExecutionToolSetSource, ToolDef, ToolSetSource
 
 
 class CodeToolSet:
@@ -47,6 +47,7 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                             "properties": {"artifact": {"type": "string", "description": "前置产物标识"}},
                             "required": ["artifact"],
                         },
+                        execution_modes=("exclusive",),
                     ),
                     tools.load_artifact,
                 ),
@@ -59,6 +60,7 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                             "properties": {"content": {"type": "string", "description": "完整 Markdown 内容"}},
                             "required": ["content"],
                         },
+                        execution_modes=("exclusive",),
                     ),
                     tools.save_implementation,
                 ),
@@ -75,6 +77,7 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                         name="list_workspace_files",
                         description="列出 workspace 中允许访问的项目文件。",
                         parameters={"type": "object", "properties": {}},
+                        execution_modes=("exclusive",),
                     ),
                     tools.list_workspace_files,
                 ),
@@ -87,6 +90,7 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                             "properties": {"path": {"type": "string", "description": "workspace 相对路径"}},
                             "required": ["path"],
                         },
+                        execution_modes=("exclusive",),
                     ),
                     tools.read_workspace_file,
                 ),
@@ -102,6 +106,7 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                             },
                             "required": ["path", "content"],
                         },
+                        execution_modes=("exclusive",),
                     ),
                     tools.write_workspace_file,
                 ),
@@ -110,8 +115,51 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                         name="inspect_runtime",
                         description="读取当前项目 runtime、依赖缓存和 sandbox 可执行状态摘要。",
                         parameters={"type": "object", "properties": {}},
+                        execution_modes=("exclusive",),
                     ),
                     tools.inspect_runtime,
+                ),
+            ]
+        ),
+    )
+    staging = CodeStagingService(project_path)
+    gateway.register_toolset(
+        domain="code",
+        name="staging",
+        toolset=ExecutionToolSetSource(
+            [
+                (
+                    ToolDef(
+                        name="load_code_input",
+                        description="读取当前代码分区已授权的需求、架构、任务或环境引用。",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "ref_id": {"type": "string", "description": "任务上下文列出的输入引用"}
+                            },
+                            "required": ["ref_id"],
+                            "additionalProperties": False,
+                        },
+                        execution_modes=("partitioned",),
+                    ),
+                    staging.load_input,
+                ),
+                (
+                    ToolDef(
+                        name="write_staged_code_file",
+                        description="将代码写入当前分区专属 Git worktree 并提交 ChangeSet；不能写入正式 workspace。",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "当前分区允许的相对路径"},
+                                "content": {"type": "string", "description": "完整文件内容"},
+                            },
+                            "required": ["path", "content"],
+                            "additionalProperties": False,
+                        },
+                        execution_modes=("partitioned",),
+                    ),
+                    staging.write_staged_file,
                 ),
             ]
         ),

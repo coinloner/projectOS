@@ -16,11 +16,13 @@ class DependencyPolicy:
         *,
         draft: PlanDraft,
         context: PlanningContext,
-        item_id_by_agent: dict[str, str],
+        item_ids_by_agent: dict[str, tuple[str, ...]],
         item_id_by_ref: dict[str, str],
     ) -> dict[str, tuple[WorkItemDependency, ...]]:
         dependencies: dict[str, dict[str, WorkItemDependency]] = {
-            item_id: {} for item_id in item_id_by_agent.values()
+            item_id: {}
+            for item_ids in item_ids_by_agent.values()
+            for item_id in item_ids
         }
 
         for step in draft.steps:
@@ -42,34 +44,43 @@ class DependencyPolicy:
                 (override.predecessor_agent_id, override.successor_agent_id)
                 for override in draft.template_dependency_overrides
             }
-            self._validate_overrides(overrides, template, item_id_by_agent)
-            for node in template.nodes:
-                if node.agent_id not in item_id_by_agent:
+            self._validate_overrides(overrides, template, item_ids_by_agent)
+            for step in draft.steps:
+                node = next(
+                    (node for node in template.nodes if node.agent_id == step.agent_id),
+                    None,
+                )
+                if node is None:
                     continue
                 for predecessor_agent_id in node.depends_on:
-                    if predecessor_agent_id not in item_id_by_agent:
+                    predecessor_ids = item_ids_by_agent.get(predecessor_agent_id, ())
+                    if not predecessor_ids:
                         continue
-                    edge = (predecessor_agent_id, node.agent_id)
+                    edge = (predecessor_agent_id, step.agent_id)
                     if edge in overrides:
                         continue
-                    self._add(
-                        dependencies,
-                        item_id_by_agent[node.agent_id],
-                        WorkItemDependency(
-                            work_item_id=item_id_by_agent[predecessor_agent_id],
-                            source=DependencySource.TEMPLATE,
-                            rule_id=(
-                                f"template:{template.id}:"
-                                f"{predecessor_agent_id}->{node.agent_id}"
-                            ),
+                    self._add_unambiguous_dependency(
+                        dependencies=dependencies,
+                        target=item_id_by_ref[step.ref],
+                        candidate_ids=predecessor_ids,
+                        explicit_dependency_refs=step.depends_on,
+                        item_id_by_ref=item_id_by_ref,
+                        source=DependencySource.TEMPLATE,
+                        rule_id=(
+                            f"template:{template.id}:"
+                            f"{predecessor_agent_id}->{step.agent_id}"
+                        ),
+                        error_context=(
+                            f"模板依赖 {predecessor_agent_id} -> {step.agent_id}"
                         ),
                     )
 
         self._apply_system_rules(
             dependencies=dependencies,
             context=context,
-            selected_agents=set(item_id_by_agent),
-            item_id_by_agent=item_id_by_agent,
+            selected_agents=set(item_ids_by_agent),
+            item_ids_by_agent=item_ids_by_agent,
+            item_id_by_ref=item_id_by_ref,
         )
         return {
             item_id: tuple(item_dependencies.values())
@@ -92,7 +103,7 @@ class DependencyPolicy:
     def _validate_overrides(
         overrides: set[tuple[str, str]],
         template: TemplateHint,
-        item_id_by_agent: dict[str, str],
+        item_ids_by_agent: dict[str, tuple[str, ...]],
     ) -> None:
         template_edges = {
             (predecessor, node.agent_id)
@@ -104,7 +115,7 @@ class DependencyPolicy:
                 raise PlanValidationError(
                     "模板依赖 override 不存在: " + " -> ".join(edge)
                 )
-            if not set(edge) <= set(item_id_by_agent):
+            if not set(edge) <= set(item_ids_by_agent):
                 raise PlanValidationError(
                     "模板依赖 override 只能引用已选择 Agent: "
                     + " -> ".join(edge)
@@ -116,23 +127,28 @@ class DependencyPolicy:
         dependencies: dict[str, dict[str, WorkItemDependency]],
         context: PlanningContext,
         selected_agents: set[str],
-        item_id_by_agent: dict[str, str],
+        item_ids_by_agent: dict[str, tuple[str, ...]],
+        item_id_by_ref: dict[str, str],
     ) -> None:
         if context.workspace.implementation_file_count == 0:
             if "test_agent" in selected_agents:
                 self._require_agent(selected_agents, "code_agent", "test_agent")
-                self._add_system_dependency(
-                    dependencies, item_id_by_agent, "code_agent", "test_agent", "test_requires_code"
+                self._add_system_dependencies(
+                    dependencies=dependencies,
+                    successors=item_ids_by_agent["test_agent"],
+                    predecessor_ids=item_ids_by_agent["code_agent"],
+                    item_id_by_ref=item_id_by_ref,
+                    rule_id="test_requires_code",
                 )
             if "review_agent" in selected_agents:
                 for predecessor in ("code_agent", "test_agent"):
                     self._require_agent(selected_agents, predecessor, "review_agent")
-                    self._add_system_dependency(
-                        dependencies,
-                        item_id_by_agent,
-                        predecessor,
-                        "review_agent",
-                        f"review_requires_{predecessor.removesuffix('_agent')}",
+                    self._add_system_dependencies(
+                        dependencies=dependencies,
+                        successors=item_ids_by_agent["review_agent"],
+                        predecessor_ids=item_ids_by_agent[predecessor],
+                        item_id_by_ref=item_id_by_ref,
+                        rule_id=f"review_requires_{predecessor.removesuffix('_agent')}",
                     )
 
         if not context.runtime.manifest_exists:
@@ -140,12 +156,12 @@ class DependencyPolicy:
                 if successor not in selected_agents:
                     continue
                 self._require_agent(selected_agents, "bootstrap_agent", successor)
-                self._add_system_dependency(
-                    dependencies,
-                    item_id_by_agent,
-                    "bootstrap_agent",
-                    successor,
-                    f"{successor.removesuffix('_agent')}_requires_bootstrap",
+                self._add_system_dependencies(
+                    dependencies=dependencies,
+                    successors=item_ids_by_agent[successor],
+                    predecessor_ids=item_ids_by_agent["bootstrap_agent"],
+                    item_id_by_ref=item_id_by_ref,
+                    rule_id=f"{successor.removesuffix('_agent')}_requires_bootstrap",
                 )
 
     @staticmethod
@@ -157,23 +173,72 @@ class DependencyPolicy:
                 f"选择 {successor} 前必须先选择 {predecessor}"
             )
 
-    def _add_system_dependency(
+    def _add_system_dependencies(
         self,
         dependencies: dict[str, dict[str, WorkItemDependency]],
-        item_id_by_agent: dict[str, str],
-        predecessor_agent: str,
-        successor_agent: str,
+        successors: tuple[str, ...],
+        predecessor_ids: tuple[str, ...],
+        item_id_by_ref: dict[str, str],
         rule_id: str,
     ) -> None:
-        self._add(
-            dependencies,
-            item_id_by_agent[successor_agent],
-            WorkItemDependency(
-                work_item_id=item_id_by_agent[predecessor_agent],
+        for successor in successors:
+            self._add_unambiguous_dependency(
+                dependencies=dependencies,
+                target=successor,
+                candidate_ids=predecessor_ids,
+                explicit_dependency_refs=(),
+                item_id_by_ref=item_id_by_ref,
                 source=DependencySource.SYSTEM,
                 rule_id=rule_id,
+                error_context=f"系统依赖 {rule_id}",
+                overwrite=True,
+            )
+
+    def _add_unambiguous_dependency(
+        self,
+        *,
+        dependencies: dict[str, dict[str, WorkItemDependency]],
+        target: str,
+        candidate_ids: tuple[str, ...],
+        explicit_dependency_refs: list[str] | tuple[str, ...],
+        item_id_by_ref: dict[str, str],
+        source: DependencySource,
+        rule_id: str,
+        error_context: str,
+        overwrite: bool = False,
+    ) -> None:
+        if len(candidate_ids) == 1:
+            self._add(
+                dependencies,
+                target,
+                WorkItemDependency(
+                    work_item_id=candidate_ids[0], source=source, rule_id=rule_id
+                ),
+                overwrite=overwrite,
+            )
+            return
+
+        explicit_ids = {
+            item_id_by_ref[ref]
+            for ref in explicit_dependency_refs
+            if item_id_by_ref[ref] in candidate_ids
+        }
+        explicit_ids.update(
+            dependency_id
+            for dependency_id in dependencies[target]
+            if dependency_id in candidate_ids
+        )
+        if len(explicit_ids) != 1:
+            raise PlanValidationError(
+                f"{error_context} 存在多个候选 WorkItem，必须通过 depends_on 明确选择一个"
+            )
+        self._add(
+            dependencies,
+            target,
+            WorkItemDependency(
+                work_item_id=next(iter(explicit_ids)), source=source, rule_id=rule_id
             ),
-            overwrite=True,
+            overwrite=overwrite,
         )
 
     @staticmethod

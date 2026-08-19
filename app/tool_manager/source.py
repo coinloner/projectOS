@@ -20,6 +20,7 @@ class ToolDef:
     name: str
     description: str
     parameters: dict
+    execution_modes: tuple[str, ...] | None = None
 
 class ToolExposure(str, Enum):
     """工具向普通 Agent 暴露时的默认策略。"""
@@ -104,7 +105,13 @@ class ToolSetSource(ToolSource):
         context: ExecutionContext | None = None,
     ) -> str:
         fn = self._fns[name]
-        return str(fn(**arguments))
+        try:
+            result = str(fn(**arguments))
+        except Exception as error:
+            _record_memory_tool_result(context, name, f"工具执行失败: {error}")
+            raise
+        _record_memory_tool_result(context, name, result)
+        return result
 
 
 class ExecutionToolSetSource(ToolSource):
@@ -136,7 +143,30 @@ class ExecutionToolSetSource(ToolSource):
     ) -> str:
         if context is None:
             raise RuntimeError(f"工具 '{name}' 必须由 GraphRunner 在 Trace 中执行")
-        return str(self._fns[name](context, **arguments))
+        try:
+            result = str(self._fns[name](context, **arguments))
+        except Exception as error:
+            _record_memory_tool_result(context, name, f"工具执行失败: {error}")
+            raise
+        _record_memory_tool_result(context, name, result)
+        return result
+
+
+def _record_memory_tool_result(
+    context: ExecutionContext | None, tool_name: str, result: str
+) -> None:
+    if context is None or context.memory is None:
+        return
+    context.memory.append(
+        trace_id=context.trace_id,
+        role="tool",
+        event_type="tool_result",
+        content=result,
+        work_item_id=context.work_item_id,
+        agent_id=context.agent_id,
+        tool_name=tool_name,
+        metadata={"execution_mode": context.execution_mode.value},
+    )
 
 
 class MCPClient(Protocol):
@@ -189,7 +219,13 @@ class MCPToolSource(ToolSource):
     ) -> str:
         if self._client is None:
             raise RuntimeError("MCP client 尚未配置")
-        return str(self._client.call_tool(name, arguments))
+        try:
+            result = str(self._client.call_tool(name, arguments))
+        except Exception as error:
+            _record_memory_tool_result(context, name, f"工具执行失败: {error}")
+            raise
+        _record_memory_tool_result(context, name, result)
+        return result
 
     @staticmethod
     def _to_tool_def(tool: dict[str, Any]) -> ToolDef:

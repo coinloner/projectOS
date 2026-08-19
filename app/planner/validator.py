@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+
 from app.planner.context import PlanningContext
 from app.planner.dependency_policy import DependencyPolicy
 from app.planner.draft import PlanDraft
@@ -9,6 +11,7 @@ from app.planner.errors import PlanValidationError
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.trace import TraceContext
 from app.orchestration.work_item import WorkItem
+from app.workflow.compiler import TemplateCompiler
 
 
 class PlanValidator:
@@ -27,7 +30,6 @@ class PlanValidator:
     ) -> ExecutionPlan:
         known_agents = {agent.id: agent for agent in context.agents}
         selected_ids = [step.agent_id for step in draft.steps]
-        self._validate_unique(selected_ids, "Planner v0 不允许同一 Agent 重复出现")
         self._validate_unique([step.ref for step in draft.steps], "PlanDraft 包含重复 step ref")
 
         unknown_agents = sorted(set(selected_ids) - set(known_agents))
@@ -42,6 +44,30 @@ class PlanValidator:
                     f"计划引用未知模板: '{draft.template_hint_id}'"
                 )
 
+        template = context.template_source(draft.template_hint_id)
+        if "task_agent" in selected_ids and (
+            template is None or not template.has_controlled_execution
+        ):
+            raise PlanValidationError(
+                "task_agent 必须通过受控模板的 PARTITIONED/INTEGRATION/QUALITY_GATE 链路执行"
+            )
+        if template is not None and template.has_controlled_execution:
+            try:
+                return TemplateCompiler().compile(
+                    template,
+                    goal=context.goal,
+                    plan_id=plan_id,
+                    trace=trace or TraceContext.ephemeral(),
+                    agent_output_keys={agent.id: agent.output_key for agent in context.agents},
+                )
+            except ValueError as error:
+                raise PlanValidationError(
+                    f"受控模板无法编译为执行计划: {error}"
+                ) from error
+
+        if not draft.steps:
+            raise PlanValidationError("普通计划至少需要一个步骤")
+
         step_refs = {step.ref for step in draft.steps}
         for step in draft.steps:
             self._validate_step_dependencies(step.ref, step.depends_on, step_refs)
@@ -50,25 +76,38 @@ class PlanValidator:
             step.ref: self._work_item_id(index, known_agents[step.agent_id].output_key)
             for index, step in enumerate(draft.steps, 1)
         }
-        item_id_by_agent = {
-            step.agent_id: item_id_by_ref[step.ref] for step in draft.steps
+        item_ids_by_agent: dict[str, tuple[str, ...]] = {
+            agent_id: tuple(
+                item_id_by_ref[step.ref]
+                for step in draft.steps
+                if step.agent_id == agent_id
+            )
+            for agent_id in set(selected_ids)
         }
         dependencies = self._dependency_policy.resolve(
             draft=draft,
             context=context,
-            item_id_by_agent=item_id_by_agent,
+            item_ids_by_agent=item_ids_by_agent,
             item_id_by_ref=item_id_by_ref,
         )
+        occurrences = Counter(selected_ids)
         work_items = tuple(
             WorkItem(
                 id=item_id_by_ref[step.ref],
                 agent_id=step.agent_id,
                 objective=step.objective,
-                output_key=known_agents[step.agent_id].output_key,
+                output_key=self._result_key(
+                    index=index,
+                    base_key=known_agents[step.agent_id].output_key,
+                    is_repeated=occurrences[step.agent_id] > 1,
+                ),
+                artifact_key=known_agents[step.agent_id].output_key,
                 dependencies=dependencies[item_id_by_ref[step.ref]],
                 acceptance_criteria=tuple(step.acceptance_criteria),
+                constraints=tuple(step.constraints),
+                non_goals=tuple(step.non_goals),
             )
-            for step in draft.steps
+            for index, step in enumerate(draft.steps, 1)
         )
         try:
             return ExecutionPlan(
@@ -84,6 +123,12 @@ class PlanValidator:
     @staticmethod
     def _work_item_id(index: int, output_key: str) -> str:
         return f"wi-{index:02d}-{output_key}"
+
+    @staticmethod
+    def _result_key(index: int, base_key: str, is_repeated: bool) -> str:
+        if not is_repeated:
+            return base_key
+        return f"{base_key}_{index:02d}"
 
     @staticmethod
     def _validate_unique(values: list[str], message: str) -> None:

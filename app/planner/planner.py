@@ -49,19 +49,24 @@ output key、文件路径或 Python 代码。
 {
   "rationale": "为什么选择这些步骤",
   "template_hint_id": "可选的已知模板 id 或 null",
-    "steps": [
+  "steps": [
     {
       "ref": "该步骤在本次计划内唯一的临时标识",
       "agent_id": "已提供的 Agent id",
       "objective": "该 Agent 本次应完成的具体目标",
       "depends_on": ["同一 steps 内前置步骤的 ref"],
-      "acceptance_criteria": ["可选的、可检查的完成标准"]
+      "acceptance_criteria": ["可选的、可检查的完成标准"],
+      "constraints": ["可选的、必须遵守的技术或权限约束"],
+      "non_goals": ["可选的、本步骤明确不做的内容"]
     }
   ]
 }
 
+若选择的是带受控执行权限的模板（例如 architecture_parallel），模板会由系统完整编译，
+此时 steps 可以为空；不要自行填写 execution_mode、slot、路径、候选或发布权限。
+
 规则：
-1. 每个 Agent 最多出现一次，每个 ref 也必须唯一。
+1. 同一 Agent 可以出现多次，但每个 ref 必须唯一，并且每次 objective 都必须是可独立验收的窄任务。
 2. depends_on 只能引用同一计划中已选择的其他步骤 ref。
 3. 已存在的 artifact 通常表示对应文档工作可跳过；缺失 artifact 不代表必须运行所有 Agent。
 4. implementation.md 是实现摘要，不是代码完成证据。若目标要求交付可运行软件，且
@@ -74,4 +79,7 @@ output key、文件路径或 Python 代码。
 7. 优先产出完成目标所需的最小步骤集合。
 8. 默认模板的依赖会由系统自动加入。只有确实不适用时，才在
    template_dependency_overrides 中提供 predecessor_agent_id、successor_agent_id 和原因。
-9. 不输出任何 JSON 之外的文字。"""
+9. 有多个同类前置步骤时，必须用 depends_on 明确选择当前步骤依赖哪一个；系统不会猜测。
+10. Agent 的 max_parallel_instances 只是调度容量，不代表可共享写入同一文件。不要为了并行重复创建会写入同一 artifact 的步骤。
+11. constraints 只填写本步骤必须遵守的技术、范围或权限约束；non_goals 只填写本步骤明确不做的内容。
+12. 不输出任何 JSON 之外的文字。"""

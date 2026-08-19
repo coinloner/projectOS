@@ -15,6 +15,8 @@ class PlannedStep(BaseModel):
     objective: str = Field(min_length=1, max_length=500)
     depends_on: list[str] = Field(default_factory=list, max_length=10)
     acceptance_criteria: list[str] = Field(default_factory=list, max_length=5)
+    constraints: list[str] = Field(default_factory=list, max_length=8)
+    non_goals: list[str] = Field(default_factory=list, max_length=8)
 
 
 class TemplateDependencyOverride(BaseModel):
@@ -33,7 +35,7 @@ class PlanDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     rationale: str = Field(min_length=1, max_length=1000)
-    steps: list[PlannedStep] = Field(min_length=1, max_length=10)
+    steps: list[PlannedStep] = Field(min_length=0, max_length=10)
     template_hint_id: str | None = Field(default=None, max_length=100)
     template_dependency_overrides: list[TemplateDependencyOverride] = Field(
         default_factory=list, max_length=10

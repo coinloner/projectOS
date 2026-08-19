@@ -7,10 +7,12 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+from threading import RLock
 from uuid import uuid4
 
 from app.execution_context import ExecutionContext
 from app.orchestration.evidence import SandboxEvidence
+from app.orchestration.retry import FailurePackage, FailureSignal
 from app.sandbox.result import SandboxResult, SandboxStatus
 
 
@@ -34,6 +36,7 @@ class TraceStore:
     def __init__(self, project_path: str) -> None:
         self._project_path = Path(project_path)
         self._root = self._project_path / ".projectos"
+        self._lock = RLock()
 
     def start_trace(self, goal: str, *, parent_trace_id: str | None = None) -> TraceContext:
         requirement = self._load_requirement_metadata()
@@ -60,9 +63,7 @@ class TraceStore:
         return context
 
     def record_plan(self, plan: "ExecutionPlan") -> None:
-        self._write_json(
-            self._trace_path(plan.trace) / "plan.json",
-            {
+        payload = {
                 "plan_id": plan.id,
                 "template_id": plan.template_id,
                 "goal": plan.goal,
@@ -72,6 +73,18 @@ class TraceStore:
                         "agent_id": item.agent_id,
                         "objective": item.objective,
                         "output_key": item.output_key,
+                        "artifact_key": item.artifact_key,
+                        "execution_mode": item.execution_mode.value,
+                        "input_refs": [
+                            {
+                                **asdict(ref),
+                                "ref_id": ref.ref_id,
+                            }
+                            for ref in item.input_refs
+                        ],
+                        "output_slot": item.output_slot,
+                        "publish_target": item.publish_target,
+                        "candidate_from_work_item_id": item.candidate_from_work_item_id,
                         "dependencies": [
                             {
                                 "work_item_id": dependency.work_item_id,
@@ -81,10 +94,15 @@ class TraceStore:
                             for dependency in item.dependencies
                         ],
                         "acceptance_criteria": list(item.acceptance_criteria),
+                        "constraints": list(item.constraints),
+                        "non_goals": list(item.non_goals),
                     }
                     for item in plan.work_items
                 ],
-            },
+            }
+        self._write_json(self._trace_path(plan.trace) / "plan.json", payload)
+        self._write_json(
+            self._trace_path(plan.trace) / "plans" / f"{plan.id}.json", payload
         )
         for item in plan.work_items:
             self.record_event(plan.trace, item.id, "work_item_planned")
@@ -118,6 +136,26 @@ class TraceStore:
         if error is not None:
             payload["error"] = error
         self._write_json(path, payload)
+
+    def load_trace(self, trace_id: str) -> dict[str, object]:
+        """读取 API 可展示的 Trace 摘要，不暴露任意文件路径。"""
+        self._validate_trace_id(trace_id)
+        path = self._trace_root(trace_id) / "trace.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"Trace 不存在: {trace_id}")
+        return self._read_json(path)
+
+    def list_events(self, trace_id: str) -> tuple[dict[str, object], ...]:
+        """按写入顺序返回一次 Trace 的控制面事件。"""
+        self._validate_trace_id(trace_id)
+        path = self._trace_root(trace_id) / "events.jsonl"
+        if not path.is_file():
+            return ()
+        return tuple(
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
 
     def snapshot_requirement(self, trace: TraceContext, content: str) -> int:
         metadata = self._load_requirement_metadata()
@@ -178,6 +216,35 @@ class TraceStore:
             for path in sorted(directory.glob("ev-*.json"))
         )
 
+    def latest_sandbox_evidence(
+        self, context: ExecutionContext
+    ) -> SandboxEvidence | None:
+        evidence = [
+            item
+            for item in self.list_sandbox_evidence(context)
+            if item.work_item_id == context.work_item_id
+        ]
+        return evidence[-1] if evidence else None
+
+    def failure_package(
+        self, trace: TraceContext, signal: FailureSignal
+    ) -> FailurePackage:
+        """从当前 Trace 组装可交给修复节点的受限诊断包。"""
+        if signal.evidence_id is None:
+            return FailurePackage(signal=signal)
+        path = self._evidence_path(trace.trace_id, signal.evidence_id)
+        if not path.is_file():
+            return FailurePackage(signal=signal)
+        evidence = self._load_sandbox_evidence(path)
+        return FailurePackage(
+            signal=signal,
+            check_id=evidence.check_id,
+            runtime_profile=evidence.runtime_profile,
+            exit_code=evidence.exit_code,
+            stdout_excerpt=_excerpt(evidence.stdout, 1_000),
+            stderr_excerpt=_excerpt(evidence.stderr, 2_000),
+        )
+
     def load_sandbox_evidence(
         self, context: ExecutionContext, evidence_id: str
     ) -> SandboxEvidence:
@@ -214,6 +281,11 @@ class TraceStore:
     def _trace_root(self, trace_id: str) -> Path:
         return self._root / "runs" / trace_id
 
+    @staticmethod
+    def _validate_trace_id(trace_id: str) -> None:
+        if not trace_id or not trace_id.startswith("tr-") or not trace_id[3:].isalnum():
+            raise ValueError("trace_id 格式无效")
+
     def _evidence_path(self, trace_id: str, evidence_id: str) -> Path:
         return self._trace_root(trace_id) / "evidence" / f"{evidence_id}.json"
 
@@ -231,18 +303,19 @@ class TraceStore:
         event_type: str,
         details: dict[str, object] | None = None,
     ) -> None:
-        path = self._trace_root(trace_id) / "events.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        event = {
-            "event_id": f"evt-{uuid4().hex[:12]}",
-            "trace_id": trace_id,
-            "work_item_id": work_item_id,
-            "type": event_type,
-            "created_at": self._now(),
-            "details": details or {},
-        }
-        with path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+        with self._lock:
+            path = self._trace_root(trace_id) / "events.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            event = {
+                "event_id": f"evt-{uuid4().hex[:12]}",
+                "trace_id": trace_id,
+                "work_item_id": work_item_id,
+                "type": event_type,
+                "created_at": self._now(),
+                "details": details or {},
+            }
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     def _update_trace_requirement_revision(
         self, trace: TraceContext, revision: int
@@ -259,3 +332,13 @@ class TraceStore:
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+
+    @staticmethod
+    def _read_json(path: Path) -> dict[str, object]:
+        return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _excerpt(content: str, limit: int) -> str:
+    if len(content) <= limit:
+        return content
+    return "[...已截断]\n" + content[-limit:]

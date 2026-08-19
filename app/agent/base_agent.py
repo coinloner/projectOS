@@ -61,7 +61,7 @@ class BaseAgent:
         crew_agent = Agent(
             role=self._role,
             goal=self._goal,
-            backstory=f"{self._backstory}\n\n{_CAPABILITY_REQUEST_PROMPT}",
+            backstory=f"{self._backstory}\n\n{_LANGUAGE_PROMPT}\n\n{_CAPABILITY_REQUEST_PROMPT}",
             llm=build_llm(),
             tools=self._gateway.tools_for(self._domain, context=context),
             max_iter=self._max_iterations,
@@ -87,3 +87,8 @@ _CAPABILITY_REQUEST_PROMPT = """\
 {"type": "capability_request", "capability": "能力标识", "reason": "缺少该能力的原因"}
 若当前工具足以完成任务，则按正常方式回答。
 """
+
+_LANGUAGE_PROMPT = """\
+语言要求：所有自然语言任务回答、Markdown 文档、质量报告和未决项必须使用简体中文。
+代码标识符、文件路径、HTTP 方法、JSON key 和标准技术名词可以保留英文；不要因为技术名词
+使用英文而切换整段说明语言。"""

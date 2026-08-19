@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 
 from app.agent.registry import AgentRegistry
@@ -29,6 +29,8 @@ class AvailableAgent:
     domain: str
     description: str
     output_key: str
+    max_parallel_instances: int
+    artifact_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,9 +47,13 @@ class TemplateHint:
 class TemplateNodeHint:
     """Planner 可见的模板节点与默认依赖。"""
 
+    id: str
     agent_id: str
     objective: str
     depends_on: tuple[str, ...]
+    execution_mode: str = "exclusive"
+    output_slot: str | None = None
+    publish_target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +73,9 @@ class PlanningContext:
     templates: tuple[TemplateHint, ...]
     workspace: WorkspaceSnapshot
     runtime: RuntimeSnapshot
+    source_templates: tuple["WorkflowTemplate", ...] = field(
+        default=(), repr=False, compare=False
+    )
 
     @classmethod
     def build(
@@ -86,11 +95,15 @@ class PlanningContext:
                 domain=definition.domain,
                 description=definition.description,
                 output_key=definition.output_key,
+                max_parallel_instances=definition.max_parallel_instances,
+                artifact_key=definition.artifact_key,
             )
             for definition in agents.definitions()
         )
         artifact_keys = tuple(
-            dict.fromkeys(agent.output_key for agent in available_agents)
+            dict.fromkeys(
+                agent.artifact_key or agent.output_key for agent in available_agents
+            )
         )
         snapshots = tuple(
             ArtifactSnapshot(
@@ -113,6 +126,15 @@ class PlanningContext:
                 implementation_file_count=workspace.implementation_file_count()
             ),
             runtime=runtime_snapshot(artifacts.project_path),
+            source_templates=templates.templates(),
+        )
+
+    def template_source(self, template_id: str | None) -> "WorkflowTemplate | None":
+        if template_id is None:
+            return None
+        return next(
+            (template for template in self.source_templates if template.id == template_id),
+            None,
         )
 
     def as_prompt_json(self) -> str:
@@ -151,12 +173,16 @@ def _template_hint(template: "WorkflowTemplate") -> TemplateHint:
         description=template.description,
         nodes=tuple(
             TemplateNodeHint(
+                id=node.id,
                 agent_id=node.agent_id,
                 objective=node.objective,
                 depends_on=tuple(
                     nodes_by_id[dependency].agent_id
                     for dependency in node.depends_on
                 ),
+                execution_mode=node.execution_mode.value,
+                output_slot=node.output_slot,
+                publish_target=node.publish_target,
             )
             for node in template.nodes
         ),

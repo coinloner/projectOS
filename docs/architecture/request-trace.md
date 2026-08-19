@@ -8,7 +8,7 @@
 
 1. 为七个 domain 注册本地 ToolSet。
 2. 向 `AgentRegistry` 注册七个 `AgentDefinition` 和各自 factory。
-3. 注册 `project_delivery_template()` 作为纯 Workflow 经验。
+3. 注册受控 Workflow 模板；旧的 `project_delivery_template()` 不再作为 API 启动入口。
 4. 创建 `PlannerService` 和 Orchestration 层的 `GraphRunner`。
 
 项目创建时会建立 `workspace/`，并写入默认的 `runtime.yaml`：
@@ -50,7 +50,8 @@ requirement
 
 GraphRunner 只根据 `ExecutionPlan` 的 WorkItem DAG 找到 ready item。对每个 WorkItem，它通过 `AgentRegistry.create(agent_id)` 创建一个新的 Agent 实例，并把总体目标、WorkItem id、当前目标与可用前置 artifact key 组成 task 文本。同时它创建 `ExecutionContext(trace_id, work_item_id, agent_id)`，只通过 ToolGateway 绑定到本次 Agent 的工具对象。
 
-Agent 不会直接获得前置文件正文。它必须使用自己的 `load_artifact` 工具按需读取，这让每个 domain 的读取范围可以单独限制。
+Agent 不会直接获得前置文件正文。它必须使用当前执行模式允许的输入工具，按任务包中的
+`ref_id` 按需读取；这让每个 WorkItem 的读取范围可以单独限制。
 
 ## 3. 一个 Agent 如何调用本地工具
 

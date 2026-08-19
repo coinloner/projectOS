@@ -9,6 +9,14 @@ from app.orchestration.runner import (
     SourceCandidate,
 )
 from app.orchestration.state import RunState
+from app.orchestration.task_input import (
+    DependencySummary,
+    InputBinding,
+    OutputContract,
+    TaskInputPackage,
+    TaskScope,
+    build_task_input,
+)
 from app.execution_context import ExecutionContext
 from app.orchestration.evidence import SandboxEvidence
 from app.orchestration.trace import TraceContext, TraceStore
@@ -25,13 +33,19 @@ __all__ = [
     "GraphRunner",
     "GraphRunResult",
     "GraphRunStatus",
+    "InputBinding",
     "NodeResult",
     "NodeStatus",
+    "OutputContract",
     "RunState",
     "SandboxEvidence",
     "SourceCandidate",
     "TraceContext",
     "TraceStore",
+    "TaskInputPackage",
+    "TaskScope",
+    "DependencySummary",
     "WorkItem",
     "WorkItemDependency",
+    "build_task_input",
 ]

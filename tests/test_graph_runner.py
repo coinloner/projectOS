@@ -1,12 +1,19 @@
 import unittest
+from threading import Barrier
+import tempfile
+from pathlib import Path
 
 from app.agent.registry import AgentDefinition, AgentRegistry
 from app.agent.result import AgentResult
+from app.artifact.repository import ArtifactRef, ArtifactRepository
+from app.memory.store import MemoryStore
+from app.domain.architecture.service import ArchitectureArtifactWorkflow
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import MCPToolSource
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.runner import GraphRunner, GraphRunStatus
-from app.execution_context import ExecutionContext
+from app.execution_context import ExecutionContext, ExecutionMode
+from app.orchestration.trace import TraceContext, TraceStore
 from app.workflow.template import (
     TaskBlueprint,
     WorkflowTemplate,
@@ -104,6 +111,7 @@ class GraphRunnerTest(unittest.TestCase):
         result: AgentResult | Exception,
         *,
         domain: str = "requirement",
+        max_parallel_instances: int = 1,
     ) -> list[FakeAgent]:
         created: list[FakeAgent] = []
 
@@ -118,6 +126,7 @@ class GraphRunnerTest(unittest.TestCase):
                 domain=domain,
                 description=f"{agent_id} description",
                 output_key=f"{agent_id}_output",
+                max_parallel_instances=max_parallel_instances,
             ),
             factory=factory,
         )
@@ -157,6 +166,38 @@ class GraphRunnerTest(unittest.TestCase):
         self.assertEqual(second_agents[0].context.work_item_id, "architecture")
         self.assertEqual(second_agents[0].context.agent_id, "architecture_agent")
         self.assertEqual(len(first_agents), 1)
+
+    def test_runner_records_bounded_execution_memory_and_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.register_agent("requirement_agent", AgentResult.completed("需求结果"))
+            plan = ExecutionPlan(
+                id="memory-plan",
+                goal="记录执行上下文",
+                work_items=(make_node("requirement"),),
+            )
+
+            result = GraphRunner(
+                self.agents,
+                self.tools,
+                memory=MemoryStore(directory),
+            ).run(plan)
+
+            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+            events = MemoryStore(directory).events(plan.trace.trace_id)
+            self.assertEqual(
+                [event.event_type for event in events],
+                [
+                    "agent_input",
+                    "agent_output",
+                    "work_item_result",
+                    "checkpoint",
+                    "run_summary",
+                ],
+            )
+            self.assertEqual(events[1].content, "需求结果")
+            self.assertEqual(events[2].event_type, "work_item_result")
+            self.assertIn("completed_work_items", events[3].content)
+            self.assertEqual(events[4].tier, "episodic")
 
     def test_runner_fails_for_an_unregistered_agent(self) -> None:
         plan = ExecutionPlan(
@@ -229,9 +270,147 @@ class GraphRunnerTest(unittest.TestCase):
         self.assertIn("LLM unavailable", result.error)
         self.assertEqual(result.node_result.node_id, "requirement")
 
+    def test_runner_runs_independent_instances_of_the_same_parallel_agent_together(self) -> None:
+        barrier = Barrier(2)
+        created: list[FakeAgent] = []
+
+        class ParallelAgent(FakeAgent):
+            def run(
+                self, task: str, *, context: ExecutionContext | None = None
+            ) -> AgentResult:
+                barrier.wait(timeout=1)
+                return super().run(task, context=context)
+
+        def factory() -> ParallelAgent:
+            agent = ParallelAgent(AgentResult.completed("analysis"))
+            created.append(agent)
+            return agent
+
+        self.agents.register(
+            AgentDefinition(
+                id="analysis_agent",
+                domain="analysis",
+                description="独立分析任务",
+                output_key="analysis",
+                max_parallel_instances=2,
+            ),
+            factory=factory,
+        )
+        plan = ExecutionPlan(
+            id="parallel-analysis",
+            goal="并行分析两个独立问题",
+            work_items=(
+                make_node("analysis-a", agent_id="analysis_agent"),
+                make_node("analysis-b", agent_id="analysis_agent"),
+            ),
+        )
+
+        result = GraphRunner(self.agents, self.tools, max_workers=2).run(plan)
+
+        self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+        self.assertEqual(len(created), 2)
+
+    def test_test_agent_cannot_complete_without_sandbox_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("验证测试证据强制要求")
+            created = self.register_agent(
+                "test_agent",
+                AgentResult.completed("测试已完成"),
+                domain="test",
+            )
+            plan = ExecutionPlan(
+                id="test-evidence-required",
+                goal="运行测试",
+                trace=trace,
+                work_items=(make_node("test", agent_id="test_agent"),),
+            )
+
+            result = GraphRunner(self.agents, self.tools, traces=traces).run(plan)
+
+            self.assertEqual(result.status, GraphRunStatus.FAILED)
+            self.assertIn("test_evidence_missing", result.error)
+            self.assertEqual(len(created), 2)
+
+    def test_architecture_scopes_integrate_then_quality_gate_promotes_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            repository = ArtifactRepository(project_path)
+            workflow = ArchitectureArtifactWorkflow(project_path)
+            trace = TraceContext(requirement_id="req-architecture", trace_id="tr-architecture")
+
+            class ArchitectureWorkflowAgent:
+                def run(self, task: str, *, context: ExecutionContext | None = None) -> AgentResult:
+                    assert context is not None
+                    if context.execution_mode is ExecutionMode.PARTITIONED:
+                        workflow.write_staged(context, f"# {context.output_slot}")
+                    elif context.execution_mode is ExecutionMode.INTEGRATION:
+                        workflow.create_candidate(context, "# Integrated architecture")
+                    return AgentResult.completed("done")
+
+            self.agents.register(
+                AgentDefinition(
+                    id="architecture_agent", domain="architecture", description="architecture",
+                    output_key="architecture", max_parallel_instances=2,
+                ),
+                factory=ArchitectureWorkflowAgent,
+            )
+            api_ref = ArtifactRef.staged(
+                artifact_key="architecture", trace_id=trace.trace_id,
+                work_item_id="architecture-api", slot="api",
+            )
+            data_ref = ArtifactRef.staged(
+                artifact_key="architecture", trace_id=trace.trace_id,
+                work_item_id="architecture-data", slot="data",
+            )
+            plan = ExecutionPlan(
+                id="architecture-pilot", goal="并行产出架构分区", trace=trace,
+                work_items=(
+                    WorkItem(
+                        id="architecture-api", agent_id="architecture_agent", objective="设计 API",
+                        output_key="architecture_api", artifact_key="architecture",
+                        execution_mode=ExecutionMode.PARTITIONED, output_slot="api",
+                    ),
+                    WorkItem(
+                        id="architecture-data", agent_id="architecture_agent", objective="设计数据层",
+                        output_key="architecture_data", artifact_key="architecture",
+                        execution_mode=ExecutionMode.PARTITIONED, output_slot="data",
+                    ),
+                    WorkItem(
+                        id="architecture-integration", agent_id="architecture_agent", objective="整合分区",
+                        output_key="architecture_candidate", artifact_key="architecture",
+                        dependencies=(
+                            WorkItemDependency("architecture-api", DependencySource.SYSTEM),
+                            WorkItemDependency("architecture-data", DependencySource.SYSTEM),
+                        ),
+                        execution_mode=ExecutionMode.INTEGRATION, publish_target="architecture",
+                        input_refs=(api_ref, data_ref),
+                    ),
+                    WorkItem(
+                        id="architecture-quality-gate", agent_id="system_quality_gate",
+                        objective="验证并发布候选", output_key="architecture_published",
+                        artifact_key="architecture",
+                        dependencies=(
+                            WorkItemDependency("architecture-integration", DependencySource.SYSTEM),
+                        ),
+                        execution_mode=ExecutionMode.QUALITY_GATE, publish_target="architecture",
+                        candidate_from_work_item_id="architecture-integration",
+                    ),
+                ),
+            )
+
+            result = GraphRunner(
+                self.agents, self.tools, max_workers=2, artifacts=repository
+            ).run(plan)
+
+            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+            self.assertEqual(
+                (Path(project_path) / "architecture.md").read_text(encoding="utf-8"),
+                "# Integrated architecture",
+            )
+
 
 class WorkflowTemplateTest(unittest.TestCase):
-    def test_runner_executes_the_full_project_delivery_chain(self) -> None:
+    def test_runner_rejects_uncompiled_standard_task_execution(self) -> None:
         agents = AgentRegistry()
         gateway = ToolGateway()
         created: dict[str, list[FakeAgent]] = {}
@@ -276,31 +455,10 @@ class WorkflowTemplateTest(unittest.TestCase):
         plan = plan_from_template(project_delivery_template())
         result = GraphRunner(agents, gateway).run(plan)
 
-        self.assertEqual(result.status, GraphRunStatus.COMPLETED)
-        self.assertEqual(
-            result.state.artifacts,
-            {
-                "requirement": "需求文档",
-                "architecture": "架构文档",
-                "tasks": "任务清单",
-                "environment": "环境报告",
-                "implementation": "实现摘要",
-                "tests": "测试报告",
-                "review": "审查报告",
-            },
-        )
-        task_prompt = created["task_agent"][0].tasks[0]
-        self.assertIn("- requirement", task_prompt)
-        self.assertIn("- architecture", task_prompt)
-        implementation_prompt = created["code_agent"][0].tasks[0]
-        self.assertIn("- environment", implementation_prompt)
-        self.assertIn("- tasks", implementation_prompt)
-        test_prompt = created["test_agent"][0].tasks[0]
-        self.assertIn("- implementation", test_prompt)
-        review_prompt = created["review_agent"][0].tasks[0]
-        self.assertIn("- tests", review_prompt)
+        self.assertEqual(result.status, GraphRunStatus.FAILED)
+        self.assertIn("标准执行方式", result.error)
 
-    def test_project_delivery_template_defines_a_seven_agent_dag(self) -> None:
+    def test_project_delivery_template_defines_the_standard_task_pipeline(self) -> None:
         template = project_delivery_template()
 
         self.assertEqual(
@@ -308,6 +466,8 @@ class WorkflowTemplateTest(unittest.TestCase):
             [
                 "requirement_agent",
                 "architecture_agent",
+                "task_agent",
+                "task_agent",
                 "task_agent",
                 "bootstrap_agent",
                 "code_agent",
@@ -319,22 +479,16 @@ class WorkflowTemplateTest(unittest.TestCase):
         self.assertEqual(
             template.nodes[2].depends_on, ("requirement", "architecture")
         )
-        self.assertEqual(
-            template.nodes[3].depends_on,
-            ("requirement", "architecture", "tasks"),
-        )
-        self.assertEqual(template.nodes[3].output_key, "environment")
-        self.assertEqual(
-            template.nodes[4].depends_on,
-            ("requirement", "architecture", "tasks", "environment"),
-        )
+        self.assertEqual(template.nodes[3].depends_on, ("tasks-plan",))
+        self.assertEqual(template.nodes[4].depends_on, ("tasks-integration",))
         self.assertEqual(
             template.nodes[5].depends_on,
-            ("requirement", "tasks", "environment", "implementation"),
+            ("requirement", "architecture", "tasks-quality-gate"),
         )
+        self.assertEqual(template.nodes[5].output_key, "environment")
         self.assertEqual(
             template.nodes[6].depends_on,
-            ("requirement", "architecture", "tasks", "environment", "implementation", "tests"),
+            ("requirement", "architecture", "tasks-quality-gate", "environment"),
         )
 
     def test_template_registry_returns_template_experience(self) -> None:

@@ -5,16 +5,19 @@
 | 模块 | 已实现 | 当前限制 | 下一步 |
 |---|---|---|---|
 | Project | 项目根目录、`workspace/`、`project.yaml`、默认 `runtime.yaml` | 项目级生命周期状态未统一持久化 | 统一项目运行记录 |
-| Planner v0 | 受控上下文、JSON 草案、一次修复、WorkItem 与三类依赖校验 | 每 Agent 每计划一次；无运行反馈重规划 | PlanPatch |
-| Workflow | 可复用 Template、Blueprint 与默认依赖经验 | 未按项目类型沉淀更多模板 | 增加常见交付模板 |
-| Orchestration | WorkItem DAG、同步 GraphRunner、Trace 计划/事件/Evidence、能力缺口暂停 | RunState 不可恢复、无并发/重试 | 状态机与恢复接口 |
-| Domain Agents | Requirement、Architecture、Task、Bootstrap、Code、Test、Review | 领域 prompt 和产出质量仍是基础版本 | 按真实项目案例迭代工具与 policy |
-| Local ToolSet | domain 隔离、artifact 读写限制、workspace 写入限制 | 没有跨 domain 复合能力 | 保持小工具集，按需要增量扩展 |
+| API / Application | FastAPI 项目创建、受控 Workflow 异步启动、Trace/事件查询；Container 统一组装运行时 | 仅进程内线程池，无认证、队列恢复或 `/resume` | 持久化运行队列与恢复接口 |
+| Planner v1 | 受控上下文、重复 Agent WorkItem、JSON 草案校验、Repair Plan | 无跨运行状态恢复；修复质量仍依赖 prompt | Repair policy 迭代 |
+| Workflow | 可复用 Template、Blueprint、默认依赖经验；`TemplateCompiler` 已支持 `architecture_compact` 与 `architecture_parallel` 受控模板 | 复杂度尚不能自动选择合适模板；普通模板仍是动态草案路径 | 自动复杂度分类与更多可安全分区模板 |
+| Orchestration | WorkItem DAG、有界并发、Trace 计划/事件/Evidence、失败归因与有限重试；架构和代码分区具备资源隔离、集成和质量门授权 | RunState 不可恢复，TestAgent 仍直接写入正式 `workspace/tests/` | 状态机恢复与测试 worktree |
+| Domain Agents | Requirement、Architecture、Task、Bootstrap、Code、Test、Review | 领域 prompt 和产出质量仍是基础版本；TestAgent 尚未迁移到独立测试 worktree | 按真实项目案例迭代工具与 policy |
+| Local ToolSet | domain 隔离、artifact 读写限制、workspace 写入限制；架构 staged/candidate 工具按执行模式隐藏 | 两层产物只覆盖 architecture Markdown | 迁移其他适合并行的 Markdown domain |
+| Artifact Repository | architecture staged output、candidate、IntegrationReport、质量门 promotion 和版本化兼容投影 | 未接 LLM Review 或接口语义检查；代码交付使用独立 Git ChangeSet | 扩展统一产物质量报告 |
+| Code Parallel | backend/frontend Git task worktree、ChangeSet、路径隔离、Policy 三方合并并发布到正式 workspace | 目前只覆盖两个固定代码分区；冲突会阻止发布，未支持受限冲突解决 | 增加代码变更质量规则与失败返工 |
 | ToolGateway | 静态本地注册、动态 source 授权、CrewAI 适配 | 真实 MCP client 未接入 | MCP connector 与审批恢复 |
 | Sandbox | Docker 受控 unit 检查、`SandboxEvidence` 持久化；`python-stdlib` 已真实跑通 | 固定 unittest discovery，无 check catalog | check catalog |
 | Dependencies | `python-pip` 声明、依赖格式校验、hash wheel cache resolver | 需要所有者显式批准；未连到 Workflow | 批准请求和 resume |
 | Review | 可读取受限 artifact、runtime 摘要、workspace 与当前 Trace 原始证据 | 未把失败证据转成修复决策 | 接入 PlanPatch |
-| Quality / Memory | 尚未接入主链路 | 无质量下限或跨运行学习 | 在闭环稳定后增加 |
+| Quality / Memory | Trace 级事件 MemoryStore、raw/temporary/working/episodic/durable 分层、candidate 生命周期、SQLite/FTS5 与可选向量混合召回、受控 durable 跨 Trace 召回、预算化 Prompt、运行摘要校验、checkpoint、候选审批/过期控制面和 Memory API | 尚无跨进程恢复；候选仍依赖外部人工或 Review 调用控制接口 | 接入 Review/人工审批 UI 和恢复状态机 |
 
 ## MVP 验收标准
 

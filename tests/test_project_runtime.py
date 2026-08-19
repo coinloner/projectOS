@@ -14,6 +14,7 @@ class ProjectRuntimeTest(unittest.TestCase):
 
             manifest = RuntimeManifest.load(str(Path(base_dir) / "sandboxed"))
             self.assertEqual(manifest.profile, "python-stdlib")
+            self.assertIsNone(manifest.application)
             self.assertFalse((project.workspace_path / ".venv").exists())
 
 
