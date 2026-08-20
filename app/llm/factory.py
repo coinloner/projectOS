@@ -10,7 +10,12 @@ from dotenv import load_dotenv
 from app.llm.config import get_provider_config
 
 
-def build_llm(provider: str | None = None) -> LLM:
+def build_llm(
+    provider: str | None = None,
+    *,
+    temperature: float | None = None,
+    seed: int | None = None,
+) -> LLM:
     """加载项目 .env 后创建当前配置的 CrewAI LLM，不发起模型请求。"""
     load_dotenv(override=False)
     config = get_provider_config(provider)
@@ -24,4 +29,6 @@ def build_llm(provider: str | None = None) -> LLM:
         api_key=api_key,
         base_url=config["base_url"],
         provider=config["crewai_provider"],
+        temperature=temperature,
+        seed=seed,
     )

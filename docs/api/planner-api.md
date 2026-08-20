@@ -74,3 +74,8 @@ Agent、期望依赖顺序和最大步骤数；`PlannerEvaluator.evaluate()` 接
 报告会记录计划成功率、合法率、缺失步骤、禁用 Agent、额外步骤、顺序正确率；设置
 `repetitions > 1` 时还会记录路径稳定性。默认场景集由 `default_planner_scenarios()` 提供，
 真实模型评测不应放入普通单元测试。
+
+`CrewAIPlannerRuntime` 默认使用 `temperature=0` 和固定 `seed=0`，并在 Runtime 生命周期内复用
+LLM 客户端。演示环境还可以设置 `PROJECTOS_PLANNER_CACHE=1`，按完整规划上下文缓存草案，
+使同一目标在同一进程内重复演示得到相同路径并跳过重复模型请求；缓存只保存不可信草案，不复用
+旧 Trace 或执行状态。

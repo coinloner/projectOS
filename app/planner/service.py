@@ -58,6 +58,7 @@ class PlannerService:
         self._memory_context = MemoryContextAssembler(self._memory)
 
     def plan(self, *, goal: str, plan_id: str) -> PlannerResult:
+        goal = _require_goal(goal)
         context = PlanningContext.build(
             goal=goal,
             agents=self._agents,
@@ -65,12 +66,12 @@ class PlannerService:
             artifacts=self._artifacts,
         )
         prompt = _planning_prompt(context)
-        trace = self._traces.start_trace(goal.strip())
+        trace = self._traces.start_trace(goal)
         self._memory.append(
             trace_id=trace.trace_id,
             role="user",
             event_type="goal",
-            content=goal.strip(),
+            content=goal,
         )
 
         for attempt in (1, 2):
@@ -122,6 +123,7 @@ class PlannerService:
         API/CLI 可以选择已注册的流程模板，但不能提交其中的 WorkItem 授权字段。
         这类模板不需要 LLM 再次拆解节点，避免把 slot、发布目标等控制面权限交给模型。
         """
+        goal = _require_goal(goal)
         template = self._templates.get(workflow_id)
         if template is None:
             raise PlannerFailure(f"未注册 Workflow: '{workflow_id}'")
@@ -135,12 +137,12 @@ class PlannerService:
             templates=self._templates,
             artifacts=self._artifacts,
         )
-        trace = self._traces.start_trace(goal.strip())
+        trace = self._traces.start_trace(goal)
         self._memory.append(
             trace_id=trace.trace_id,
             role="user",
             event_type="goal",
-            content=goal.strip(),
+            content=goal,
         )
         draft = PlanDraft.model_validate(
             {
@@ -158,6 +160,22 @@ class PlannerService:
             )
         except PlanValidationError as error:
             raise PlannerFailure(f"受控 Workflow 无法生成计划: {error}") from error
+        self._memory.append(
+            trace_id=trace.trace_id,
+            role="system",
+            event_type="planner_input",
+            content=f"controlled_workflow={workflow_id}",
+            attempt=1,
+            metadata={"plan_id": plan_id, "controlled": True},
+        )
+        self._memory.append(
+            trace_id=trace.trace_id,
+            role="planner",
+            event_type="draft_output",
+            content=draft.model_dump_json(),
+            attempt=1,
+            metadata={"plan_id": plan_id, "controlled": True},
+        )
         return PlannerResult(
             plan=plan,
             draft=draft,
@@ -243,6 +261,12 @@ class PlannerService:
             for item in plan.work_items
         )
         return replace(plan, work_items=work_items)
+
+
+def _require_goal(goal: str) -> str:
+    if not isinstance(goal, str) or not goal.strip():
+        raise PlannerFailure("Planner goal 不能为空")
+    return goal.strip()
 
 
 def _planning_prompt(context: PlanningContext) -> str:

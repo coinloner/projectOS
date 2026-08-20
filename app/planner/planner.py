@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+from threading import Lock
 from typing import Protocol
 
 from crewai import Agent, Task
@@ -19,12 +22,31 @@ class PlannerRuntime(Protocol):
 class CrewAIPlannerRuntime:
     """无工具 CrewAI Agent，用于输出严格 JSON 的 PlanDraft。"""
 
+    def __init__(self, *, cache_enabled: bool | None = None) -> None:
+        self._llm = None
+        self._lock = Lock()
+        self._cache_enabled = (
+            os.environ.get("PROJECTOS_PLANNER_CACHE", "0") == "1"
+            if cache_enabled is None
+            else cache_enabled
+        )
+        self._cache: dict[str, str] = {}
+
     def generate(self, prompt: str) -> str:
+        cache_key = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        if self._cache_enabled:
+            with self._lock:
+                cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
+        with self._lock:
+            if self._llm is None:
+                self._llm = build_llm(temperature=0.0, seed=0)
         agent = Agent(
             role="执行计划编排者",
             goal="在已注册 Agent 合同范围内生成最小、可执行的任务计划",
             backstory=_BACKSTORY,
-            llm=build_llm(),
+            llm=self._llm,
             tools=[],
             max_iter=1,
             verbose=False,
@@ -35,7 +57,11 @@ class CrewAIPlannerRuntime:
             expected_output="严格符合要求的单个 JSON 对象，不含 Markdown 代码块。",
             agent=agent,
         )
-        return str(agent.execute_task(task))
+        result = str(agent.execute_task(task))
+        if self._cache_enabled:
+            with self._lock:
+                self._cache[cache_key] = result
+        return result
 
 
 _BACKSTORY = """\

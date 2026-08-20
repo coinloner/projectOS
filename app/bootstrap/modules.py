@@ -22,6 +22,7 @@ from app.workflow.templates import (
     architecture_compact_template,
     architecture_parallel_template,
     project_delivery_minimal_template,
+    requirement_generation_template,
 )
 
 
@@ -42,3 +43,4 @@ def install_modules(container: "ProjectOSContainer") -> None:
     container.templates.register(architecture_compact_template())
     container.templates.register(architecture_parallel_template())
     container.templates.register(project_delivery_minimal_template())
+    container.templates.register(requirement_generation_template())

@@ -348,6 +348,16 @@ class PlanValidatorTest(unittest.TestCase):
 
 
 class PlannerServiceTest(unittest.TestCase):
+    def test_empty_goal_uses_planner_failure_contract(self) -> None:
+        service = PlannerService(
+            runtime=FakePlannerRuntime([]),
+            agents=self.agents,
+            templates=self.templates,
+            artifacts=self.artifacts,
+        )
+        with self.assertRaisesRegex(PlannerFailure, "goal 不能为空"):
+            service.plan(goal="  ", plan_id="empty-goal")
+
     def setUp(self) -> None:
         self._directory = tempfile.TemporaryDirectory()
         self.artifacts = ArtifactStore(self._directory.name)

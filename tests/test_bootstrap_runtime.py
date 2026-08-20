@@ -30,6 +30,7 @@ class BootstrapRuntimeTest(unittest.TestCase):
             self.assertIsNotNone(container.templates.get("architecture_compact"))
             self.assertIsNotNone(container.templates.get("architecture_parallel"))
             self.assertIsNotNone(container.templates.get("project_delivery_minimal"))
+            self.assertIsNotNone(container.templates.get("requirement_generation"))
             self.assertEqual(
                 {tool.name for tool in container.gateway.tools_for("architecture")},
                 {
@@ -59,6 +60,11 @@ class BootstrapRuntimeTest(unittest.TestCase):
             self.assertEqual(
                 planning.plan.work_items[-1].id,
                 "wi-06-architecture-quality-gate",
+            )
+            memory_events = container.memory.events(planning.plan.trace.trace_id)
+            self.assertEqual(
+                [event.event_type for event in memory_events[:3]],
+                ["goal", "planner_input", "draft_output"],
             )
 
 
