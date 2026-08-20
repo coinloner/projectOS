@@ -47,6 +47,27 @@ class FakePlannerRuntime:
         return next(self._responses)
 
 
+class ScenarioPlannerRuntime:
+    """用确定性场景草案验证 Planner 的动态路径选择边界。"""
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def generate(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if "已有需求，请做技术架构" in prompt:
+            return (
+                '{"rationale":"需求已存在","template_hint_id":null,"steps":['
+                '{"ref":"architecture","agent_id":"architecture_agent",'
+                '"objective":"设计技术架构"}]}'
+            )
+        return (
+            '{"rationale":"先整理想法","template_hint_id":null,"steps":['
+            '{"ref":"requirement","agent_id":"requirement_agent",'
+            '"objective":"整理产品需求"}]}'
+        )
+
+
 def build_agents() -> AgentRegistry:
     registry = AgentRegistry()
     for agent_id, domain, description, output_key in (
@@ -447,6 +468,33 @@ class PlannerServiceTest(unittest.TestCase):
             repair.plan.work_items[1].failure_package.signal.evidence_id, "ev-1"
         )
         self.assertIn("可信控制面数据", runtime.prompts[1])
+
+    def test_planner_selects_different_dag_paths_for_different_goals(self) -> None:
+        runtime = ScenarioPlannerRuntime()
+        service = PlannerService(
+            runtime=runtime,
+            agents=self.agents,
+            templates=self.templates,
+            artifacts=self.artifacts,
+        )
+
+        ideation = service.plan(goal="整理一个产品想法", plan_id="scenario-ideation")
+        architecture = service.plan(
+            goal="已有需求，请做技术架构", plan_id="scenario-architecture"
+        )
+
+        self.assertEqual(
+            [item.agent_id for item in ideation.plan.work_items],
+            ["requirement_agent"],
+        )
+        self.assertEqual(
+            [item.agent_id for item in architecture.plan.work_items],
+            ["architecture_agent"],
+        )
+        self.assertNotEqual(
+            tuple(item.agent_id for item in ideation.plan.work_items),
+            tuple(item.agent_id for item in architecture.plan.work_items),
+        )
 
 
 if __name__ == "__main__":

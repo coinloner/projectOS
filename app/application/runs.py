@@ -142,6 +142,20 @@ class RunService:
             status="running",
         )
 
+    def start_dynamic_plan(
+        self, *, project_path: str, goal: str, plan_id: str
+    ) -> StartedRun:
+        """为连续会话执行一次普通 Planner 计划，不接受调用方注入权限字段。"""
+        container = self._container_builder(project_path)
+        planning = container.planner.plan(goal=goal, plan_id=plan_id)
+        self._coordinator.submit(container, planning.plan)
+        return StartedRun(
+            trace_id=planning.plan.trace.trace_id,
+            plan_id=planning.plan.id,
+            workflow_id=planning.plan.template_id or "dynamic",
+            status="running",
+        )
+
     def controlled_workflows(self, project_path: str) -> tuple[dict[str, str], ...]:
         container = self._container_builder(project_path)
         return tuple(

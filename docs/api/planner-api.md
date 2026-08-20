@@ -60,3 +60,17 @@ PlannerService.plan(goal: str, plan_id: str) -> PlannerResult
 `PlannerService.plan_repair(previous_plan, failure, plan_id)` 使用可信失败类型、证据 ID、错误摘要和历史计划摘要生成同一 Trace 内的新计划。它只能追加新的 WorkItem，不能修改历史节点、工具权限或项目文件。
 
 修复计划中属于 code/test domain 的 WorkItem 会由系统附加 `FailurePackage`。Planner 不读取原始测试输出；`FailurePackage` 仅向修复节点提供受限 stdout/stderr 摘要，并将它声明为不可信诊断数据。
+
+`tests/test_planner.py` 包含场景化路径测试：例如“整理一个产品想法”只选择
+`requirement_agent`，而“已有需求，请做技术架构”只选择 `architecture_agent`。这类测试验证的是
+Planner 草案到 DAG 的确定性契约；真实 LLM 的路径质量仍需要使用固定场景集、记录生成草案并进行人工或
+自动评分的评测集，不能仅凭单元测试证明。
+
+## Planner 评测集
+
+`app.planner.evaluation` 提供不依赖网络的评测契约。`PlannerScenario` 声明目标、必选/禁用
+Agent、期望依赖顺序和最大步骤数；`PlannerEvaluator.evaluate()` 接收一个明确提供的
+`PlannerService`，因此可以用 Fake Runtime 做回归，也可以在人工配置 LLM 后运行同一场景集。
+报告会记录计划成功率、合法率、缺失步骤、禁用 Agent、额外步骤、顺序正确率；设置
+`repetitions > 1` 时还会记录路径稳定性。默认场景集由 `default_planner_scenarios()` 提供，
+真实模型评测不应放入普通单元测试。

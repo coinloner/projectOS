@@ -46,6 +46,19 @@ class ApiTest(unittest.TestCase):
             ],
         )
 
+    def test_conversation_can_be_created_and_read_without_frontend(self) -> None:
+        self.client.post("/api/v1/projects", json={"name": "demo"})
+        created = self.client.post("/api/v1/projects/demo/conversations")
+
+        self.assertEqual(created.status_code, 201)
+        conversation_id = created.json()["conversation_id"]
+        loaded = self.client.get(
+            f"/api/v1/projects/demo/conversations/{conversation_id}"
+        )
+
+        self.assertEqual(loaded.status_code, 200)
+        self.assertEqual(loaded.json()["messages"], [])
+
     def test_api_rejects_path_like_project_id_and_unknown_workflow(self) -> None:
         invalid = self.client.post("/api/v1/projects", json={"name": "../escape"})
         self.assertEqual(invalid.status_code, 422)

@@ -20,6 +20,10 @@ uvicorn app.api.asgi:app --reload
 | `POST` | `/api/v1/projects` | 创建 ProjectOS 项目 |
 | `GET` | `/api/v1/projects/{project_id}/workflows` | 列出可由 API 直接启动的受控 Workflow |
 | `POST` | `/api/v1/projects/{project_id}/runs` | 后台启动一个受控 Workflow |
+| `POST` | `/api/v1/projects/{project_id}/conversations` | 创建连续对话会话 |
+| `POST` | `/api/v1/projects/{project_id}/conversations/{conversation_id}/messages` | 发送消息并启动一轮动态 Planner |
+| `GET` | `/api/v1/projects/{project_id}/conversations/{conversation_id}` | 查询会话和消息 |
+| `GET` | `/api/v1/projects/{project_id}/conversations/{conversation_id}/messages` | 查询会话消息 |
 | `GET` | `/api/v1/projects/{project_id}/runs/{trace_id}` | 查询 Trace 与进程内运行状态 |
 | `GET` | `/api/v1/projects/{project_id}/runs/{trace_id}/events` | 查询持久化控制面事件 |
 | `GET` | `/api/v1/projects/{project_id}/runs/{trace_id}/memory` | 查询一次运行的会话记忆事件 |
@@ -39,6 +43,13 @@ uvicorn app.api.asgi:app --reload
 - `architecture_compact`：小需求的低成本路径，两个 LLM 节点。
 - `architecture_parallel`：复杂需求的多分区路径，baseline 后可并行运行多个 scope。
 - `project_delivery_minimal`：从已有需求和架构继续跑任务、环境、并行代码、测试和 Review。
+
+连续对话接口不要求调用方先选择 Workflow。会话层先用确定性规则分类意图：新需求/修改需求进入
+普通 `PlannerService.plan()`，查看结果只读取 Trace、Artifact 和 SandboxEvidence，继续只返回
+当前任务状态，恢复才调用 checkpoint 恢复入口；授权消息不会隐式授予能力。每条 user 消息会保存
+到会话，并带有限历史进入规划；Planner 生成的本轮计划仍然拥有独立 `trace_id`。会话保存连续性，
+Trace 保存一次执行的审计事实，两者不混在同一个文件中。Trace 进入终态后，读取会话接口会追加
+基于事实生成的 assistant 自然语言摘要，前端无需直接解析控制面事件。
 
 ## 运行模型
 

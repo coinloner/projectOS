@@ -4,6 +4,13 @@ from app.planner.errors import PlanValidationError
 from app.planner.planner import CrewAIPlannerRuntime, PlannerRuntime
 from app.planner.service import PlannerFailure, PlannerResult, PlannerService
 from app.planner.validator import PlanValidator
+from app.planner.evaluation import (
+    PlannerEvaluationReport,
+    PlannerEvaluator,
+    PlannerScenario,
+    PlannerScenarioResult,
+    default_planner_scenarios,
+)
 
 __all__ = [
     "CrewAIPlannerRuntime",
@@ -16,4 +23,9 @@ __all__ = [
     "PlannedStep",
     "PlanValidationError",
     "PlanValidator",
+    "PlannerEvaluationReport",
+    "PlannerEvaluator",
+    "PlannerScenario",
+    "PlannerScenarioResult",
+    "default_planner_scenarios",
 ]

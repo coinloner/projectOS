@@ -10,6 +10,11 @@ from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.application.runs import RunCoordinator, RunService
+from app.application.conversations import (
+    ConversationBusy,
+    ConversationService,
+    ConversationStore,
+)
 from app.application.project_runtime import ProjectRuntimeService
 from app.memory.store import MemoryStore
 from app.sandbox.application_runner import ApplicationRunError
@@ -34,6 +39,10 @@ class MemoryDecisionRequest(BaseModel):
     trace_id: str = Field(min_length=1, max_length=128)
 
 
+class ConversationMessageRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=8000)
+
+
 def create_app(*, projects_root: str = "./projects") -> FastAPI:
     """创建 HTTP 应用，不在 import 时创建项目或发起 Agent 执行。"""
     root = Path(projects_root).resolve()
@@ -43,6 +52,9 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
         coordinator = RunCoordinator()
         app.state.coordinator = coordinator
         app.state.run_service = RunService(coordinator=coordinator)
+        app.state.conversations = ConversationService(
+            run_service=app.state.run_service
+        )
         app.state.project_runtime = ProjectRuntimeService()
         yield
         app.state.project_runtime.shutdown()
@@ -94,6 +106,76 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             "plan_id": started.plan_id,
             "workflow_id": started.workflow_id,
             "status": started.status,
+        }
+
+    @app.post("/api/v1/projects/{project_id}/conversations", status_code=status.HTTP_201_CREATED)
+    def create_conversation(project_id: str) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        conversation = ConversationStore(str(project_path)).create(project_id)
+        return conversation.as_dict()
+
+    @app.get("/api/v1/projects/{project_id}/conversations/{conversation_id}")
+    def get_conversation(
+        project_id: str, conversation_id: str, request: Request
+    ) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        try:
+            conversation = ConversationStore(str(project_path)).load(conversation_id)
+            turns = request.app.state.conversations.sync_terminal_turns(
+                str(project_path), conversation_id
+            )
+        except (FileNotFoundError, ValueError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return {
+            **conversation.as_dict(),
+            "messages": [turn.as_dict() for turn in turns],
+        }
+
+    @app.post("/api/v1/projects/{project_id}/conversations/{conversation_id}/messages", status_code=status.HTTP_202_ACCEPTED)
+    def send_conversation_message(
+        project_id: str,
+        conversation_id: str,
+        payload: ConversationMessageRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        service: ConversationService = request.app.state.conversations
+        try:
+            action = service.send_message(
+                project_path=str(project_path),
+                conversation_id=conversation_id,
+                content=payload.content,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ConversationBusy as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except (PlannerFailure, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {
+            "intent": action.intent.value,
+            "message": action.user_turn.as_dict(),
+            "assistant_message": action.message.as_dict() if action.message else None,
+            "trace_id": action.started_run.trace_id if action.started_run else action.trace_id,
+            "plan_id": action.started_run.plan_id if action.started_run else None,
+            "workflow_id": action.started_run.workflow_id if action.started_run else None,
+            "status": action.started_run.status if action.started_run else "no_run",
+        }
+
+    @app.get("/api/v1/projects/{project_id}/conversations/{conversation_id}/messages")
+    def list_conversation_messages(
+        project_id: str, conversation_id: str, request: Request
+    ) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        try:
+            turns = request.app.state.conversations.sync_terminal_turns(
+                str(project_path), conversation_id
+            )
+        except (FileNotFoundError, ValueError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return {
+            "conversation_id": conversation_id,
+            "messages": [turn.as_dict() for turn in turns],
         }
 
     @app.get("/api/v1/projects/{project_id}/runs/{trace_id}")
