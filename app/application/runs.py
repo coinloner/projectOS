@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from app.bootstrap.runtime import ProjectOSContainer, build_container
 from app.orchestration.runner import GraphRunResult, GraphRunStatus
+from app.orchestration.state import RunState
 from app.planner.service import PlannerFailure
 
 
@@ -38,8 +39,14 @@ class RunCoordinator:
         self._futures: dict[str, Future[GraphRunResult]] = {}
         self._lock = Lock()
 
-    def submit(self, container: ProjectOSContainer, plan) -> None:
-        future = self._executor.submit(self._run_with_repairs, container, plan)
+    def submit(
+        self,
+        container: ProjectOSContainer,
+        plan,
+        *,
+        state: RunState | None = None,
+    ) -> None:
+        future = self._executor.submit(self._run_with_repairs, container, plan, state)
         with self._lock:
             self._futures[plan.trace.trace_id] = future
 
@@ -62,9 +69,11 @@ class RunCoordinator:
 
     @staticmethod
     def _run_with_repairs(
-        container: ProjectOSContainer, plan
+        container: ProjectOSContainer,
+        plan,
+        state: RunState | None = None,
     ) -> GraphRunResult:
-        result = container.runner.run(plan)
+        result = container.runner.run(plan, state=state)
         for repair_attempt in range(1, 3):
             if result.status is not GraphRunStatus.NEEDS_REPLAN:
                 break
@@ -143,4 +152,28 @@ class RunService:
             }
             for template in container.templates.templates()
             if template.has_controlled_execution
+        )
+
+    def resume_run(self, *, project_path: str, trace_id: str) -> StartedRun:
+        """从最近 checkpoint 恢复未完成节点；不重新规划目标或权限。"""
+        container = self._container_builder(project_path)
+        trace = container.traces.load_trace(trace_id)
+        status = str(trace.get("status", ""))
+        resumable = {
+            GraphRunStatus.FAILED.value,
+            GraphRunStatus.BLOCKED.value,
+            GraphRunStatus.WAITING_FOR_CAPABILITY_APPROVAL.value,
+            GraphRunStatus.NEEDS_REPLAN.value,
+        }
+        if status not in resumable:
+            raise PlannerFailure(f"Trace 当前状态不可恢复: {status}")
+        plan = container.traces.load_plan(trace_id)
+        checkpoint = container.traces.load_checkpoint(trace_id)
+        state = RunState.from_checkpoint(plan, checkpoint)
+        self._coordinator.submit(container, plan, state=state)
+        return StartedRun(
+            trace_id=trace_id,
+            plan_id=plan.id,
+            workflow_id=plan.template_id or "",
+            status="running",
         )

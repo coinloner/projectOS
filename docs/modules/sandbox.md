@@ -38,7 +38,8 @@ RuntimeManifest -> SandboxPolicy -> SandboxSpec -> DockerSandboxProvider
 
 证据文件位于 `.projectos/runs/<trace_id>/evidence/<evidence_id>.json`，记录生成它的 WorkItem 和 Agent。工具返回值保留 `evidence_id` 与可读摘要，`tests.md` 是人读报告而非结果真相来源；Review 可读取同一 Trace 的原始证据。
 
-测试失败会触发 `needs_replan`，主入口最多请求两轮 Repair Plan。更完整的跨进程恢复、持久化预算和可变 DAG 状态机仍未实现。
+测试失败会触发 `needs_replan`，主入口最多请求两轮 Repair Plan。Runner 已能从版本化 checkpoint
+恢复未完成节点，但依赖批准后的恢复和可变 DAG 状态机仍未实现。
 
 Test WorkItem 的完成还要求至少存在一条由当前 WorkItem 产生的 `SandboxEvidence`。没有证据时，Runner 只进行有限重跑，之后以 `test_evidence_missing` 失败，而不会接受 LLM 的文字声明。
 

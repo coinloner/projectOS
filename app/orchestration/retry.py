@@ -29,6 +29,25 @@ class FailureSignal:
     summary: str
     evidence_id: str | None = None
 
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "summary": self.summary,
+            "evidence_id": self.evidence_id,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> "FailureSignal":
+        return cls(
+            kind=FailureKind(str(payload["kind"])),
+            summary=str(payload["summary"]),
+            evidence_id=(
+                str(payload["evidence_id"])
+                if payload.get("evidence_id") is not None
+                else None
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class FailurePackage:

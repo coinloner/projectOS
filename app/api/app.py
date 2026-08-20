@@ -110,6 +110,30 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             "runtime_status": coordinator.status(trace_id) or trace["status"],
         }
 
+    @app.post(
+        "/api/v1/projects/{project_id}/runs/{trace_id}/resume",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def resume_run(
+        project_id: str, trace_id: str, request: Request
+    ) -> dict[str, str]:
+        project_path = _project_path(root, project_id)
+        service: RunService = request.app.state.run_service
+        try:
+            resumed = service.resume_run(
+                project_path=str(project_path), trace_id=trace_id
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (PlannerFailure, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {
+            "trace_id": resumed.trace_id,
+            "plan_id": resumed.plan_id,
+            "workflow_id": resumed.workflow_id,
+            "status": resumed.status,
+        }
+
     @app.get("/api/v1/projects/{project_id}/runs/{trace_id}/events")
     def get_run_events(project_id: str, trace_id: str) -> dict[str, object]:
         project_path = _project_path(root, project_id)

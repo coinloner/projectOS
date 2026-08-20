@@ -17,7 +17,7 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 
 ## MVP 闭环：下一阶段
 
-目标：让系统能依据真实测试结果完成有限次数的修复与再验证。
+目标：让系统能依据真实测试结果完成有限次数的修复、再验证，并在固定计划中可靠恢复。
 
 1. 增加 WorkItem 状态转移：测试失败后基于 `SandboxEvidence` 暂停给 Planner，生成修复工作项，再回到 Code/Test。
 2. 定义终态：所有必需工作项完成、sandbox 通过、review 无阻塞项，或明确 `blocked`。
@@ -32,7 +32,7 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 | 2 | 可配置且受控的 test discovery | 避免固定 `unittest tests/` 限制 |
 | 3 | MCP connector 与 source 审批恢复 | 扩展外部能力，同时保持最小权限 |
 | 4 | NodeQualityPolicy / QualityReport | 为节点产物添加可量化质量下限 |
-| 5 | Memory | 受控跨 Trace 召回、摘要质量评估、断点恢复和归档；不改变 Policy/Artifact 的事实边界 |
+| 5 | Memory | 受控跨 Trace 召回、摘要质量评估和归档；不改变 Policy/Artifact 的事实边界 |
 | 6 | Workflow 模板沉淀与选择 | 将常见项目交付经验变成 Planner 可参考资产 |
 | 7 | CLI / API / Dashboard | 把已有控制面变为可操作产品界面 |
 
@@ -41,6 +41,6 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 - 任意 Shell 工具或宿主机命令执行
 - Agent 自动联网安装依赖
 - Agent 自动批准 MCP、依赖或运行时权限
-- 并发图执行、跨进程计划恢复、自动跨项目长期记忆
+- 外部队列驱动的跨进程 worker 租约、自动跨项目长期记忆
 
 这些能力会在执行证据、状态机和权限主体明确后逐步加入。

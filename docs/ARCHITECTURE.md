@@ -110,7 +110,7 @@ FastAPI 都不再维护重复的注册清单。
 - Planner 已使用结构化 `WorkItem`；`TaskAgent` 通过 `PARTITIONED -> INTEGRATION -> QUALITY_GATE`
   链路输出给人阅读的 `tasks.md`，不再使用旧的独占读写方式。
 - `SandboxResult` 已作为带 Trace 和 WorkItem 归属的 `SandboxEvidence` 持久化；Review 可只读原始证据。
-- GraphRunner 已可按失败类型有限重跑或请求 Repair Plan；当前主入口最多执行两轮修复计划，复杂的可恢复状态机仍未完成。
+- GraphRunner 已可按失败类型有限重跑或请求 Repair Plan，并能从版本化 checkpoint 恢复固定计划中未完成的节点；当前主入口最多执行两轮修复计划，可变 DAG 状态机仍未完成。
 - Repair Plan 只读取失败类型、证据 ID 与元数据；Code/Test 修复节点才接收受限 `FailurePackage`，其中程序输出明确视为不可信诊断数据。
 - Test WorkItem 没有产生自身的 `SandboxEvidence` 时不能完成，Runner 只会在有限重跑后将其标记失败。
 

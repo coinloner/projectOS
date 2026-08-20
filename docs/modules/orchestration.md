@@ -17,7 +17,7 @@ ExecutionPlan
 | `WorkItemDependency` | 一条依赖及来源：system/template/planner |
 | `ExecutionPlan` | 本次运行的合法 WorkItem DAG |
 | `GraphRunner` | 找到 ready WorkItem，创建 Agent，执行并处理失败/能力缺口 |
-| `RunState` | 当前进程内的结果和 artifact 文本 |
+| `RunState` | 当前执行结果和 artifact 文本，并可从版本化 checkpoint 重建 |
 | `ExecutionContext` | GraphRunner 为单个 WorkItem 创建的可信身份，以及 `execution_mode/input_refs/output_slot/publish_target` 授权 |
 | `TaskInputPackage` | 执行前生成的结构化任务合同：输入用途、资源 scope、输出合同、前置状态、约束和非目标 |
 | `TraceStore` | 持久化计划、事件、终态、requirement 修订和 sandbox evidence |
@@ -40,7 +40,9 @@ GraphRunner 使用有界 worker pool 执行相互独立的 WorkItem；同一 Age
 候选，检查 `IntegrationReport`，再决定是否调用 `ArtifactRepository.promote_candidate()`。
 这让“是否覆盖正式文档”的最终权限始终留在控制面。
 
-Docker 失败会按测试失败、超时、环境配置失败和 Agent 运行异常归因，分别请求 Repair Plan、有限重跑、阻塞或失败。RunState 尚不支持跨进程恢复，复杂的可恢复状态机仍待实现。
+Docker 失败会按测试失败、超时、环境配置失败和 Agent 运行异常归因，分别请求 Repair Plan、有限重跑、阻塞或失败。
+每个节点结果后都会写入版本化 checkpoint；恢复时只信任已完成节点，失败、等待和 replan 节点重新调度，
+避免把中断时的半成品副作用误当成完成结果。
 
 `FailurePackage` 是编排层由 Trace evidence 生成的受控输入。Planner 只看到失败种类、摘要、证据 ID、check/runtime/exit code；修复用 Code/Test WorkItem 可看到受长度限制的 stdout/stderr，并且该文本被标记为不可信程序输出。TestAgent 必须产生当前 WorkItem 的 SandboxEvidence，否则不会被记为完成。
 

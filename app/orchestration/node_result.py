@@ -34,6 +34,63 @@ class NodeResult:
     failure_signal: FailureSignal | None = None
     error: str | None = None
 
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "node_id": self.node_id,
+            "agent_id": self.agent_id,
+            "status": self.status.value,
+            "content": self.content,
+            "capability_request": (
+                {
+                    "capability": self.capability_request.capability,
+                    "reason": self.capability_request.reason,
+                }
+                if self.capability_request is not None
+                else None
+            ),
+            "failure_signal": (
+                self.failure_signal.as_dict()
+                if self.failure_signal is not None
+                else None
+            ),
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> "NodeResult":
+        capability_payload = payload.get("capability_request")
+        capability = (
+            CapabilityRequest(
+                capability=str(capability_payload["capability"]),
+                reason=str(capability_payload["reason"]),
+            )
+            if isinstance(capability_payload, dict)
+            else None
+        )
+        failure_payload = payload.get("failure_signal")
+        failure = (
+            FailureSignal.from_dict(failure_payload)
+            if isinstance(failure_payload, dict)
+            else None
+        )
+        return cls(
+            node_id=str(payload["node_id"]),
+            agent_id=str(payload["agent_id"]),
+            status=NodeStatus(str(payload["status"])),
+            content=(
+                str(payload["content"])
+                if payload.get("content") is not None
+                else None
+            ),
+            capability_request=capability,
+            failure_signal=failure,
+            error=(
+                str(payload["error"])
+                if payload.get("error") is not None
+                else None
+            ),
+        )
+
     @classmethod
     def from_agent_result(
         cls,

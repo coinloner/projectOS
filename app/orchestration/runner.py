@@ -92,12 +92,25 @@ class GraphRunner:
         self._retry_lock = Lock()
         self._total_retries = 0
 
-    def run(self, plan: ExecutionPlan) -> GraphRunResult:
+    def run(
+        self, plan: ExecutionPlan, *, state: RunState | None = None
+    ) -> GraphRunResult:
         with self._retry_lock:
             self._total_retries = 0
-        state = RunState(plan=plan)
+        resumed = state is not None
+        state = state or RunState(plan=plan)
+        if state.plan.id != plan.id or state.plan.trace.trace_id != plan.trace.trace_id:
+            raise ValueError("恢复状态与 ExecutionPlan 不匹配")
         if self._traces is not None:
-            self._traces.record_plan(plan)
+            if resumed:
+                self._traces.record_event(
+                    plan.trace,
+                    "control",
+                    "run_resumed",
+                    details={"completed_work_items": sorted(state.node_results)},
+                )
+            else:
+                self._traces.record_plan(plan)
 
         while not state.is_complete():
             ready_items = state.ready_items()
@@ -395,21 +408,11 @@ class GraphRunner:
         )
 
     def _record_checkpoint(self, state: RunState) -> None:
-        if self._memory is None:
-            return
-        self._memory.checkpoint(
-            state.plan.trace.trace_id,
-            state={
-                "plan_id": state.plan.id,
-                "completed_work_items": sorted(state.node_results),
-                "pending_work_items": [
-                    item.id
-                    for item in state.plan.work_items
-                    if item.id not in state.node_results
-                ],
-                "artifact_keys": sorted(state.artifacts),
-            },
-        )
+        snapshot = state.as_checkpoint()
+        if self._traces is not None:
+            self._traces.record_checkpoint(state.plan.trace, snapshot)
+        if self._memory is not None:
+            self._memory.checkpoint(state.plan.trace.trace_id, state=snapshot)
 
     def _run_quality_gate(self, state: RunState, item: WorkItem) -> NodeResult:
         """质量门由控制面执行，不依赖模型决定是否发布。"""

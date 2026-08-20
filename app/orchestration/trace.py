@@ -96,6 +96,19 @@ class TraceStore:
                         "acceptance_criteria": list(item.acceptance_criteria),
                         "constraints": list(item.constraints),
                         "non_goals": list(item.non_goals),
+                        "policy_id": item.policy_id,
+                        "failure_package": (
+                            {
+                                "signal": item.failure_package.signal.as_dict(),
+                                "check_id": item.failure_package.check_id,
+                                "runtime_profile": item.failure_package.runtime_profile,
+                                "exit_code": item.failure_package.exit_code,
+                                "stdout_excerpt": item.failure_package.stdout_excerpt,
+                                "stderr_excerpt": item.failure_package.stderr_excerpt,
+                            }
+                            if item.failure_package is not None
+                            else None
+                        ),
                     }
                     for item in plan.work_items
                 ],
@@ -155,6 +168,163 @@ class TraceStore:
             json.loads(line)
             for line in path.read_text(encoding="utf-8").splitlines()
             if line.strip()
+        )
+
+    def record_checkpoint(
+        self, trace: TraceContext, state: dict[str, object]
+    ) -> None:
+        """持久化最近一次可恢复状态，Memory 仍保留追加式审计副本。"""
+        payload = {
+            "schema_version": 1,
+            "trace_id": trace.trace_id,
+            "updated_at": self._now(),
+            "state": state,
+        }
+        self._write_json(self._trace_path(trace) / "checkpoint.json", payload)
+
+    def load_checkpoint(self, trace_id: str) -> dict[str, object]:
+        self._validate_trace_id(trace_id)
+        path = self._trace_root(trace_id) / "checkpoint.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"Trace 没有可恢复 checkpoint: {trace_id}")
+        payload = self._read_json(path)
+        if payload.get("schema_version") != 1 or payload.get("trace_id") != trace_id:
+            raise ValueError("checkpoint 元数据无效")
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            raise ValueError("checkpoint.state 格式无效")
+        return state
+
+    def load_plan(self, trace_id: str) -> "ExecutionPlan":
+        """从持久化计划重建对象，并重新触发计划模型校验。"""
+        self._validate_trace_id(trace_id)
+        payload = self._read_json(self._trace_root(trace_id) / "plan.json")
+        trace_payload = self.load_trace(trace_id)
+        from app.artifact.repository import ArtifactRef
+        from app.execution_context import ExecutionMode
+        from app.orchestration.plan import ExecutionPlan
+        from app.orchestration.retry import FailurePackage, FailureSignal
+        from app.orchestration.work_item import (
+            DependencySource,
+            WorkItem,
+            WorkItemDependency,
+        )
+
+        def ref_from_dict(value: dict[str, object]) -> ArtifactRef:
+            return ArtifactRef(
+                artifact_key=str(value["artifact_key"]),
+                layer=str(value["layer"]),
+                trace_id=str(value["trace_id"]) if value.get("trace_id") else None,
+                work_item_id=(
+                    str(value["work_item_id"])
+                    if value.get("work_item_id")
+                    else None
+                ),
+                slot=str(value["slot"]) if value.get("slot") else None,
+                revision_id=(
+                    str(value["revision_id"])
+                    if value.get("revision_id")
+                    else None
+                ),
+            )
+
+        items: list[WorkItem] = []
+        for raw in payload.get("work_items", []):
+            if not isinstance(raw, dict):
+                raise ValueError("plan.json 包含无效 WorkItem")
+            failure_payload = raw.get("failure_package")
+            failure_package = None
+            if isinstance(failure_payload, dict):
+                signal_payload = failure_payload.get("signal")
+                if isinstance(signal_payload, dict):
+                    failure_package = FailurePackage(
+                        signal=FailureSignal.from_dict(signal_payload),
+                        check_id=(
+                            str(failure_payload["check_id"])
+                            if failure_payload.get("check_id")
+                            else None
+                        ),
+                        runtime_profile=(
+                            str(failure_payload["runtime_profile"])
+                            if failure_payload.get("runtime_profile")
+                            else None
+                        ),
+                        exit_code=(
+                            int(failure_payload["exit_code"])
+                            if failure_payload.get("exit_code") is not None
+                            else None
+                        ),
+                        stdout_excerpt=str(failure_payload.get("stdout_excerpt", "")),
+                        stderr_excerpt=str(failure_payload.get("stderr_excerpt", "")),
+                    )
+            dependencies = tuple(
+                WorkItemDependency(
+                    work_item_id=str(dep["work_item_id"]),
+                    source=DependencySource(str(dep["source"])),
+                    rule_id=str(dep["rule_id"]) if dep.get("rule_id") else None,
+                )
+                for dep in raw.get("dependencies", [])
+            )
+            items.append(
+                WorkItem(
+                    id=str(raw["id"]),
+                    agent_id=str(raw["agent_id"]),
+                    objective=str(raw["objective"]),
+                    output_key=str(raw["output_key"]),
+                    artifact_key=(
+                        str(raw["artifact_key"])
+                        if raw.get("artifact_key")
+                        else None
+                    ),
+                    failure_package=failure_package,
+                    dependencies=dependencies,
+                    acceptance_criteria=tuple(
+                        str(value) for value in raw.get("acceptance_criteria", [])
+                    ),
+                    constraints=tuple(
+                        str(value) for value in raw.get("constraints", [])
+                    ),
+                    non_goals=tuple(str(value) for value in raw.get("non_goals", [])),
+                    policy_id=(
+                        str(raw["policy_id"]) if raw.get("policy_id") else None
+                    ),
+                    execution_mode=ExecutionMode(
+                        str(raw.get("execution_mode", "exclusive"))
+                    ),
+                    input_refs=tuple(
+                        ref_from_dict(value) for value in raw.get("input_refs", [])
+                    ),
+                    output_slot=(
+                        str(raw["output_slot"]) if raw.get("output_slot") else None
+                    ),
+                    publish_target=(
+                        str(raw["publish_target"])
+                        if raw.get("publish_target")
+                        else None
+                    ),
+                    candidate_from_work_item_id=(
+                        str(raw["candidate_from_work_item_id"])
+                        if raw.get("candidate_from_work_item_id")
+                        else None
+                    ),
+                )
+            )
+        return ExecutionPlan(
+            id=str(payload["plan_id"]),
+            goal=str(payload["goal"]),
+            template_id=(
+                str(payload["template_id"]) if payload.get("template_id") else None
+            ),
+            trace=TraceContext(
+                requirement_id=str(trace_payload["requirement_id"]),
+                trace_id=str(trace_payload["trace_id"]),
+                parent_trace_id=(
+                    str(trace_payload["parent_trace_id"])
+                    if trace_payload.get("parent_trace_id")
+                    else None
+                ),
+            ),
+            work_items=tuple(items),
         )
 
     def snapshot_requirement(self, trace: TraceContext, content: str) -> int:

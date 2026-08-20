@@ -44,4 +44,5 @@ uvicorn app.api.asgi:app --reload
 
 请求同步完成受控模板的计划编译，随后由进程内 `RunCoordinator` 在线程池执行 Agent。
 `trace_id` 是持久化追踪标识，`Future` 仅用于当前进程报告 `running` 状态。进程重启后，
-Trace 仍可查询，但队列恢复与 `/resume` 尚未实现；将来可以替换为外部任务队列而不改变 API 契约。
+Trace 仍可查询，受校验的 `/resume` 已支持从最近 checkpoint 恢复未完成节点；当前仍是进程内线程池，
+后续可以替换为外部任务队列而不改变 API 契约。

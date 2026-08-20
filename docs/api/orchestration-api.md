@@ -22,6 +22,7 @@ GraphRunner(
     memory: MemoryStore | None = None,
 )
 GraphRunner.run(plan) -> GraphRunResult
+GraphRunner.run(plan, state=restored_state) -> GraphRunResult
 
 TraceStore(project_path)
 TraceStore.start_trace(goal, parent_trace_id=None) -> TraceContext
@@ -33,3 +34,8 @@ TraceStore.load_sandbox_evidence(context, evidence_id) -> SandboxEvidence
 `ExecutionContext(trace_id, work_item_id, agent_id)` 由 GraphRunner 为每个 WorkItem 创建，再绑定到该 Agent 获得的工具对象。它不属于 LLM task 或工具参数。
 
 GraphRunner 调度依赖已满足的 WorkItem，写入进程内 `RunState`。传入 TraceStore 时，它还会写入 `.projectos/runs/<trace_id>/plan.json`、`events.jsonl`、`evidence/<evidence_id>.json` 与 Trace 终态；Requirement 内容变动会形成修订快照。传入 `MemoryStore` 后，Runner 会追加 Agent 输入/输出、工具结果和 checkpoint，Agent 输入只读取同一 WorkItem 的有限历史窗口。
+
+运行中断后可以通过 `POST /api/v1/projects/{project_id}/runs/{trace_id}/resume` 恢复最近一次
+checkpoint。恢复会重新加载并校验 `plan.json`、Trace 和 RunState；只有已完成 WorkItem 会被跳过，
+失败、等待能力或请求重新规划的节点会重新执行。恢复不会修改原始 goal、Workflow 或权限，也不会把
+Memory 当作事实来源。

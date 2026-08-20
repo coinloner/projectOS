@@ -10,6 +10,7 @@ from app.orchestration.plan import ExecutionPlan
 from app.orchestration.runner import GraphRunner, GraphRunStatus
 from app.execution_context import ExecutionContext
 from app.orchestration.trace import TraceStore
+from app.orchestration.state import RunState
 from app.orchestration.work_item import WorkItem
 
 
@@ -18,6 +19,13 @@ class CompletedRequirementAgent:
         self, task: str, *, context: ExecutionContext | None = None
     ) -> AgentResult:
         return AgentResult.completed("# Requirement\n\nFirst revision")
+
+
+class FailingRequirementAgent:
+    def run(
+        self, task: str, *, context: ExecutionContext | None = None
+    ) -> AgentResult:
+        raise RuntimeError("simulated interruption")
 
 
 class TraceStoreTest(unittest.TestCase):
@@ -99,6 +107,60 @@ class TraceStoreTest(unittest.TestCase):
             self.assertEqual(second.parent_trace_id, first.trace_id)
             self.assertEqual((first_revision, second_revision), (1, 2))
             self.assertEqual(metadata["current_revision"], 2)
+
+    def test_plan_and_checkpoint_can_rebuild_and_resume_failed_node(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            context = traces.start_trace("恢复执行")
+            plan = ExecutionPlan(
+                id="plan-resume",
+                goal="恢复执行",
+                trace=context,
+                work_items=(
+                    WorkItem(
+                        id="wi-resume",
+                        agent_id="requirement_agent",
+                        objective="生成需求",
+                        output_key="requirement",
+                    ),
+                ),
+            )
+            failing = AgentRegistry()
+            failing.register(
+                AgentDefinition(
+                    id="requirement_agent",
+                    domain="requirement",
+                    description="失败 Agent",
+                    output_key="requirement",
+                ),
+                factory=FailingRequirementAgent,
+            )
+            first = GraphRunner(failing, ToolGateway(), traces=traces).run(plan)
+            self.assertEqual(first.status, GraphRunStatus.FAILED)
+
+            restored_plan = traces.load_plan(context.trace_id)
+            checkpoint = traces.load_checkpoint(context.trace_id)
+            restored_state = RunState.from_checkpoint(restored_plan, checkpoint)
+            self.assertEqual(restored_state.node_results, {})
+
+            succeeding = AgentRegistry()
+            succeeding.register(
+                AgentDefinition(
+                    id="requirement_agent",
+                    domain="requirement",
+                    description="恢复 Agent",
+                    output_key="requirement",
+                ),
+                factory=CompletedRequirementAgent,
+            )
+            resumed = GraphRunner(
+                succeeding, ToolGateway(), traces=traces
+            ).run(restored_plan, state=restored_state)
+            self.assertEqual(resumed.status, GraphRunStatus.COMPLETED)
+            event_types = [
+                event["type"] for event in traces.list_events(context.trace_id)
+            ]
+            self.assertIn("run_resumed", event_types)
 
 
 if __name__ == "__main__":
