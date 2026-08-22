@@ -43,6 +43,6 @@ DockerDependencyResolver.resolve(
 ) -> DependencyResolutionResult
 ```
 
-当 `approved=False` 时抛出 `PermissionError`。已批准的解析只挂载临时 `requirements.in` 和项目私有 wheel cache，不挂载 workspace；下载容器可以使用 bridge 网络，测试容器仍无网络。成功后将 cache 标记为可离线使用。
+当 `approved=False` 时抛出 `PermissionError`。已批准的解析只挂载临时 `requirements.in` 和项目私有 wheel cache，不挂载 workspace；下载容器可以使用 bridge 网络，测试容器仍无网络。Resolver 会在下载容器中解析普通 `requirements.in`，成功后将解析结果固化到 cache 并标记为可离线使用。
 
 Resolver 尚未连接到 GraphRunner 的批准/恢复状态机，Agent 不得自行调用它。

@@ -28,7 +28,7 @@ GraphRunner -> AgentRegistry -> BaseAgent -> ToolGateway -> CrewAI Agent + Task
 | `BootstrapAgent` | bootstrap | `environment.md`、runtime 声明 | 只能声明 profile/依赖，不能安装或运行 Docker |
 | `CodeAgent` | code | `workspace/`、`implementation.md` | 读前置 artifact，受限读写 workspace；不能执行命令 |
 | `TestAgent` | test | `workspace/tests/`、`tests.md`、SandboxEvidence | 写测试，只能请求固定 sandbox check；原始结果由系统记录 |
-| `ReviewAgent` | review | `review.md` | 受限只读项目、runtime 摘要和当前 Trace sandbox evidence |
+| `ReviewAgent` | review | `review.md` | 受限只读项目、runtime 摘要和当前 Trace sandbox evidence，并调用确定性质量策略 |
 
 ## AgentResult
 
@@ -37,4 +37,4 @@ Agent 的最终输出被解析为两种正常状态：
 - `completed`：包含最终文本，GraphRunner 转成完成的 `NodeResult`。
 - `needs_capability`：严格 JSON 的外部能力请求。Agent 不会连接 MCP；Runner 只查候选 source 并返回等待/阻塞状态。
 
-CrewAI 执行异常由 GraphRunner 转为失败节点。Docker 测试结果已成为结构化 `SandboxEvidence`，但“失败证据触发修复”的 PlanPatch/重试协议尚未实现。
+CrewAI 执行异常由 GraphRunner 转为失败节点。Docker 测试结果已成为结构化 `SandboxEvidence`；setup failure 会继续进入 Review 形成阻塞结论，真实测试失败仍按失败策略进入有限重试或 PlanPatch。

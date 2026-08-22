@@ -18,7 +18,8 @@ WorkflowTemplate
 | `WorkflowTemplateRegistry` | Planner 可读取的模板目录 |
 | `TemplateCompiler` | 将带 `PARTITIONED/INTEGRATION/QUALITY_GATE` 的可信模板展开为一次带授权的 ExecutionPlan |
 
-旧的 `project_delivery_template()` 不再注册为可启动入口。TaskAgent 必须使用
+`project_delivery_template()` 已注册为从空项目开始的完整交付入口；它负责先生成需求、架构、任务和
+环境，再进入实现、测试和 Review。已有需求与架构的项目可使用
 `project_delivery_minimal_template()` 的 PARTITIONED -> INTEGRATION -> QUALITY_GATE 链路。
 
 `architecture_parallel_template()` 是第一个受控模板。Planner 只选择模板，`TemplateCompiler`

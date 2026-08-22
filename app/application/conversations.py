@@ -271,12 +271,43 @@ class ConversationService:
 
         if trace_status in {"planned", "running"}:
             raise ConversationBusy("当前会话仍有运行中的任务，请先查询会话状态或恢复该 Trace")
-        history = store.prompt_history(conversation_id)
-        goal = (
-            "这是一个连续会话中的新用户请求。请结合历史上下文，只为本轮请求生成最小可执行计划。\n\n"
-            f"会话历史：\n{history}\n\n"
-            "当前请求已经包含在会话历史最后一条 user 消息中。"
-        )
+
+        if intent is ConversationIntent.MODIFY_REQUEST:
+            if not trace_id:
+                raise PlannerFailure("当前会话没有可修改的计划")
+            try:
+                started = self._run_service.start_patch_plan(
+                    project_path=project_path,
+                    trace_id=trace_id,
+                    change_request=content,
+                )
+            except PlannerFailure:
+                store.append(
+                    conversation_id,
+                    role="system",
+                    content="Planner 无法在局部修改范围内生成合法补丁。",
+                    trace_id=trace_id,
+                )
+                raise
+            system_turn = store.append(
+                conversation_id,
+                role="system",
+                content=f"已应用局部计划修改并恢复执行：{started.plan_id}",
+                trace_id=started.trace_id,
+            )
+            return ConversationActionResult(intent, user_turn, system_turn, started)
+
+        if not existing_turns:
+            # 会话的首条消息就是完整目标：直接按全量目标规划，
+            # 而不是当作"连续会话中的新请求"压缩成最小可执行计划
+            goal = content
+        else:
+            history = store.prompt_history(conversation_id)
+            goal = (
+                "这是一个连续会话中的新用户请求。请结合历史上下文，只为本轮请求生成最小可执行计划。\n\n"
+                f"会话历史：\n{history}\n\n"
+                "当前请求已经包含在会话历史最后一条 user 消息中。"
+            )
         plan_id = f"{conversation.id}-{uuid4().hex[:8]}"
         try:
             started = self._run_service.start_dynamic_plan(

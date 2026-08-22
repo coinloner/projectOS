@@ -14,6 +14,12 @@ from app.planner.draft import PlanDraft, PlanDraftError
 from app.planner.errors import PlanValidationError
 from app.planner.planner import PlannerRuntime
 from app.planner.validator import PlanValidator
+from app.planner.patch import (
+    AppliedPlanPatch,
+    PlanPatch,
+    PlanPatchError,
+    apply_patch,
+)
 from app.workflow.template import WorkflowTemplateRegistry
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.retry import FailurePackage, FailureSignal
@@ -183,6 +189,59 @@ class PlannerService:
             attempts=0,
         )
 
+    def plan_patch(
+        self,
+        *,
+        previous_plan: ExecutionPlan,
+        change_request: str,
+        completed_work_item_ids: set[str] | frozenset[str] = frozenset(),
+        allow_completed_revision: bool = False,
+        plan_id: str | None = None,
+    ) -> AppliedPlanPatch:
+        """只为既有计划生成局部补丁，不重新规划整张 DAG。"""
+        if not isinstance(change_request, str) or not change_request.strip():
+            raise PlannerFailure("修改请求不能为空")
+        patch_plan_id = plan_id or f"{previous_plan.id}-patch"
+        prompt = _patch_prompt(
+            previous_plan,
+            change_request.strip(),
+            completed_work_item_ids,
+        )
+        for attempt in (1, 2):
+            self._memory.append(
+                trace_id=previous_plan.trace.trace_id,
+                role="system",
+                event_type="planner_patch_input",
+                content=prompt,
+                attempt=attempt,
+                metadata={"plan_id": patch_plan_id},
+            )
+            raw_patch = self._runtime.generate(prompt)
+            self._memory.append(
+                trace_id=previous_plan.trace.trace_id,
+                role="planner",
+                event_type="patch_output",
+                content=raw_patch,
+                attempt=attempt,
+                metadata={"plan_id": patch_plan_id},
+            )
+            try:
+                patch = PlanPatch.parse(raw_patch)
+                return apply_patch(
+                    previous_plan,
+                    patch,
+                    agents=self._agents,
+                    completed_work_item_ids=completed_work_item_ids,
+                    allow_completed_revision=allow_completed_revision,
+                )
+            except PlanPatchError as error:
+                if attempt == 2:
+                    raise PlannerFailure(
+                        f"Planner 在局部修改后仍无法生成合法补丁: {error}"
+                    ) from error
+                prompt = _patch_repair_prompt(prompt, raw_patch, str(error))
+        raise AssertionError("Planner patch 修复循环未按预期结束")
+
     def plan_repair(
         self,
         *,
@@ -269,6 +328,44 @@ def _require_goal(goal: str) -> str:
     return goal.strip()
 
 
+def _patch_prompt(
+    plan: ExecutionPlan,
+    change_request: str,
+    completed_work_item_ids: set[str] | frozenset[str],
+) -> str:
+    items = [
+        {
+            "id": item.id,
+            "agent_id": item.agent_id,
+            "objective": item.objective,
+            "depends_on": list(item.dependency_ids),
+        }
+        for item in plan.work_items
+    ]
+    return (
+        "请只为现有计划生成 PlanPatch JSON，不要重新生成完整计划。\n\n"
+        f"base_plan_id: {plan.id}\n"
+        f"用户修改请求：{change_request}\n"
+        f"已完成 WorkItem（历史结果不可覆写，但本次补丁可创建新 revision 重新计算）：{sorted(completed_work_item_ids)}\n"
+        f"现有 WorkItem：{json.dumps(items, ensure_ascii=False)}\n\n"
+        "只允许 operation=modify/add/remove。modify 只能修改 objective 或显式 depends_on；"
+        "add 必须提供 ref、agent_id、objective 和 depends_on；remove 必须提供 work_item_id。"
+        "不允许改变 Agent 权限、execution_mode、artifact、slot、发布目标或质量门。"
+        "最多 modify 2 个、add 2 个、remove 1 个节点；只输出 JSON。\n"
+        '{"rationale":"...","base_plan_id":"...","operations":['
+        '{"operation":"modify","work_item_id":"...","objective":"..."}]}'
+    )
+
+
+def _patch_repair_prompt(previous_prompt: str, raw_patch: str, error: str) -> str:
+    return (
+        "上一份 PlanPatch 无法通过确定性边界校验。请只输出修正后的 PlanPatch JSON。\n\n"
+        f"原始约束：\n{previous_prompt}\n\n"
+        f"上一份补丁：\n{raw_patch}\n\n"
+        f"校验错误：\n{error}\n"
+    )
+
+
 def _planning_prompt(context: PlanningContext) -> str:
     return (
         "请为以下 ProjectOS 上下文生成 PlanDraft JSON。\n\n"
@@ -314,4 +411,7 @@ def _repair_planning_prompt(
         + (f"历史会话记忆：\n{memory_context}\n\n" if memory_context else "")
         + "只输出新的 PlanDraft JSON。新步骤只能使用已注册 Agent，目标必须针对失败"
         + "进行修复或再验证；不要创建工具、修改权限、复用历史 step ref，或编写业务代码。"
+        + "修复步骤必须产生实际变更：code_agent 的修复步骤必须在 objective 中明确要求"
+        + "通过 write_workspace_file 实际修改 workspace 文件；test_agent 的修复步骤必须"
+        + "通过 write_test_file 修改测试。只读诊断不构成修复步骤。"
     )

@@ -81,7 +81,7 @@ class DockerSandboxProvider:
 
     def run_check(self, spec: SandboxSpec) -> SandboxResult:
         started = time.monotonic()
-        image_check = ensure_image_available(self._executor, spec.profile.image)
+        image_check = ensure_image_available(self._executor, spec.image)
         if image_check.exit_code != 0:
             return self._result(
                 spec,
@@ -133,6 +133,8 @@ class DockerSandboxProvider:
             spec.limits.cpus,
             "--tmpfs",
             f"/tmp:rw,noexec,nosuid,size={spec.limits.tmpfs_size}",
+            "--tmpfs",
+            f"/site-packages:rw,exec,nosuid,nodev,size={spec.limits.tmpfs_size}",
             "--mount",
             f"type=bind,src={spec.workspace_path},dst=/workspace,readonly",
             "--workdir",
@@ -148,21 +150,21 @@ class DockerSandboxProvider:
                     "--mount",
                     f"type=bind,src={spec.wheel_cache},dst=/wheels,readonly",
                     "--env",
-                    "PYTHONPATH=/tmp/site-packages",
+                    "PYTHONPATH=/site-packages",
                 ]
             )
-        command.append(spec.profile.image)
+        command.append(spec.image)
         command.extend(self._fixed_command(spec))
         return command
 
     @staticmethod
     def _fixed_command(spec: SandboxSpec) -> list[str]:
-        check = list(spec.profile.checks[spec.check_id])
-        if not spec.dependencies_file:
+        check = list(spec.profile.checks[spec.check_id].command)
+        if not spec.dependencies_file or not spec.profile.checks[spec.check_id].install_dependencies:
             return check
         install = (
             "python -m pip install --no-index --find-links=/wheels "
-            "--target /tmp/site-packages -r /input/requirements.in"
+            "--target /site-packages -r /input/requirements.in"
         )
         return ["sh", "-ec", install + " && exec " + " ".join(check)]
 

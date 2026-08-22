@@ -11,45 +11,54 @@ from app.runtime.application import ApplicationCatalog
 
 
 @dataclass(frozen=True)
+class RuntimeCheck:
+    """profile 内的固定检查：命令与执行镜像。
+
+    一个 profile 可以包含运行在不同受信镜像上的多个检查
+    （例如 Python 单元测试 + Node 前端测试）。
+    """
+
+    command: tuple[str, ...]
+    image: str | None = None  # None → 使用 profile.image
+    install_dependencies: bool = True  # 依赖安装包装仅适用于 Python 检查
+
+
+@dataclass(frozen=True)
 class RuntimeProfile:
     id: str
     image: str
-    checks: dict[str, tuple[str, ...]]
+    checks: dict[str, RuntimeCheck]
     supports_dependencies: bool = False
 
 
 class RuntimeCatalog:
     """ProjectOS 可执行的运行时白名单，而非 Agent 可编辑配置。"""
 
+    _UNIT = RuntimeCheck(
+        ("python", "-m", "unittest", "discover", "-s", "tests", "-v")
+    )
+    _WEB_UNIT = RuntimeCheck(
+        # 无参 --test 自动递归发现 workspace 下的 *.test.js/*.test.mjs。
+        ("node", "--test"),
+        image="node:22-alpine",
+        install_dependencies=False,
+    )
+
     _PROFILES = {
         "python-stdlib": RuntimeProfile(
             id="python-stdlib",
             image="python:3.12-slim",
             checks={
-                "unit": (
-                    "python",
-                    "-m",
-                    "unittest",
-                    "discover",
-                    "-s",
-                    "tests",
-                    "-v",
-                )
+                "unit": _UNIT,
+                "web-unit": _WEB_UNIT,
             },
         ),
         "python-pip": RuntimeProfile(
             id="python-pip",
             image="python:3.12-slim",
             checks={
-                "unit": (
-                    "python",
-                    "-m",
-                    "unittest",
-                    "discover",
-                    "-s",
-                    "tests",
-                    "-v",
-                )
+                "unit": _UNIT,
+                "web-unit": _WEB_UNIT,
             },
             supports_dependencies=True,
         ),

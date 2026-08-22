@@ -47,7 +47,7 @@ ToolGateway
 | 本地 ToolSet | `always` | Catalog | session 持久 |
 | MCP Source | `on_demand` + `activate_source()` | Catalog 动态刷新 | 单次查询 |
 
-`register_toolset(..., toolset=ToolSetSource(...))` 中的 `toolset` 是本地工具集，不是远端来源；`register_source(..., source=dynamic_source, capability="external_research")` 中的 `source` 才表示 MCP 等实际来源。`capability` 必须是 GraphRunner 与 Agent 约定的稳定标识。当前只实现了动态 Source 的抽象与授权边界，尚未提供真实 MCP connector。
+`register_toolset(..., toolset=ToolSetSource(...))` 中的 `toolset` 是本地工具集，不是远端来源；`register_source(..., source=dynamic_source, capability="external_research")` 中的 `source` 才表示 MCP 等实际来源。`capability` 必须是 GraphRunner 与 Agent 约定的稳定标识。动态 Source 已提供真实 MCP connector：`StreamableHttpMCPClient` 通过 MCP Streamable HTTP 协议发现并调用远端工具（内置演示服务 `app/demo/docs_mcp_server.py` 暴露 `search_docs`/`get_doc`，URL 由 `PROJECTOS_DOCS_MCP_URL` 环境变量配置）；批准接口只会激活已注册 source，不会凭空创建 connector。
 
 ## CrewAI 边界
 

@@ -16,6 +16,9 @@ class TestToolSet:
     def load_artifact(self, artifact: str) -> str:
         return self._service.load_artifact(artifact)
 
+    def load_layer_contract(self) -> str:
+        return self._service.load_layer_contract()
+
     def save_tests(self, content: str) -> str:
         return self._service.save_tests(content)
 
@@ -36,8 +39,10 @@ class SandboxEvidenceToolSet:
         self._service = service
         self._traces = traces
 
-    def run_sandbox_check(self, context: ExecutionContext) -> str:
-        result = self._service.run_sandbox_check()
+    def run_sandbox_check(
+        self, context: ExecutionContext, check_id: str = "unit"
+    ) -> str:
+        result = self._service.run_sandbox_check(check_id)
         evidence = self._traces.record_sandbox_evidence(context, result)
         return evidence.as_agent_text()
 
@@ -145,8 +150,20 @@ def register_test_tools(
                 (
                     ToolDef(
                         name="run_sandbox_check",
-                        description="在受控 Docker sandbox 中执行固定的 unit 检查。",
-                        parameters={"type": "object", "properties": {}},
+                        description=(
+                            "在受控 Docker sandbox 中执行固定检查。check_id 只能选 profile "
+                            "白名单：unit（Python unittest 测试）或 web-unit（Node 前端测试）。"
+                            "镜像缺失时记录 setup_failed，不请求外部能力。"
+                        ),
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "check_id": {
+                                    "type": "string",
+                                    "description": "白名单检查标识：unit 或 web-unit，默认 unit",
+                                }
+                            },
+                        },
                     ),
                     evidence_tools.run_sandbox_check,
                 ),

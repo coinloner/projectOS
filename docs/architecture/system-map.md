@@ -92,7 +92,7 @@ Code 并行交付额外使用 `.projectos/worktrees/` 保存受控 task/integrat
 | Planner 受控草案、WorkItem 与三类依赖校验 | 已实现（v0） |
 | Requirement/Trace/WorkItem 基础追溯 | 已实现 |
 | Python 标准库 Docker 测试 | 已实现并真实验证 |
-| 测试失败后的局部重规划与重试 | 未实现 |
+| 测试失败后的局部重规划与重试 | 已实现（最多两轮） |
 | 持久化 Docker 执行证据与 Review 读取 | 已实现 |
-| `python-pip` 批准与恢复 | Resolver 已有，Workflow 未接入 |
+| `python-pip` 批准与恢复 | 已实现（控制面审批后准备 wheel cache） |
 | 真实 MCP connector | 未实现 |

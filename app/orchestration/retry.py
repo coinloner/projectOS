@@ -14,6 +14,8 @@ class FailureKind(str, Enum):
     SANDBOX_TIMEOUT = "sandbox_timeout"
     SANDBOX_SETUP = "sandbox_setup"
     TEST_EVIDENCE_MISSING = "test_evidence_missing"
+    IMPLEMENTATION_SUMMARY_MISSING = "implementation_summary_missing"
+    REPAIR_NO_FILE_CHANGE = "repair_no_file_change"
 
 
 class RecoveryAction(str, Enum):
@@ -108,6 +110,8 @@ class RetryLimits:
         (FailureKind.TEST_FAILURE, 0),
         (FailureKind.SANDBOX_SETUP, 0),
         (FailureKind.TEST_EVIDENCE_MISSING, 1),
+        (FailureKind.IMPLEMENTATION_SUMMARY_MISSING, 1),
+        (FailureKind.REPAIR_NO_FILE_CHANGE, 1),
     )
 
     def max_retries_for(self, kind: FailureKind) -> int:
@@ -141,6 +145,10 @@ class RetryPolicy:
         if signal.kind is FailureKind.SANDBOX_TIMEOUT:
             return RecoveryAction.RETRY_ITEM
         if signal.kind is FailureKind.TEST_EVIDENCE_MISSING:
+            return RecoveryAction.RETRY_ITEM
+        if signal.kind is FailureKind.IMPLEMENTATION_SUMMARY_MISSING:
+            return RecoveryAction.RETRY_ITEM
+        if signal.kind is FailureKind.REPAIR_NO_FILE_CHANGE:
             return RecoveryAction.RETRY_ITEM
         if signal.kind is FailureKind.AGENT_RUNTIME:
             return RecoveryAction.RETRY_ITEM

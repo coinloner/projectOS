@@ -5,6 +5,7 @@ from app.execution_context import ExecutionContext, ExecutionMode
 from app.domain.code.git_service import GitCodeIntegrationService, GitCodeStagingService
 from app.runtime.state import runtime_snapshot
 from app.workspace.toolset import CodeWorkspaceToolSet
+from app.domain.architecture.layer_contract import LayerContractStore
 
 
 class CodeService:
@@ -37,11 +38,16 @@ class CodeService:
     def inspect_runtime(self) -> str:
         return runtime_snapshot(self._project_path).as_text()
 
+    def load_layer_contract(self) -> str:
+        import json
+        return json.dumps(LayerContractStore(self._project_path).load().as_dict(), ensure_ascii=False, indent=2)
+
 
 class CodeStagingService:
     """CodeAgent 分区执行使用的输入读取和 Git worktree 写入能力。"""
 
     def __init__(self, project_path: str) -> None:
+        self._project_path = project_path
         self._service = GitCodeStagingService(project_path)
 
     def load_input(self, context: ExecutionContext, ref_id: str) -> str:
@@ -59,6 +65,10 @@ class CodeStagingService:
 
     def load_baseline(self, trace_id: str) -> str:
         return self._service.load_baseline(trace_id)
+
+    def load_layer_contract(self) -> str:
+        import json
+        return json.dumps(LayerContractStore(self._project_path).load().as_dict(), ensure_ascii=False, indent=2)
 
 
 class CodeIntegrationService:

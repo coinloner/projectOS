@@ -39,3 +39,16 @@ GraphRunner 调度依赖已满足的 WorkItem，写入进程内 `RunState`。传
 checkpoint。恢复会重新加载并校验 `plan.json`、Trace 和 RunState；只有已完成 WorkItem 会被跳过，
 失败、等待能力或请求重新规划的节点会重新执行。恢复不会修改原始 goal、Workflow 或权限，也不会把
 Memory 当作事实来源。
+
+当状态为 `waiting_for_capability_approval` 时，先调用
+`GET /api/v1/projects/{project_id}/runs/{trace_id}/capabilities` 查看候选 source，再调用
+`POST /api/v1/projects/{project_id}/runs/{trace_id}/capabilities/approve`，请求体为
+`{"source_name":"mcp"}`。批准接口会校验 source 是否能满足当前 WorkItem 的 capability，
+写入 `capability_approved` 事件，在同一次操作中激活 source 并从 checkpoint 恢复；不会把授权
+状态交给 Agent 或依赖进程内缓存。候选按请求 Agent 的 domain 过滤；没有任何注册来源能
+满足能力时，运行以 `blocked` 终态结束（例如 docs-mcp 注册于 architecture/code/review
+三个 domain，test domain 的同类请求会被转为 setup_failed 证据）。
+
+终态语义：图执行完后解析 Review 结论行「## 审查结论（PASS / CONDITIONAL_PASS / BLOCKED）」，
+`BLOCKED` 时运行以 `blocked` 结束且 `error` 说明交付未放行——`blocked` 是可恢复终态，
+修复阻塞项后可经 `/runs/{trace_id}/resume` 从 checkpoint 继续。

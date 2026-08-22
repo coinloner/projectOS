@@ -79,3 +79,18 @@ Agent、期望依赖顺序和最大步骤数；`PlannerEvaluator.evaluate()` 接
 LLM 客户端。演示环境还可以设置 `PROJECTOS_PLANNER_CACHE=1`，按完整规划上下文缓存草案，
 使同一目标在同一进程内重复演示得到相同路径并跳过重复模型请求；缓存只保存不可信草案，不复用
 旧 Trace 或执行状态。
+
+需求 Agent 只作为动态 Planner 可选择的已注册 Agent，不再额外维护一个
+`requirement_generation` 模板；系统不引入第三条“需求生成模板”执行路径。
+
+## 局部计划修改
+
+连续会话中的“修改/调整”不会重新生成整张 DAG。`PlannerService.plan_patch()` 只生成
+`PlanPatch`，允许的操作是 `modify`、`add` 和 `remove`，默认预算为最多修改 2 个节点、
+新增 2 个节点、删除 1 个节点和变化 2 条依赖。
+
+系统拒绝直接覆写已完成 WorkItem、受控 Workflow 的执行授权字段、删除仍被依赖的节点、
+未注册 Agent、循环依赖和超出预算的补丁。终态 Trace 的会话修改可以创建新 revision，让受影响的
+已完成节点重新计算，但旧结果和事件仍保留为历史事实。补丁应用后，原 checkpoint 中未受影响的结果继续
+保留；被修改节点及其下游结果被清除，`GraphRunner` 只重新执行受影响子图。每次补丁都会写入
+Trace 的 `baseline.json`、`baselines/revision-*.json` 和 `plan_patch_applied` 事件。

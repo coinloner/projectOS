@@ -12,10 +12,22 @@ from app.orchestration.trace import TraceStore
 
 
 class FakeRunService:
+    def __init__(self) -> None:
+        self.last_goal: str | None = None
+
     def start_dynamic_plan(self, *, project_path: str, goal: str, plan_id: str) -> StartedRun:
+        self.last_goal = goal
         return StartedRun(
             trace_id="tr-conversation",
             plan_id=plan_id,
+            workflow_id="dynamic",
+            status="running",
+        )
+
+    def start_patch_plan(self, *, project_path: str, trace_id: str, change_request: str) -> StartedRun:
+        return StartedRun(
+            trace_id=trace_id,
+            plan_id="plan-patch",
             workflow_id="dynamic",
             status="running",
         )
@@ -65,6 +77,48 @@ class ConversationTest(unittest.TestCase):
             turns = ConversationStore(directory).turns(conversation.id)
             self.assertEqual([turn.role for turn in turns], ["user", "system"])
             self.assertEqual(turns[-1].trace_id, "tr-conversation")
+
+    def test_first_message_passes_raw_goal_without_minimal_plan_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConversationStore(directory)
+            conversation = store.create("demo")
+            run_service = FakeRunService()
+            service = ConversationService(run_service=run_service)
+
+            service.send_message(
+                project_path=directory,
+                conversation_id=conversation.id,
+                content="为 Todo 应用实现纯 Python REST API",
+            )
+
+            self.assertEqual(
+                run_service.last_goal, "为 Todo 应用实现纯 Python REST API"
+            )
+
+    def test_follow_up_message_gets_minimal_plan_with_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConversationStore(directory)
+            conversation = store.create("demo")
+            trace = TraceStore(directory).start_trace("设计 API")
+            store.append(conversation.id, role="user", content="设计 API")
+            store.append(
+                conversation.id,
+                role="system",
+                content=f"已创建执行 Trace: {trace.trace_id}",
+                trace_id=trace.trace_id,
+            )
+            TraceStore(directory).finish_trace(trace, "completed")
+            run_service = FakeRunService()
+            service = ConversationService(run_service=run_service)
+
+            service.send_message(
+                project_path=directory,
+                conversation_id=conversation.id,
+                content="再加一个删除接口",
+            )
+
+            self.assertIn("最小可执行计划", run_service.last_goal or "")
+            self.assertIn("[user] 设计 API", run_service.last_goal or "")
 
     def test_terminal_trace_is_projected_as_assistant_message(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -128,6 +182,28 @@ class ConversationTest(unittest.TestCase):
             self.assertEqual(action.intent, ConversationIntent.INSPECT_RESULT)
             self.assertIsNone(action.started_run)
             self.assertIn("测试失败", action.message.content)
+
+    def test_modification_uses_patch_entrypoint_after_terminal_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConversationStore(directory)
+            conversation = store.create("demo")
+            trace = TraceStore(directory).start_trace("设计 API")
+            store.append(
+                conversation.id,
+                role="system",
+                content=f"已创建执行 Trace: {trace.trace_id}",
+                trace_id=trace.trace_id,
+            )
+            TraceStore(directory).finish_trace(trace, "completed")
+
+            action = ConversationService(run_service=FakeRunService()).send_message(
+                project_path=directory,
+                conversation_id=conversation.id,
+                content="修改 API 为 GraphQL",
+            )
+
+            self.assertEqual(action.intent, ConversationIntent.MODIFY_REQUEST)
+            self.assertEqual(action.started_run.plan_id, "plan-patch")
 
 
 if __name__ == "__main__":

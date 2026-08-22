@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.agent.registry import AgentDefinition, AgentRegistry
 from app.artifact.store import ArtifactStore
+from app.bootstrap.runtime import build_container
 from app.planner.context import PlanningContext
 from app.planner.draft import PlanDraft
 from app.planner.service import PlannerFailure, PlannerService
@@ -426,6 +427,36 @@ class PlannerServiceTest(unittest.TestCase):
         self.assertEqual(result.plan.work_items[0].agent_id, "requirement_agent")
         self.assertIn("校验错误", runtime.prompts[1])
         self.assertIn("未注册 Agent", runtime.prompts[1])
+
+    def test_empty_delivery_cannot_skip_baseline_and_repairs_to_controlled_template(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            container = build_container(project_path)
+            runtime = FakePlannerRuntime(
+                [
+                    '{"rationale":"shortcut","template_hint_id":null,"steps":['
+                    '{"ref":"implementation","agent_id":"code_agent","objective":"实现代码"},'
+                    '{"ref":"tests","agent_id":"test_agent","objective":"运行测试"},'
+                    '{"ref":"review","agent_id":"review_agent","objective":"审查交付"}]}' ,
+                    '{"rationale":"完整交付","template_hint_id":"project_delivery","steps":[]}',
+                ]
+            )
+            service = PlannerService(
+                runtime=runtime,
+                agents=container.agents,
+                templates=container.templates,
+                artifacts=container.artifacts,
+            )
+
+            result = service.plan(goal="实现 Todo 并完成测试和交付审查", plan_id="full-delivery")
+
+            self.assertEqual(result.attempts, 2)
+            self.assertEqual(result.plan.template_id, "project_delivery")
+            self.assertEqual(len(result.plan.work_items), 9)
+            self.assertEqual(
+                {item.artifact_key for item in result.plan.work_items},
+                {"requirement", "architecture", "tasks", "environment", "implementation", "tests", "review"},
+            )
+            self.assertIn("必须选择受控模板 'project_delivery'", runtime.prompts[1])
 
     def test_planner_fails_after_one_unsuccessful_repair(self) -> None:
         runtime = FakePlannerRuntime(

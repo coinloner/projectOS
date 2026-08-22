@@ -44,6 +44,16 @@ class PlanValidator:
                     f"计划引用未知模板: '{draft.template_hint_id}'"
                 )
 
+        # 空项目的实现/验证/审查不能绕过需求、架构和任务基线。
+        # 这些节点包含受控产物发布权限，必须通过完整交付模板编译。
+        if self._requires_full_delivery(draft, context):
+            if draft.template_hint_id != "project_delivery":
+                raise PlanValidationError(
+                    "空项目的完整交付必须选择受控模板 'project_delivery'；"
+                    "该模板会生成 requirement、architecture、tasks、environment、"
+                    "implementation、tests 和 review 全链路产物"
+                )
+
         template = context.template_source(draft.template_hint_id)
         if "task_agent" in selected_ids and (
             template is None or not template.has_controlled_execution
@@ -104,7 +114,17 @@ class PlanValidator:
                 artifact_key=known_agents[step.agent_id].output_key,
                 dependencies=dependencies[item_id_by_ref[step.ref]],
                 acceptance_criteria=tuple(step.acceptance_criteria),
-                constraints=tuple(step.constraints),
+                constraints=tuple(
+                    dict.fromkeys(
+                        [*step.constraints]
+                        + ([
+                            "遵守 Layer Contract 分层: "
+                            + ",".join(context.layer_contract.layers)
+                            + "；测试覆盖: "
+                            + ",".join(context.layer_contract.required_test_types)
+                        ] if context.layer_contract.exists else [])
+                    )
+                ),
                 non_goals=tuple(step.non_goals),
             )
             for index, step in enumerate(draft.steps, 1)
@@ -123,6 +143,25 @@ class PlanValidator:
     @staticmethod
     def _work_item_id(index: int, output_key: str) -> str:
         return f"wi-{index:02d}-{output_key}"
+
+    @staticmethod
+    def _requires_full_delivery(
+        draft: PlanDraft, context: PlanningContext
+    ) -> bool:
+        selected = {step.agent_id for step in draft.steps}
+        asks_for_verification = bool(selected & {"test_agent", "review_agent"})
+        missing_baseline = {
+            artifact.key
+            for artifact in context.artifacts
+            if artifact.key in {"requirement", "architecture", "tasks", "environment"}
+            and not artifact.exists
+        }
+        return (
+            context.workspace.implementation_file_count == 0
+            and asks_for_verification
+            and bool(missing_baseline)
+            and context.template_source("project_delivery") is not None
+        )
 
     @staticmethod
     def _result_key(index: int, base_key: str, is_repeated: bool) -> str:

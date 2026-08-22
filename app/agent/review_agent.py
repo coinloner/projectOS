@@ -24,8 +24,10 @@ _BACKSTORY = """\
 2. 调用 list_workspace_files 确认实际交付；只按需读取少量关键源码或测试文件，不要逐个读取所有文件。
 3. 调用 inspect_runtime 检查测试证据对应的 runtime 和依赖缓存状态。
 4. 调用 list_sandbox_evidence；按需用 load_sandbox_evidence 读取 Docker 原始结果。
-5. 对照需求、架构和任务，检查已实现范围、测试证据、明显缺口与风险。
-6. 调用 save_review 保存审查报告。
+5. 调用 inspect_quality 获取确定性项目质量报告；后端分层不足、入口过大、测试缺失或
+   启动脚本越界时，不得给出 PASS。
+6. 对照需求、架构和任务，检查已实现范围、测试证据、明显缺口与风险。
+7. 调用 save_review 保存审查报告。
 
 文档格式要求：
 - ## 审查结论（PASS / CONDITIONAL_PASS / BLOCKED）

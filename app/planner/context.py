@@ -10,6 +10,7 @@ from app.artifact.store import ArtifactStore
 from app.workflow.template import WorkflowTemplateRegistry
 from app.workspace.store import WorkspaceStore
 from app.runtime.state import RuntimeSnapshot, runtime_snapshot
+from app.domain.architecture.layer_contract import LayerContractStore
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,22 @@ class WorkspaceSnapshot:
 
 
 @dataclass(frozen=True)
+class LayerContractSnapshot:
+    exists: bool
+    layers: tuple[str, ...] = ()
+    required_test_types: tuple[str, ...] = ()
+    path_mapping: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "exists": self.exists,
+            "layers": list(self.layers),
+            "required_test_types": list(self.required_test_types),
+            "path_mapping": {key: list(value) for key, value in self.path_mapping.items()},
+        }
+
+
+@dataclass(frozen=True)
 class PlanningContext:
     """一次规划可见的完整控制面上下文。"""
 
@@ -73,6 +90,7 @@ class PlanningContext:
     templates: tuple[TemplateHint, ...]
     workspace: WorkspaceSnapshot
     runtime: RuntimeSnapshot
+    layer_contract: LayerContractSnapshot
     source_templates: tuple["WorkflowTemplate", ...] = field(
         default=(), repr=False, compare=False
     )
@@ -117,6 +135,20 @@ class PlanningContext:
             _template_hint(template) for template in templates.templates()
         )
         workspace = WorkspaceStore(artifacts.project_path)
+        contract_store = LayerContractStore(artifacts.project_path)
+        if contract_store.exists():
+            try:
+                contract = contract_store.load()
+                layer_contract = LayerContractSnapshot(
+                    exists=True,
+                    layers=contract.layers,
+                    required_test_types=contract.required_test_types,
+                    path_mapping=contract.path_mapping,
+                )
+            except ValueError:
+                layer_contract = LayerContractSnapshot(exists=False)
+        else:
+            layer_contract = LayerContractSnapshot(exists=False)
         return cls(
             goal=goal.strip(),
             artifacts=snapshots,
@@ -126,6 +158,7 @@ class PlanningContext:
                 implementation_file_count=workspace.implementation_file_count()
             ),
             runtime=runtime_snapshot(artifacts.project_path),
+            layer_contract=layer_contract,
             source_templates=templates.templates(),
         )
 
@@ -136,6 +169,9 @@ class PlanningContext:
             (template for template in self.source_templates if template.id == template_id),
             None,
         )
+
+    def artifact_exists(self, key: str) -> bool:
+        return any(artifact.key == key and artifact.exists for artifact in self.artifacts)
 
     def as_prompt_json(self) -> str:
         """稳定序列化为提供给 Planner 的纯数据。"""
@@ -159,6 +195,7 @@ class PlanningContext:
                 ],
                 "workspace": self.workspace.__dict__,
                 "runtime": self.runtime.__dict__,
+                "layer_contract": self.layer_contract.as_dict(),
             },
             ensure_ascii=False,
             indent=2,

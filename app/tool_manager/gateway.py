@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from crewai.tools import BaseTool
 
 from app.tool_manager.catalog import SourceRegistration, ToolCatalog
 from app.tool_manager.access_policy import ToolAccessPolicy
 from app.tool_manager.crewai_adapter import ProjectOSTool
-from app.tool_manager.source import ToolDef, ToolExposure, ToolSource
+from app.tool_manager.source import ToolExposure, ToolSource
 from app.execution_context import ExecutionContext
+
+if TYPE_CHECKING:
+    from app.tool_manager.source import ToolDef
 
 
 class ToolGateway:
@@ -66,6 +71,24 @@ class ToolGateway:
         if not self._catalog.has_source(domain, name):
             raise ValueError(f"domain '{domain}' 下不存在来源 '{name}'")
         self._policy.activate_source(domain, name)
+
+    def activate_source_for_capability(self, capability: str, name: str) -> int:
+        """在提供某能力的所有 domain 下激活同名来源；返回激活的 domain 数。
+
+        一次审批覆盖整个交付链：docs-mcp 注册于 architecture/code/review 三个
+        domain，架构节点触发审批后，后续实现与审查节点也应直接可用，
+        而不是每到一个 domain 就再次等待审批。
+        """
+        activated = 0
+        for domain in self._catalog.domains():
+            if any(
+                registration.source_name == name
+                and registration.capability == capability
+                for registration in self._catalog.find_sources(domain, capability)
+            ):
+                self.activate_source(domain, name)
+                activated += 1
+        return activated
 
     def deactivate_source(self, domain: str, name: str) -> None:
         """撤销一个按需来源的会话授权。"""

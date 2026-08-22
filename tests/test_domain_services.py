@@ -14,6 +14,7 @@ from app.domain.requirement.tools import RequirementToolSet
 from app.domain.review.service import ReviewService
 from app.domain.task.service import TaskArtifactWorkflow
 from app.domain.test.service import TestService
+from app.runtime.manifest import RuntimeManifest
 
 
 class DomainServiceTest(unittest.TestCase):
@@ -98,6 +99,19 @@ class DomainServiceTest(unittest.TestCase):
             "# Review",
         )
 
+    def test_review_persists_deterministic_quality_report_for_runtime_projects(self) -> None:
+        RuntimeManifest(version=1, profile="python-stdlib").save(self.project_path)
+        root = Path(self.project_path)
+        (root / "start.sh").write_text("curl /runtime/runs", encoding="utf-8")
+        (root / "start.ps1").write_text("Invoke-RestMethod /runtime/runs", encoding="utf-8")
+        (root / "workspace" / "backend" / "app").mkdir(parents=True)
+        (root / "workspace" / "backend" / "app" / "main.py").write_text("print('x')\n", encoding="utf-8")
+        review = ReviewService(self.project_path)
+        review.save_review("# Review")
+        saved = (root / "review.md").read_text(encoding="utf-8")
+        self.assertIn("## 确定性质量策略", saved)
+        self.assertIn("project.backend_layers_required", saved)
+
     def test_bootstrap_service_declares_runtime_without_executing_dependencies(self) -> None:
         bootstrap = BootstrapService(self.project_path)
 
@@ -106,6 +120,25 @@ class DomainServiceTest(unittest.TestCase):
         self.assertIn("python-pip", result)
         self.assertIn("dependencies=present", bootstrap.inspect_runtime())
         self.assertFalse((Path(self.project_path) / ".sandbox").exists())
+
+    def test_bootstrap_service_declares_whitelisted_application(self) -> None:
+        bootstrap = BootstrapService(self.project_path)
+
+        result = bootstrap.configure_runtime(
+            "python-stdlib", application="static-web"
+        )
+
+        self.assertIn("static-web", result)
+        manifest = RuntimeManifest.load(self.project_path)
+        self.assertEqual(manifest.application, "static-web")
+
+    def test_bootstrap_service_rejects_unknown_application(self) -> None:
+        bootstrap = BootstrapService(self.project_path)
+
+        with self.assertRaises(ValueError):
+            bootstrap.configure_runtime(
+                "python-stdlib", application="not-in-catalog"
+            )
 
 
 if __name__ == "__main__":

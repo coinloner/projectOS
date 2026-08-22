@@ -162,6 +162,40 @@ class TraceStoreTest(unittest.TestCase):
             ]
             self.assertIn("run_resumed", event_types)
 
+    def test_plan_baseline_is_versioned_without_changing_trace_plan_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            context = traces.start_trace("局部修改")
+            plan = ExecutionPlan(
+                id="plan-baseline",
+                goal="局部修改",
+                trace=context,
+                work_items=(
+                    WorkItem(
+                        id="wi-baseline",
+                        agent_id="requirement_agent",
+                        objective="生成需求",
+                        output_key="requirement",
+                    ),
+                ),
+            )
+            first = traces.record_plan_baseline(plan)
+            second = traces.record_plan_baseline(plan)
+
+            self.assertEqual(first["revision"], 1)
+            self.assertEqual(second["revision"], 2)
+            self.assertEqual(traces.load_plan_baseline(context.trace_id)["revision"], 2)
+
+    def test_finish_trace_clears_intermediate_error_on_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("恢复")
+            traces.finish_trace(trace, "waiting_for_capability_approval", error="旧阻塞")
+            traces.finish_trace(trace, "completed")
+            loaded = traces.load_trace(trace.trace_id)
+            self.assertEqual(loaded["status"], "completed")
+            self.assertNotIn("error", loaded)
+
 
 if __name__ == "__main__":
     unittest.main()

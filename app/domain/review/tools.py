@@ -28,6 +28,9 @@ class ReviewToolSet:
     def inspect_runtime(self) -> str:
         return self._service.inspect_runtime()
 
+    def inspect_quality(self) -> str:
+        return self._service.inspect_quality()
+
 
 class SandboxEvidenceReaderToolSet:
     """Review 读取当前 Trace 的受控 Docker 证据，不提供修改入口。"""
@@ -160,6 +163,14 @@ def register_review_tools(
                         parameters={"type": "object", "properties": {}},
                     ),
                     tools.inspect_runtime,
+                ),
+                (
+                    ToolDef(
+                        name="inspect_quality",
+                        description="执行确定性的项目分层、入口规模、测试和启动脚本质量检查。",
+                        parameters={"type": "object", "properties": {}},
+                    ),
+                    tools.inspect_quality,
                 ),
             ]
         ),

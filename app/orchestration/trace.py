@@ -120,6 +120,32 @@ class TraceStore:
         for item in plan.work_items:
             self.record_event(plan.trace, item.id, "work_item_planned")
 
+    def record_plan_baseline(self, plan: "ExecutionPlan", *, revision: int | None = None) -> dict[str, object]:
+        """保存可用于局部修改的计划基线，不改变 ExecutionPlan 执行格式。"""
+        from app.planner.patch import PlanBaseline
+
+        current_path = self._trace_root(plan.trace.trace_id) / "baseline.json"
+        if revision is None and current_path.is_file():
+            current = self._read_json(current_path)
+            revision = int(current.get("revision", 0)) + 1
+        baseline = PlanBaseline.from_plan(plan, revision=revision or 1)
+        payload = baseline.as_dict()
+        self._write_json(current_path, payload)
+        self._write_json(
+            self._trace_root(plan.trace.trace_id)
+            / "baselines"
+            / f"revision-{baseline.revision}.json",
+            payload,
+        )
+        return payload
+
+    def load_plan_baseline(self, trace_id: str) -> dict[str, object]:
+        self._validate_trace_id(trace_id)
+        path = self._trace_root(trace_id) / "baseline.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"Trace 没有计划基线: {trace_id}")
+        return self._read_json(path)
+
     def record_event(
         self,
         trace: TraceContext,
@@ -148,6 +174,8 @@ class TraceStore:
         payload["finished_at"] = self._now()
         if error is not None:
             payload["error"] = error
+        else:
+            payload.pop("error", None)
         self._write_json(path, payload)
 
     def load_trace(self, trace_id: str) -> dict[str, object]:

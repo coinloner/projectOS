@@ -28,7 +28,7 @@ RequirementService.load_requirement() -> str
 |---|---|
 | architecture | `load_artifact(artifact)`、`save_architecture(content)` |
 | task | `load_task_input(ref_id)`、`write_staged_tasks(content)`、`create_tasks_candidate(content)` |
-| bootstrap | `load_artifact(artifact)`、`configure_runtime(profile, dependencies="")`、`inspect_runtime()`、`save_environment(content)` |
+| bootstrap | `load_artifact(artifact)`、`configure_runtime(profile, dependencies="", application=None)`、`inspect_runtime()`、`save_environment(content)` |
 | code | `load_artifact(artifact)`、`save_implementation(content)`、`list_workspace_files()`、`read_workspace_file(path)`、`write_workspace_file(path, content)`、`inspect_runtime()` |
 | test | `load_artifact(artifact)`、`save_tests(content)`、`list_workspace_files()`、`read_workspace_file(path)`、`write_test_file(path, content)`、`run_sandbox_check()` |
 | review | `load_artifact(artifact)`、`save_review(content)`、`list_workspace_files()`、`read_workspace_file(path)`、`inspect_runtime()`、`list_sandbox_evidence()`、`load_sandbox_evidence(evidence_id)` |
@@ -39,8 +39,9 @@ RequirementService.load_requirement() -> str
   也分别要求 `PARTITIONED`、`INTEGRATION` 执行模式，不能绕过质量门发布。
 - `write_workspace_file()` 只能在 `workspace/` 内写入允许的文本文件，且不能写 `tests/`（测试目录归测试节点）。
 - `write_test_file()` 只能写 `workspace/tests/`。
-- `run_sandbox_check()` 不接收命令参数，固定请求 `SandboxController.run_check(project_path, "unit")`，并由系统绑定的 `ExecutionContext` 将结果持久化为当前 Trace 的 `SandboxEvidence`。
+- `run_sandbox_check()` 只接收 `check_id` 参数（Profile 白名单标识：`unit` 或 `web-unit`，默认 `unit`），非白名单值报错；结果由系统绑定的 `ExecutionContext` 持久化为当前 Trace 的 `SandboxEvidence`。
 - `list_sandbox_evidence()` 与 `load_sandbox_evidence()` 只暴露给 review domain，且只能读取当前 Trace。
 - `configure_runtime()` 只接受 RuntimeCatalog 中的 profile；依赖内容写为 `requirements.in`，但不触发安装。
+- `configure_runtime()` 的 `application` 参数只接受 ApplicationCatalog 白名单（`static-web`、`todo-web`、`fastapi-postgres`），未知值报错；留空时控制面按项目形状自动探测。
 
 领域 ToolSet 的返回值统一是文本，便于 CrewAI 将工具结果放回当前推理循环。Service 仍可抛出明确的 I/O 或参数异常；ToolSet/底层受限存储会把可恢复错误转为文本结果。

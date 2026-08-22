@@ -14,7 +14,8 @@ class SandboxLimits:
     memory: str = "512m"
     cpus: str = "1"
     pids: int = 128
-    tmpfs_size: str = "64m"
+    # 依赖安装目标位于容器临时文件系统；常见 Web 栈的 wheel 解压需要更大空间。
+    tmpfs_size: str = "256m"
     output_char_limit: int = 12_000
 
 
@@ -27,6 +28,8 @@ class SandboxSpec:
     dependencies_file: Path | None
     wheel_cache: Path | None
     limits: SandboxLimits
+    # 本次检查实际使用的受信镜像（check 可覆盖 profile 默认镜像，例如 node）。
+    image: str
 
 
 class SandboxPolicy:
@@ -43,7 +46,8 @@ class SandboxPolicy:
         check_id: str,
     ) -> SandboxSpec:
         profile = RuntimeCatalog.get(manifest.profile)
-        if check_id not in profile.checks:
+        check = profile.checks.get(check_id)
+        if check is None:
             available = ", ".join(sorted(profile.checks))
             raise PermissionError(
                 f"profile '{profile.id}' 不允许执行 check '{check_id}'，可用: {available}"
@@ -78,6 +82,7 @@ class SandboxPolicy:
             dependencies_file=dependencies_file,
             wheel_cache=wheel_cache,
             limits=self._limits,
+            image=check.image or profile.image,
         )
 
 

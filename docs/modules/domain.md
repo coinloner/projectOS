@@ -20,11 +20,15 @@ Agent 通过 `ToolGateway` 取得对应 ToolSet；ToolSet 再委托 Service 完�
 | bootstrap | 管理运行时声明 | 读取前置 artifact，声明 profile/依赖，保存环境报告 | 安装依赖、联网、Docker 执行 | `runtime.yaml`、可选 `requirements.in`、`environment.md` |
 | code | 管理实现交接和代码编辑 | 分区 CodeAgent 读取授权输入并写自己的 Git task worktree；Integration 按 ChangeSet 做三方合并并发布 `workspace/` | Docker、shell、依赖安装；分区节点不能直接写正式 workspace 或任意 Git | `.projectos/runs/<trace>/git/`、`workspace/`、`implementation.md` |
 | test | 管理测试、测试报告与 Docker 执行证据 | 读取前置 artifact，写 `workspace/tests/`，请求固定 unit check | 写普通源码、任意命令、Docker 参数 | `workspace/tests/`、`tests.md`、当前 Trace 的 `SandboxEvidence` |
-| review | 管理交付审查 | 受限读取 artifact、workspace、runtime 摘要与当前 Trace evidence，保存审查 | 修改 workspace、运行命令或修改 evidence | `review.md` |
+| review | 管理交付审查 | 受限读取 artifact、workspace、runtime 摘要与当前 Trace evidence，执行确定性质量策略并保存审查 | 修改 workspace、运行命令或修改 evidence | `review.md` |
 
 ## 输入输出边界
 
 每个 domain 只能读取明确列出的前置 artifact，且只能写入自己的固定 Markdown 输出。普通 workspace 写入仅授予 Code；测试目录写入与 sandbox 执行仅授予 Test；Review 是只读。
+
+Review 阶段的 `ProjectQualityPolicy` 会检查项目是否具备接口、应用、基础设施、领域四类后端分层、入口文件是否过大、
+测试和前端基础文件是否存在，以及一键启动脚本是否仍通过 ProjectOS runtime API。该策略只做
+确定性结构审查，不替代业务测试和 LLM 的需求追溯判断。
 
 Architecture 是当前唯一采用两层产物的试点 domain。普通独占架构节点仍使用
 `load_artifact/save_architecture`；并行分区和集成节点使用 `ExecutionToolSetSource`，工具

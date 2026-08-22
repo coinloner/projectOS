@@ -11,11 +11,19 @@ class BootstrapToolSet:
     def __init__(self, service: BootstrapService) -> None:
         self._service = service
 
-    def configure_runtime(self, profile: str, dependencies: str = "") -> str:
-        return self._service.configure_runtime(profile, dependencies)
+    def configure_runtime(
+        self,
+        profile: str,
+        dependencies: str = "",
+        application: str | None = None,
+    ) -> str:
+        return self._service.configure_runtime(profile, dependencies, application)
 
     def inspect_runtime(self) -> str:
         return self._service.inspect_runtime()
+
+    def prepare_environment(self) -> str:
+        return self._service.prepare_environment()
 
     def load_artifact(self, artifact: str) -> str:
         return self._service.load_artifact(artifact)
@@ -34,12 +42,26 @@ def register_bootstrap_tools(gateway: ToolGateway, project_path: str) -> None:
                 (
                     ToolDef(
                         name="configure_runtime",
-                        description="声明受支持 runtime profile 和可选 requirements.in 内容，不执行依赖安装。",
+                        description=(
+                            "声明受支持 runtime profile、可选 requirements.in 内容和可选白名单应用。"
+                            "不执行依赖安装。可用 application: static-web（纯静态前端，"
+                            "workspace 根目录有 index.html）、todo-web（workspace/backend + "
+                            "workspace/frontend）、fastapi-postgres（FastAPI + PostgreSQL 结构）或 "
+                            "fastapi-postgres-web（后端同时挂载 workspace/frontend）。"
+                        ),
                         parameters={
                             "type": "object",
                             "properties": {
                                 "profile": {"type": "string", "description": "Runtime profile，例如 python-stdlib 或 python-pip"},
                                 "dependencies": {"type": "string", "description": "requirements.in 内容；无依赖时留空"},
+                                "application": {
+                                    "type": "string",
+                                    "description": (
+                                        "可选的受信应用标识（static-web / todo-web / "
+                                        "fastapi-postgres / fastapi-postgres-web）；与架构声明的应用形态匹配时声明，"
+                                        "不确定时留空，控制面会按项目形状自动探测。"
+                                    ),
+                                },
                             },
                             "required": ["profile"],
                         },
@@ -53,6 +75,14 @@ def register_bootstrap_tools(gateway: ToolGateway, project_path: str) -> None:
                         parameters={"type": "object", "properties": {}},
                     ),
                     tools.inspect_runtime,
+                ),
+                (
+                    ToolDef(
+                        name="prepare_environment",
+                        description="由控制平面后台准备受信 Docker 镜像；第三方依赖需要通过控制平面审批。",
+                        parameters={"type": "object", "properties": {}},
+                    ),
+                    tools.prepare_environment,
                 ),
             ]
         ),

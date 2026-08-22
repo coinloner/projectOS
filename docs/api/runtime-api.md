@@ -51,7 +51,8 @@ RuntimeSnapshot.as_text() -> str
 
 快照仅提供控制面摘要：manifest 是否存在、profile、是否声明依赖、依赖 wheel cache 是否就绪，以及可选错误信息。Planner、Code 和 Review 不读取运行时私密配置或 Docker 细节。
 
-当前系统不提供宿主机 Shell API。生成项目的构建、运行与测试只能通过 ProjectOS 的受控 API 发起。
+测试仍只能通过 ProjectOS 的受控 Sandbox API 发起；应用运行提供两种入口：默认生成的本地
+Compose 启动器不依赖控制面，托管启动器则通过 ProjectOS API 发起。
 
 ## Project runtime API
 
@@ -61,12 +62,26 @@ RuntimeSnapshot.as_text() -> str
 POST   /api/v1/projects/{project_id}/runtime/runs
 GET    /api/v1/projects/{project_id}/runtime/runs/{run_id}
 DELETE /api/v1/projects/{project_id}/runtime/runs/{run_id}
+GET    /api/v1/projects/{project_id}/runtime/local-status
 ```
 
 启动时，`RuntimeManifest.application` 选择受信任的 `ApplicationCatalog` 定义。Todo 的
 `todo-web` 会启动 backend 和 frontend 两个 Docker 容器；代码目录只读挂载，容器使用
 非 root 用户、资源限制和无特权模式，SQLite 数据使用 ProjectOS 管理的 Docker volume。
 
-应用服务需要宿主机回环端口才能被浏览器访问，因此运行容器使用 Docker bridge 网络并只
-绑定 `127.0.0.1`。这与一次性 unit 测试的 `--network none` 不同；应用运行的网络策略
-后续还可以替换为带出口防火墙的专用网络。
+当 `runtime.yaml` 未显式声明 `application` 时，控制平面会执行受限形状识别。目前支持识别
+包含 `workspace/backend/app/main.py` 且声明 FastAPI 与 psycopg 依赖的项目；若存在
+`workspace/frontend` 自动选择 `fastapi-postgres-web`，否则选择 `fastapi-postgres`。
+它会复用已批准的 wheel cache，创建项目隔离网络，启动 PostgreSQL；可选的 `migrate.py`/
+`seed.py` 存在时才执行，再启动 Uvicorn。Web profile 将整个 workspace 挂载到后端容器，
+使 FastAPI 可以提供 `workspace/frontend`。数据库不绑定宿主机端口，其余服务由 `PortAllocator`
+从受限端口池（默认 `8100-8299`）动态分配宿主端口。
+
+应用服务需要宿主机回环端口才能被浏览器访问，因此运行容器使用 Docker bridge 网络，
+分配到的宿主端口只绑定 `127.0.0.1`。启动失败或停止运行后端口自动归还，供下一次启动复用。
+这与一次性 unit 测试的 `--network none` 不同；应用运行的网络策略后续还可以替换为带出口
+防火墙的专用网络。
+
+独立模式写入 `.projectos/runtime/local-run.json`，状态接口会读取并对记录中的容器做探测；
+项目可先执行 `start.sh`，之后通过 `POST /api/v1/projects/import` 登记到控制面，再使用
+`local-status` 观察，而不需要停止或重启项目。

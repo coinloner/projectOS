@@ -11,6 +11,15 @@ from app.planner.evaluation import (
     PlannerScenarioResult,
     default_planner_scenarios,
 )
+from app.planner.patch import (
+    AppliedPlanPatch,
+    ChangeBudget,
+    PlanBaseline,
+    PlanPatch,
+    PlanPatchError,
+    PatchOperation,
+    apply_patch,
+)
 
 __all__ = [
     "CrewAIPlannerRuntime",
@@ -28,4 +37,11 @@ __all__ = [
     "PlannerScenario",
     "PlannerScenarioResult",
     "default_planner_scenarios",
+    "AppliedPlanPatch",
+    "ChangeBudget",
+    "PlanBaseline",
+    "PlanPatch",
+    "PlanPatchError",
+    "PatchOperation",
+    "apply_patch",
 ]

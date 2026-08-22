@@ -8,6 +8,7 @@ from app.agent.result import AgentResult
 from app.artifact.repository import ArtifactRef, ArtifactRepository
 from app.memory.store import MemoryStore
 from app.domain.architecture.service import ArchitectureArtifactWorkflow
+from app.orchestration.retry import FailureKind, FailurePackage, FailureSignal
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import MCPToolSource
 from app.orchestration.plan import ExecutionPlan
@@ -20,6 +21,7 @@ from app.workflow.template import (
     WorkflowTemplateRegistry,
 )
 from app.workflow.templates import project_delivery_template
+from app.sandbox.result import SandboxResult, SandboxStatus
 from app.orchestration.work_item import (
     DependencySource,
     WorkItem,
@@ -332,6 +334,86 @@ class GraphRunnerTest(unittest.TestCase):
             self.assertIn("test_evidence_missing", result.error)
             self.assertEqual(len(created), 2)
 
+    def test_setup_failed_evidence_allows_review_to_publish_blocked_result(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("测试环境缺失仍需交付审查")
+
+            class TestWithSetupFailure:
+                def run(self, task: str, *, context: ExecutionContext | None = None) -> AgentResult:
+                    assert context is not None
+                    traces.record_sandbox_evidence(
+                        context,
+                        SandboxResult(
+                            status=SandboxStatus.SETUP_FAILED,
+                            check_id="unit",
+                            runtime_profile="python-stdlib",
+                            exit_code=127,
+                            duration_ms=0,
+                            message="python:3.12-slim 未预置",
+                        ),
+                    )
+                    return AgentResult.completed("已保存测试报告")
+
+            class ReviewRecorder:
+                def run(self, task: str, *, context: ExecutionContext | None = None) -> AgentResult:
+                    return AgentResult.completed("## 审查结论\n\nBLOCKED")
+
+            agents = AgentRegistry()
+            agents.register(
+                AgentDefinition("test_agent", "test", "test", "tests"),
+                factory=TestWithSetupFailure,
+            )
+            agents.register(
+                AgentDefinition("review_agent", "review", "review", "review"),
+                factory=ReviewRecorder,
+            )
+            plan = ExecutionPlan(
+                id="setup-failure-review",
+                goal="测试环境缺失仍需交付审查",
+                trace=trace,
+                work_items=(
+                    make_node("test", agent_id="test_agent", output_key="tests"),
+                    make_node("review", agent_id="review_agent", output_key="review", depends_on=("test",)),
+                ),
+            )
+
+            result = GraphRunner(agents, ToolGateway(), traces=traces).run(plan)
+
+            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+            self.assertIn("BLOCKED", result.state.artifacts["review"])
+
+    def test_test_capability_request_is_recorded_as_setup_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("测试节点误报外部能力")
+            agents = AgentRegistry()
+            agents.register(
+                AgentDefinition("test_agent", "test", "test", "tests"),
+                factory=lambda: FakeAgent(AgentResult.needs_capability("external_research", "不应联网")),
+            )
+            agents.register(
+                AgentDefinition("review_agent", "review", "review", "review"),
+                factory=lambda: FakeAgent(AgentResult.completed("BLOCKED")),
+            )
+            plan = ExecutionPlan(
+                id="test-capability-normalized",
+                goal="测试节点误报外部能力",
+                trace=trace,
+                work_items=(
+                    make_node("test", agent_id="test_agent", output_key="tests"),
+                    make_node("review", agent_id="review_agent", output_key="review", depends_on=("test",)),
+                ),
+            )
+
+            result = GraphRunner(agents, ToolGateway(), traces=traces).run(plan)
+
+            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+            evidence = traces.list_sandbox_evidence(
+                ExecutionContext(trace_id=trace.trace_id, work_item_id="test", agent_id="test_agent")
+            )
+            self.assertEqual(evidence[-1].status, SandboxStatus.SETUP_FAILED)
+
     def test_architecture_scopes_integrate_then_quality_gate_promotes_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
             repository = ArtifactRepository(project_path)
@@ -493,9 +575,9 @@ class WorkflowTemplateTest(unittest.TestCase):
 
     def test_template_registry_returns_template_experience(self) -> None:
         template = WorkflowTemplate(
-            id="requirement_generation",
-            name="需求生成",
-            description="生成需求文档",
+            id="planner_hint_test",
+            name="Planner 测试模板",
+            description="测试模板注册与查询",
             nodes=(
                 TaskBlueprint(
                     id="requirement",
@@ -508,7 +590,7 @@ class WorkflowTemplateTest(unittest.TestCase):
         registry = WorkflowTemplateRegistry()
         registry.register(template)
 
-        registered = registry.get("requirement_generation")
+        registered = registry.get("planner_hint_test")
 
         self.assertEqual(registered, template)
         self.assertEqual(registered.nodes[0].agent_id, "requirement_agent")
@@ -516,9 +598,9 @@ class WorkflowTemplateTest(unittest.TestCase):
     def test_template_registry_rejects_duplicate_ids(self) -> None:
         registry = WorkflowTemplateRegistry()
         template = WorkflowTemplate(
-            id="requirement_generation",
-            name="需求生成",
-            description="生成需求文档",
+            id="planner_hint_test",
+            name="Planner 测试模板",
+            description="测试模板重复注册",
             nodes=(
                 TaskBlueprint(
                     id="requirement",
@@ -532,6 +614,300 @@ class WorkflowTemplateTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "已注册"):
             registry.register(template)
+
+    def test_code_agent_without_save_tool_gets_control_plane_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("验证实现摘要强制要求")
+            created: list[FakeAgent] = []
+
+            def factory() -> FakeAgent:
+                agent = FakeAgent(AgentResult.completed("代码已写入，摘要如下"))
+                created.append(agent)
+                return agent
+
+            agents = AgentRegistry()
+            agents.register(
+                AgentDefinition("code_agent", "code", "code", "implementation"),
+                factory=factory,
+            )
+            plan = ExecutionPlan(
+                id="implementation-summary-required",
+                goal="实现代码",
+                trace=trace,
+                work_items=(make_node("code", agent_id="code_agent"),),
+            )
+
+            repository = ArtifactRepository(project_path)
+            result = GraphRunner(
+                agents,
+                ToolGateway(),
+                traces=traces,
+                artifacts=repository,
+            ).run(plan)
+
+            # 重试后仍不保存时，控制面把最终回答固化为 implementation.md，而不是硬失败
+            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+            self.assertEqual(len(created), 2)
+            self.assertTrue(repository.exists("implementation"))
+            saved = Path(project_path, "implementation.md").read_text(encoding="utf-8")
+            self.assertIn("代码已写入", saved)
+
+    def test_code_agent_saving_implementation_summary_completes(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("实现摘要已保存即可完成")
+
+            class CodeSavingSummary:
+                def run(
+                    self, task: str, *, context: ExecutionContext | None = None
+                ) -> AgentResult:
+                    Path(project_path, "implementation.md").write_text(
+                        "## 实现范围\n\n已保存实现摘要。", encoding="utf-8"
+                    )
+                    return AgentResult.completed("实现摘要已保存")
+
+            agents = AgentRegistry()
+            agents.register(
+                AgentDefinition("code_agent", "code", "code", "implementation"),
+                factory=CodeSavingSummary,
+            )
+            plan = ExecutionPlan(
+                id="implementation-summary-saved",
+                goal="实现代码",
+                trace=trace,
+                work_items=(make_node("code", agent_id="code_agent"),),
+            )
+
+            result = GraphRunner(
+                agents,
+                ToolGateway(),
+                traces=traces,
+                artifacts=ArtifactRepository(project_path),
+            ).run(plan)
+
+            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+
+    def test_repair_code_item_without_file_writes_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("修复未落盘必须被闸门拒绝")
+            created: list[FakeAgent] = []
+
+            def factory() -> FakeAgent:
+                agent = FakeAgent(AgentResult.completed("已定位缺陷，但本轮未落盘"))
+                created.append(agent)
+                return agent
+
+            agents = AgentRegistry()
+            agents.register(
+                AgentDefinition("code_agent", "code", "code", "implementation"),
+                factory=factory,
+            )
+            repair_item = make_node("repair-code", agent_id="code_agent")
+            plan = ExecutionPlan(
+                id="repair-no-file-change",
+                goal="修复测试失败",
+                trace=trace,
+                work_items=(
+                    WorkItem(
+                        id=repair_item.id,
+                        agent_id=repair_item.agent_id,
+                        objective=repair_item.objective,
+                        output_key=repair_item.output_key,
+                        dependencies=repair_item.dependencies,
+                        failure_package=FailurePackage(
+                            signal=FailureSignal(
+                                FailureKind.TEST_FAILURE, "unit check exit_code=1"
+                            )
+                        ),
+                    ),
+                ),
+            )
+
+            result = GraphRunner(
+                agents,
+                ToolGateway(),
+                traces=traces,
+                artifacts=ArtifactRepository(project_path),
+                memory=MemoryStore(project_path),
+            ).run(plan)
+
+            # 重试一次仍不落盘时，修复项判定失败而不是假装完成
+            self.assertEqual(result.status, GraphRunStatus.FAILED)
+            self.assertEqual(len(created), 2)
+            self.assertIn("repair_no_file_change", result.error or "")
+
+    def test_repair_code_item_with_file_writes_completes(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("修复落盘即可完成")
+
+            class RepairWritingCode:
+                def run(
+                    self, task: str, *, context: ExecutionContext | None = None
+                ) -> AgentResult:
+                    Path(project_path, "implementation.md").write_text(
+                        "## 实现范围\n\n已保存实现摘要。", encoding="utf-8"
+                    )
+                    assert context is not None and context.memory is not None
+                    context.memory.append(
+                        trace_id=context.trace_id,
+                        role="tool",
+                        event_type="tool_result",
+                        content="已写入 server.py",
+                        work_item_id=context.work_item_id,
+                        agent_id=context.agent_id,
+                        tool_name="write_workspace_file",
+                    )
+                    return AgentResult.completed("已修复 server.py 并落盘")
+
+            agents = AgentRegistry()
+            agents.register(
+                AgentDefinition("code_agent", "code", "code", "implementation"),
+                factory=RepairWritingCode,
+            )
+            repair_item = make_node("repair-code", agent_id="code_agent")
+            plan = ExecutionPlan(
+                id="repair-with-writes",
+                goal="修复测试失败",
+                trace=trace,
+                work_items=(
+                    WorkItem(
+                        id=repair_item.id,
+                        agent_id=repair_item.agent_id,
+                        objective=repair_item.objective,
+                        output_key=repair_item.output_key,
+                        dependencies=repair_item.dependencies,
+                        failure_package=FailurePackage(
+                            signal=FailureSignal(
+                                FailureKind.TEST_FAILURE, "unit check exit_code=1"
+                            )
+                        ),
+                    ),
+                ),
+            )
+
+            result = GraphRunner(
+                agents,
+                ToolGateway(),
+                traces=traces,
+                artifacts=ArtifactRepository(project_path),
+                memory=MemoryStore(project_path),
+            ).run(plan)
+
+            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+
+    def test_review_blocked_verdict_marks_run_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("审查结论 BLOCKED 应阻塞交付")
+
+            class CodeSavingSummary:
+                def run(
+                    self, task: str, *, context: ExecutionContext | None = None
+                ) -> AgentResult:
+                    Path(project_path, "implementation.md").write_text(
+                        "## 实现范围\n\n已保存实现摘要。", encoding="utf-8"
+                    )
+                    return AgentResult.completed("实现摘要已保存")
+
+            class BlockedReview:
+                def run(
+                    self, task: str, *, context: ExecutionContext | None = None
+                ) -> AgentResult:
+                    return AgentResult.completed(
+                        "## 审查结论（BLOCKED）\n\n缺少外部规范核实记录，不予放行。"
+                    )
+
+            agents = AgentRegistry()
+            agents.register(
+                AgentDefinition("code_agent", "code", "code", "implementation"),
+                factory=CodeSavingSummary,
+            )
+            agents.register(
+                AgentDefinition("review_agent", "review", "review", "review"),
+                factory=BlockedReview,
+            )
+            plan = ExecutionPlan(
+                id="review-blocked",
+                goal="实现并审查",
+                trace=trace,
+                work_items=(
+                    make_node("code", agent_id="code_agent", output_key="implementation"),
+                    make_node(
+                        "review",
+                        agent_id="review_agent",
+                        output_key="review",
+                        depends_on=("code",),
+                    ),
+                ),
+            )
+
+            result = GraphRunner(
+                agents,
+                ToolGateway(),
+                traces=traces,
+                artifacts=ArtifactRepository(project_path),
+            ).run(plan)
+
+            self.assertEqual(result.status, GraphRunStatus.BLOCKED)
+            self.assertIn("BLOCKED", result.error)
+
+    def test_review_pass_verdict_stays_completed(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("审查结论 PASS 保持 completed")
+
+            class CodeSavingSummary:
+                def run(
+                    self, task: str, *, context: ExecutionContext | None = None
+                ) -> AgentResult:
+                    Path(project_path, "implementation.md").write_text(
+                        "## 实现范围\n\n已保存实现摘要。", encoding="utf-8"
+                    )
+                    return AgentResult.completed("实现摘要已保存")
+
+            class PassedReview:
+                def run(
+                    self, task: str, *, context: ExecutionContext | None = None
+                ) -> AgentResult:
+                    return AgentResult.completed(
+                        "## 审查结论（CONDITIONAL_PASS）\n\n条件已记录。"
+                    )
+
+            agents = AgentRegistry()
+            agents.register(
+                AgentDefinition("code_agent", "code", "code", "implementation"),
+                factory=CodeSavingSummary,
+            )
+            agents.register(
+                AgentDefinition("review_agent", "review", "review", "review"),
+                factory=PassedReview,
+            )
+            plan = ExecutionPlan(
+                id="review-pass",
+                goal="实现并审查",
+                trace=trace,
+                work_items=(
+                    make_node("code", agent_id="code_agent", output_key="implementation"),
+                    make_node(
+                        "review",
+                        agent_id="review_agent",
+                        output_key="review",
+                        depends_on=("code",),
+                    ),
+                ),
+            )
+
+            result = GraphRunner(
+                agents,
+                ToolGateway(),
+                traces=traces,
+                artifacts=ArtifactRepository(project_path),
+            ).run(plan)
+
+            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
 
 
 if __name__ == "__main__":

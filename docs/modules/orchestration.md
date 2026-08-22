@@ -44,7 +44,25 @@ Docker 失败会按测试失败、超时、环境配置失败和 Agent 运行异
 每个节点结果后都会写入版本化 checkpoint；恢复时只信任已完成节点，失败、等待和 replan 节点重新调度，
 避免把中断时的半成品副作用误当成完成结果。
 
-`FailurePackage` 是编排层由 Trace evidence 生成的受控输入。Planner 只看到失败种类、摘要、证据 ID、check/runtime/exit code；修复用 Code/Test WorkItem 可看到受长度限制的 stdout/stderr，并且该文本被标记为不可信程序输出。TestAgent 必须产生当前 WorkItem 的 SandboxEvidence，否则不会被记为完成。
+`FailurePackage` 是编排层由 Trace evidence 生成的受控输入。Planner 只看到失败种类、摘要、证据 ID、check/runtime/exit code；修复用 Code/Test WorkItem 可看到受长度限制的 stdout/stderr，并且该文本被标记为不可信程序输出。TestAgent 必须产生当前 WorkItem 的 SandboxEvidence，否则不会被记为完成；CodeAgent 同理必须通过 `save_implementation` 保存实现摘要（implementation.md），否则按 `implementation_summary_missing` 有限重试后失败。
+
+修复计划（携带 failure_package 的 WorkItem）另有落盘闸门：code 域的修复项必须有成功的
+`write_workspace_file` 调用记录（由 Trace 记忆中的工具事件判定），否则按
+`repair_no_file_change` 重试一次，重试时任务文本会注入「上一轮未落盘」的强制反馈；仍不落盘
+则修复项失败而不是假装完成。Planner 的修复计划提示词同样要求修复步骤必须产生实际文件变更，
+只读诊断不构成修复步骤。
+
+## 终态判定
+
+图执行完所有 WorkItem 后，Runner 解析 Review 节点的结论行
+（固定格式「## 审查结论（PASS / CONDITIONAL_PASS / BLOCKED）」）：
+
+- `PASS` / `CONDITIONAL_PASS` → `completed`（条件记录在 review.md 中）
+- `BLOCKED` → `blocked`，交付未放行；`blocked` 属于可恢复终态，修复阻塞项后可
+  经 `/runs/{trace_id}/resume` 从 checkpoint 恢复继续交付。
+
+Review 结论缺失或无法解析时按历史行为保持 `completed`。能力等待（`waiting_for_capability_approval`）、
+`needs_replan`、`failed` 等中途终态不受 Review 影响，仍按各自路径结束。
 
 ## TaskInputPackage
 

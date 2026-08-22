@@ -117,6 +117,21 @@ class ArtifactRepository:
         self._root = Path(project_path) / ".projectos"
         self._lock = RLock()
 
+    def exists(self, artifact_key: str) -> bool:
+        """项目根目录下的已知产物文件是否已保存（如 implementation.md）。"""
+        self._validate_known_artifact(artifact_key)
+        return self._store.exists(artifact_key)
+
+    def load_artifact(self, artifact_key: str) -> str:
+        """读取正式产物正文，供控制面质量终态检查使用。"""
+        self._validate_known_artifact(artifact_key)
+        return self._store.load(artifact_key)
+
+    def save_artifact(self, artifact_key: str, content: str) -> None:
+        """保存项目根目录下的已知产物文件（控制面兜底，非候选发布）。"""
+        self._validate_known_artifact(artifact_key)
+        self._store.save(artifact_key, content)
+
     def write_staged(
         self,
         *,

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.application.environment import EnvironmentProvisioner
 from app.artifact.toolset import ArtifactToolSet
+from app.runtime.application import ApplicationCatalog
 from app.runtime.manifest import RuntimeManifest
 
 
@@ -13,13 +15,22 @@ class BootstrapService:
 
     def __init__(self, project_path: str) -> None:
         self._project_path = Path(project_path)
+        self._provisioner = EnvironmentProvisioner()
         self._artifacts = ArtifactToolSet(
             project_path,
             output_artifact="environment",
             readable_artifacts=("requirement", "architecture", "tasks"),
         )
 
-    def configure_runtime(self, profile: str, dependencies: str = "") -> str:
+    def configure_runtime(
+        self,
+        profile: str,
+        dependencies: str = "",
+        application: str | None = None,
+    ) -> str:
+        if application is not None:
+            # 提前校验，让 Agent 从报错里直接看到受信应用白名单。
+            ApplicationCatalog.get(application.strip())
         dependency_lines = dependencies.strip()
         manifest = RuntimeManifest.from_dict(
             {
@@ -30,6 +41,7 @@ class BootstrapService:
                     if dependency_lines
                     else {}
                 ),
+                **({"application": application.strip()} if application else {}),
             }
         )
         manifest.save(str(self._project_path))
@@ -38,7 +50,8 @@ class BootstrapService:
             dependency_path.write_text(dependency_lines + "\n", encoding="utf-8")
         elif dependency_path.exists():
             dependency_path.unlink()
-        return f"已配置 runtime profile: {manifest.profile}"
+        application_note = f"，application: {manifest.application}" if manifest.application else ""
+        return f"已配置 runtime profile: {manifest.profile}{application_note}"
 
     def inspect_runtime(self) -> str:
         try:
@@ -47,6 +60,21 @@ class BootstrapService:
             return f"runtime_status=missing\nmessage={error}"
         dependencies = "present" if manifest.dependencies_file else "none"
         return f"runtime_status=configured\nprofile={manifest.profile}\ndependencies={dependencies}"
+
+    def prepare_environment(self) -> str:
+        """通过控制平面准备白名单镜像；Agent 不获得 Docker 命令权限。"""
+        result = self._provisioner.prepare(
+            str(self._project_path), dependencies_approved=False
+        )
+        return "\n".join(
+            [
+                f"environment_status={result.status}",
+                f"profile={result.profile or 'none'}",
+                f"image={result.image or 'none'}",
+                f"dependencies={result.dependencies}",
+                *([f"message={result.message}"] if result.message else []),
+            ]
+        )
 
     def load_artifact(self, artifact: str) -> str:
         return self._artifacts.load(artifact)

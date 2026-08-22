@@ -75,6 +75,29 @@ class ToolGatewayTest(unittest.TestCase):
         self.assertEqual(tools[1].run(query="policy"), "found: policy")
         self.assertEqual(client.calls, [("search_external_docs", {"query": "policy"})])
 
+    def test_activate_source_for_capability_covers_all_registered_domains(self) -> None:
+        for domain in ("requirement", "architecture", "code", "review"):
+            self.gateway.register_source(
+                domain,
+                "docs-mcp",
+                MCPToolSource(FakeMCPClient()),
+                capability="external_documentation",
+            )
+
+        activated = self.gateway.activate_source_for_capability(
+            "external_documentation", "docs-mcp"
+        )
+
+        self.assertEqual(activated, 4)
+        for domain in ("requirement", "architecture", "code", "review"):
+            names = [tool.name for tool in self.gateway.tools_for(domain)]
+            self.assertIn("search_external_docs", names, domain)
+        # 无关 domain 不受影响
+        self.assertNotIn(
+            "search_external_docs",
+            [tool.name for tool in self.gateway.tools_for("test")],
+        )
+
     def test_deactivating_mcp_removes_crewai_tool_exposure(self) -> None:
         client = FakeMCPClient()
         self.gateway.register_source(

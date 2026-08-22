@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
 
 from app.agent.registry import AgentRegistry
+from app.agent.result import AgentResult, AgentStatus
 from app.artifact.repository import ArtifactRepository
 from app.memory.context import MemoryContextAssembler
 from app.memory.store import MemoryStore
@@ -24,10 +26,23 @@ from app.orchestration.retry import (
     sandbox_failure_signal,
 )
 from app.orchestration.task_input import build_task_input
+from app.sandbox.result import SandboxResult, SandboxStatus
 
 
 def _agent_result_text(result) -> str:
     return str(result)
+
+
+def _parse_review_verdict(content: str | None) -> str | None:
+    """从 Review 输出中提取结论：PASS / CONDITIONAL_PASS / BLOCKED。
+
+    ReviewAgent 的结论行格式固定为「## 审查结论（PASS / CONDITIONAL_PASS / BLOCKED）」；
+    解析不到结论时返回 None，由调用方按默认（COMPLETED）处理。
+    """
+    if not content:
+        return None
+    match = re.search(r"审查结论[（(](PASS|CONDITIONAL_PASS|BLOCKED)[)）]", content)
+    return match.group(1) if match else None
 
 
 class GraphRunStatus(str, Enum):
@@ -172,7 +187,35 @@ class GraphRunner:
                     self._finish_trace(plan, graph_result)
                     return graph_result
 
+        review_item = next(
+            (item for item in plan.work_items if item.agent_id == "review_agent"),
+            None,
+        )
         graph_result = GraphRunResult(status=GraphRunStatus.COMPLETED, state=state)
+        if review_item is not None:
+            review_result = state.node_results.get(review_item.id)
+            verdict = _parse_review_verdict(
+                review_result.content if review_result is not None else None
+            )
+            if verdict == "BLOCKED":
+                graph_result = GraphRunResult(
+                    status=GraphRunStatus.BLOCKED,
+                    state=state,
+                    node_result=review_result,
+                    error="Review 结论为 BLOCKED：交付未放行，修复阻塞项后可从 checkpoint 恢复运行",
+                )
+        if (
+            graph_result.status is GraphRunStatus.COMPLETED
+            and self._artifacts is not None
+            and self._artifacts.exists("review")
+            and "policy_id=project.quality.v1\nstatus=failed"
+            in self._artifacts.load_artifact("review")
+        ):
+            graph_result = GraphRunResult(
+                status=GraphRunStatus.BLOCKED,
+                state=state,
+                error="确定性项目质量策略未通过：请完善系统分层、测试或启动边界后恢复运行",
+            )
         self._finish_trace(plan, graph_result)
         return graph_result
 
@@ -239,6 +282,20 @@ class GraphRunner:
                 return NodeResult.needs_replan(
                     node_id=item.id, agent_id=item.agent_id, signal=signal
                 )
+            if (
+                signal.kind is FailureKind.IMPLEMENTATION_SUMMARY_MISSING
+                and self._artifacts is not None
+                and (result.content or "").strip()
+            ):
+                # 控制面兜底：Agent 两轮都没调用保存工具时，把最终回答固化为
+                # implementation.md，保证交付链始终有可审计实现记录，
+                # 而不是让整条交付链因一次工具调用缺失而硬失败。
+                self._artifacts.save_artifact("implementation", result.content)
+                return NodeResult.completed(
+                    node_id=item.id,
+                    agent_id=item.agent_id,
+                    content=result.content,
+                )
             return NodeResult.failed(
                 node_id=item.id,
                 agent_id=item.agent_id,
@@ -273,6 +330,19 @@ class GraphRunner:
         if result.status is NodeStatus.FAILED:
             return FailureSignal(FailureKind.AGENT_RUNTIME, result.error or "Agent 执行失败")
         return None
+
+    def _workspace_writes(self, trace_id: str, work_item_id: str) -> int:
+        """该工作项成功写入 workspace 文件的次数（0 表示修复未落盘）。"""
+        if self._memory is None:
+            return 0
+        return sum(
+            1
+            for event in self._memory.events(
+                trace_id, work_item_id=work_item_id, roles=("tool",)
+            )
+            if event.tool_name == "write_workspace_file"
+            and not str(event.content).startswith("工具执行失败")
+        )
 
     def _run_item(
         self, state: RunState, item: WorkItem, *, attempt: int = 1
@@ -321,6 +391,18 @@ class GraphRunner:
                 else ""
             )
             prompt = task_input.as_prompt(memory_context=memory_context)
+            if (
+                attempt > 1
+                and item.failure_package is not None
+                and definition.domain == "code"
+                and self._workspace_writes(state.plan.trace.trace_id, item.id) == 0
+            ):
+                prompt += (
+                    "\n\n【上一轮未通过落盘闸门】上一轮只输出了诊断，没有调用 "
+                    "write_workspace_file，workspace 没有任何文件被修改。"
+                    "本轮必须：1) 使用 write_workspace_file 把修复实际写入目标文件；"
+                    "2) 在最终回答中列出已写入的文件清单。只输出诊断不算完成。"
+                )
             self._record_memory(
                 context,
                 role="system",
@@ -331,6 +413,32 @@ class GraphRunner:
             agent_result = self._agents.create(item.agent_id).run(
                 prompt, context=context
             )
+            if (
+                item.agent_id == "test_agent"
+                and agent_result.status is AgentStatus.NEEDS_CAPABILITY
+                and self._traces is not None
+            ):
+                # Test 节点不能通过外部能力解决 Docker/setup 问题；把模型误报的
+                # capability_request 转为受控环境证据，确保 Review 仍能给出结论。
+                reason = (
+                    agent_result.capability_request.reason
+                    if agent_result.capability_request is not None
+                    else "TestAgent 请求了未允许的外部能力"
+                )
+                self._traces.record_sandbox_evidence(
+                    context,
+                    SandboxResult(
+                        status=SandboxStatus.SETUP_FAILED,
+                        check_id="unit",
+                        runtime_profile=None,
+                        exit_code=None,
+                        duration_ms=0,
+                        message=reason,
+                    ),
+                )
+                agent_result = AgentResult.completed(
+                    f"测试环境未就绪，已记录 setup_failed：{reason}"
+                )
             self._record_memory(
                 context,
                 role="assistant",
@@ -362,6 +470,42 @@ class GraphRunner:
         if node_result.status is not NodeStatus.COMPLETED or self._traces is None:
             return node_result
         if definition.domain != "test":
+            if (
+                definition.domain == "code"
+                and item.failure_package is not None
+                and self._workspace_writes(state.plan.trace.trace_id, item.id) == 0
+            ):
+                # 修复场景落盘闸门：修复项没有成功的 write_workspace_file 调用，
+                # workspace 文件未变化。LLM 有时只输出诊断并声称"缺少写工具"，
+                # 这种"修复"不可能让后续测试收敛，必须重试并强制落盘。
+                return NodeResult.needs_replan(
+                    node_id=item.id,
+                    agent_id=item.agent_id,
+                    content=node_result.content,
+                    signal=FailureSignal(
+                        FailureKind.REPAIR_NO_FILE_CHANGE,
+                        "CodeAgent 修复未落盘：本工作项没有任何成功的 "
+                        "write_workspace_file 调用，workspace 文件未变化，"
+                        "修复不成立",
+                    ),
+                )
+            if (
+                definition.domain == "code"
+                and self._artifacts is not None
+                and not self._artifacts.exists("implementation")
+            ):
+                # 实现摘要是交付链的可审计凭证（如外部规范核实记录）；
+                # 不接受"Agent 声称已实现但没有产物"的文字声明。
+                return NodeResult.needs_replan(
+                    node_id=item.id,
+                    agent_id=item.agent_id,
+                    content=node_result.content,
+                    signal=FailureSignal(
+                        FailureKind.IMPLEMENTATION_SUMMARY_MISSING,
+                        "CodeAgent 未调用 save_implementation 保存实现摘要"
+                        "（implementation.md），交付链缺少可审计的实现记录",
+                    ),
+                )
             return node_result
         evidence = self._traces.latest_sandbox_evidence(context)
         if evidence is None:
@@ -380,6 +524,17 @@ class GraphRunner:
         )
         if signal is None:
             return node_result
+        if evidence.status.value == "setup_failed":
+            # 环境前置失败不是 Planner 能修复的业务失败；保留证据并继续到 Review，
+            # 由 Review 产出 BLOCKED/CONDITIONAL_PASS，而不是让整条交付链永久停在 Test。
+            return NodeResult.completed(
+                node_id=item.id,
+                agent_id=item.agent_id,
+                content=(
+                    (node_result.content or "测试报告已保存。")
+                    + f"\nSandbox setup_failed：{evidence.message or '测试环境未就绪'}"
+                ),
+            )
         return NodeResult.needs_replan(
             node_id=item.id, agent_id=item.agent_id, signal=signal
         )
@@ -473,7 +628,23 @@ class GraphRunner:
                 self._traces.snapshot_requirement(plan.trace, result.content)
             return
         if result.status is NodeStatus.NEEDS_CAPABILITY:
-            self._record_event(plan, item, "work_item_waiting_capability")
+            self._record_event(
+                plan,
+                item,
+                "work_item_waiting_capability",
+                details={
+                    "capability": (
+                        result.capability_request.capability
+                        if result.capability_request is not None
+                        else None
+                    ),
+                    "reason": (
+                        result.capability_request.reason
+                        if result.capability_request is not None
+                        else None
+                    ),
+                },
+            )
             return
         if result.status is NodeStatus.NEEDS_REPLAN:
             signal = result.failure_signal

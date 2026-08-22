@@ -1,4 +1,4 @@
-"""仅处理依赖锁文件的受控 wheel 获取，不向其暴露项目源码。"""
+"""在明确批准后解析依赖并固化项目私有 wheel cache。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,11 @@ class DependencyResolutionResult:
 
 
 class DockerDependencyResolver:
-    """显式批准后，使用 Docker 获取锁定依赖到项目私有 wheel cache。"""
+    """显式批准后，在联网容器中解析依赖并固化 wheel cache。
+
+    ``requirements.in`` 是依赖意图而非预先生成的 hash lockfile；审批动作本身
+    是允许解析的边界。测试阶段只读取已准备的 cache，不再联网。
+    """
 
     def __init__(self, executor: DockerExecutor | None = None) -> None:
         self._executor = executor or SubprocessDockerExecutor()
@@ -79,7 +83,7 @@ class DockerDependencyResolver:
                 "--security-opt",
                 "no-new-privileges",
                 "--tmpfs",
-                "/tmp:rw,noexec,nosuid,size=64m",
+                "/tmp:rw,noexec,nosuid,size=256m",
                 "--mount",
                 f"type=bind,src={input_dir},dst=/input,readonly",
                 "--mount",
@@ -89,7 +93,6 @@ class DockerDependencyResolver:
                 "-m",
                 "pip",
                 "download",
-                "--require-hashes",
                 "-r",
                 "/input/requirements.in",
                 "-d",

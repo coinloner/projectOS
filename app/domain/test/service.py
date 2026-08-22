@@ -4,6 +4,7 @@ from app.artifact.toolset import ArtifactToolSet
 from app.sandbox.controller import SandboxController
 from app.sandbox.result import SandboxResult
 from app.workspace.toolset import TestToolSet
+from app.domain.architecture.layer_contract import LayerContractStore
 
 
 class TestService:
@@ -39,6 +40,10 @@ class TestService:
     def write_test_file(self, path: str, content: str) -> str:
         return self._workspace.write_test_file(path, content)
 
-    def run_sandbox_check(self) -> SandboxResult:
-        """测试只能请求 policy 固定的 unit check，不能传递宿主机命令。"""
-        return self._sandbox.run_check(self._project_path, "unit")
+    def run_sandbox_check(self, check_id: str = "unit") -> SandboxResult:
+        """测试只能选择 profile 白名单中的固定 check，不能传递宿主机命令。"""
+        return self._sandbox.run_check(self._project_path, check_id)
+
+    def load_layer_contract(self) -> str:
+        import json
+        return json.dumps(LayerContractStore(self._project_path).load().as_dict(), ensure_ascii=False, indent=2)

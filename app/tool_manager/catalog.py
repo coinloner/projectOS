@@ -115,6 +115,10 @@ class ToolCatalog:
     def has_source(self, domain: str, source_name: str) -> bool:
         return (domain, source_name) in self._sources
 
+    def domains(self) -> set[str]:
+        """返回所有注册了来源的 domain，用于跨 domain 的会话授权。"""
+        return {registered_domain for (registered_domain, _) in self._sources}
+
     def _refresh_dynamic_sources(
         self, domain: str, source_names: set[str]
     ) -> None:

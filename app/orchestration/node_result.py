@@ -139,11 +139,17 @@ class NodeResult:
 
     @classmethod
     def needs_replan(
-        cls, *, node_id: str, agent_id: str, signal: FailureSignal
+        cls,
+        *,
+        node_id: str,
+        agent_id: str,
+        signal: FailureSignal,
+        content: str | None = None,
     ) -> NodeResult:
         return cls(
             node_id=node_id,
             agent_id=agent_id,
             status=NodeStatus.NEEDS_REPLAN,
+            content=content,
             failure_signal=signal,
         )

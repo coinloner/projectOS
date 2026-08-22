@@ -94,7 +94,8 @@ output key、文件路径或 Python 代码。
 规则：
 1. 同一 Agent 可以出现多次，但每个 ref 必须唯一，并且每次 objective 都必须是可独立验收的窄任务。
 2. depends_on 只能引用同一计划中已选择的其他步骤 ref。
-3. 已存在的 artifact 通常表示对应文档工作可跳过；缺失 artifact 不代表必须运行所有 Agent。
+3. 已存在的 artifact 通常表示对应文档工作可跳过；但空项目若目标同时要求实现、测试或交付审查，
+   必须选择受控模板 project_delivery，不能只生成 implementation -> tests -> review 的捷径。
 4. implementation.md 是实现摘要，不是代码完成证据。若目标要求交付可运行软件，且
    workspace.implementation_file_count 为 0，必须选择 code_agent；后续需要验证或交付
    审查时，test_agent 和 review_agent 必须依赖 code_agent 并按顺序出现。
@@ -102,10 +103,14 @@ output key、文件路径或 Python 代码。
    bootstrap_agent；Bootstrap 负责声明 runtime，不执行依赖安装。
 6. runtime.dependencies_configured 为 true 而 dependency_cache_ready 为 false 时，
    说明需要项目所有者批准依赖解析；不要假设测试可运行。
-7. 优先产出完成目标所需的最小步骤集合。
-8. 默认模板的依赖会由系统自动加入。只有确实不适用时，才在
+7. layer_contract.exists 为 true 时，implementation/code_agent 的 objective 或 constraints
+   必须明确遵守契约层和 path_mapping；test_agent 必须覆盖 required_test_types。
+   layer_contract.exists 为 false 且目标要求代码交付时，必须先让 architecture_agent 产出并保存契约，
+   不得把分层标准留给代码节点临时猜测。
+8. 优先产出完成目标所需的最小步骤集合。
+9. 默认模板的依赖会由系统自动加入。只有确实不适用时，才在
    template_dependency_overrides 中提供 predecessor_agent_id、successor_agent_id 和原因。
-9. 有多个同类前置步骤时，必须用 depends_on 明确选择当前步骤依赖哪一个；系统不会猜测。
-10. Agent 的 max_parallel_instances 只是调度容量，不代表可共享写入同一文件。不要为了并行重复创建会写入同一 artifact 的步骤。
-11. constraints 只填写本步骤必须遵守的技术、范围或权限约束；non_goals 只填写本步骤明确不做的内容。
-12. 不输出任何 JSON 之外的文字。"""
+10. 有多个同类前置步骤时，必须用 depends_on 明确选择当前步骤依赖哪一个；系统不会猜测。
+11. Agent 的 max_parallel_instances 只是调度容量，不代表可共享写入同一文件。不要为了并行重复创建会写入同一 artifact 的步骤。
+12. constraints 只填写本步骤必须遵守的技术、范围或权限约束；non_goals 只填写本步骤明确不做的内容。
+13. 不输出任何 JSON 之外的文字。"""

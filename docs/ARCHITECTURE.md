@@ -89,7 +89,9 @@ CrewAI               管理 LLM tool-calling loop 和参数验证
 
 普通 `ToolSetSource` 只接收模型 schema 中的业务参数。少数需要追溯归属的工具使用 `ExecutionToolSetSource`；`GraphRunner` 创建 `ExecutionContext(trace_id, work_item_id, agent_id)` 并由 Gateway 绑定，模型看不到也不能伪造这些字段。
 
-当前 MCP connector 和“批准后恢复执行”尚未实现。查询候选 source 不会连接 MCP，也不会自动扩大 Agent 权限。
+动态 source 默认不会发现或暴露；Trace 进入 `WAITING_FOR_CAPABILITY_APPROVAL` 后，调用
+`GET /runs/{trace_id}/capabilities` 查询候选，再用 `POST /runs/{trace_id}/capabilities/approve`
+在同一次恢复动作中激活 source 并继续 checkpoint。批准动作会写入 `capability_approved` 事件。
 
 HTTP 接入层见 [API module](modules/api.md)。`ProjectOSContainer` 是唯一的运行时组合根：
 Domain installer 在其中注册各自的 Tool 和 Agent，Workflow 也在此处注册；`main.py` 和
@@ -101,11 +103,12 @@ FastAPI 都不再维护重复的注册清单。
 
 `TestAgent` 只能写 `workspace/tests/` 并请求固定的 `unit` 检查。`SandboxController` 读取不可信的运行时声明，经 `SandboxPolicy` 转成受信任 `SandboxSpec`，最后由 Docker 执行。默认容器无网络、只读、非 root、无 Linux capabilities，并且只读挂载被生成项目的 `workspace/`。
 
-当前可真实运行的 profile 是 `python-stdlib`。`python-pip` 已具备声明和 wheel cache 策略，但依赖下载必须经项目所有者明确批准，且尚未接入 Workflow 的暂停/恢复流程。
+当前可真实运行的 profile 是 `python-stdlib`。`python-pip` 已具备声明和 wheel cache 策略；依赖下载仍必须经项目所有者明确批准，运行前可通过 runtime preflight 检查。
 
 ## 当前闭环边界
 
-目前系统能完成一次线性项目交付：从需求走到 Docker 测试和 Review。它尚不是可自动纠偏的闭环，因为：
+系统的目标闭环是从需求走到 Docker 测试和 Review；Docker 镜像和依赖缓存属于运行前置，缺失时
+会产生受控 `setup_failed` 证据并由 Review 明确标记阻塞，而不是伪造通过。它尚不是可自动纠偏的闭环，因为：
 
 - Planner 已使用结构化 `WorkItem`；`TaskAgent` 通过 `PARTITIONED -> INTEGRATION -> QUALITY_GATE`
   链路输出给人阅读的 `tasks.md`，不再使用旧的独占读写方式。

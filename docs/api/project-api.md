@@ -85,6 +85,32 @@ Project.list(base_dir: str) -> list[str]
 
 ## 兼容性约定
 
+## HTTP 创建路径
+
+`POST /api/v1/projects` 接受：
+
+```json
+{"name": "todo_demo"}
+```
+
+不传 `path` 时创建在配置的 `projects_root/<name>`。也可以指定本地绝对路径：
+
+```json
+{"name": "todo_local", "path": "/tmp/projectos/todo_local"}
+```
+
+路径映射保存在 `projects_root/.projectos/project-paths.json`，后续 API 仍通过
+`project_id` 定位自定义目录；项目根目录和其父目录不能作为项目路径。
+
+已有项目目录使用 `POST /api/v1/projects/import` 登记，不会改写其中的文件：
+
+```json
+{"name": "existing_demo", "path": "/tmp/projectos/existing_demo"}
+```
+
+导入目录必须包含 `project.yaml`，且同一 `project_id` 不能映射到另一目录。导入成功后，
+环境审批、运行、恢复和对话接口与新建项目完全一致。
+
 1. **返回值结构不得改变** —— 公共方法的返回值类型一旦定义，后续版本只能扩展（加字段），不得修改或删除已有字段。
 2. **异常类型不得降级** —— 当前声明为 `FileNotFoundError` 的错误，后续不得改为静默忽略或无提示返回。
 3. **新增方法自由** —— 在保持已有方法不变的前提下，可以增加新的静态/实例方法。

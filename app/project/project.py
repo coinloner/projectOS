@@ -3,6 +3,7 @@ import yaml
 from pathlib import Path
 
 from app.runtime.manifest import RuntimeManifest
+from app.runtime.startup import ensure_startup_scripts
 
 
 class Project:
@@ -42,11 +43,29 @@ class Project:
         with open(yaml_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(config, f, allow_unicode=True)
 
+        ensure_startup_scripts(str(self.project_path), project_id=self.name)
+
 
 
         print("✅ 项目创建完成！")
         print(f"   📁 项目根目录: {self.project_path}")
         print(f"   📂 工作空间:   {self.workspace_path}")
+
+    @classmethod
+    def create_at(
+        cls,
+        project_path: str,
+        *,
+        name: str,
+        language: str = "Python",
+        version: str = "0.1",
+    ) -> "Project":
+        """在用户指定的本地目录创建项目，项目 ID 与目录名可以不同。"""
+        project = cls(name=name, base_dir=str(Path(project_path).resolve().parent), language=language, version=version)
+        project.project_path = Path(project_path).expanduser().resolve()
+        project.workspace_path = project.project_path / "workspace"
+        project.create()
+        return project
 
     @staticmethod
     def load(project_dir: str):

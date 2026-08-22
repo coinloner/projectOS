@@ -19,6 +19,7 @@ uvicorn app.api.asgi:app --reload
 | `GET` | `/health` | 存活检查 |
 | `POST` | `/api/v1/projects` | 创建 ProjectOS 项目 |
 | `GET` | `/api/v1/projects/{project_id}/workflows` | 列出可由 API 直接启动的受控 Workflow |
+| `GET` | `/api/v1/projects/{project_id}/runtime/preflight` | 检查 runtime 声明、Docker 镜像和依赖前置 |
 | `POST` | `/api/v1/projects/{project_id}/runs` | 后台启动一个受控 Workflow |
 | `POST` | `/api/v1/projects/{project_id}/conversations` | 创建连续对话会话 |
 | `POST` | `/api/v1/projects/{project_id}/conversations/{conversation_id}/messages` | 发送消息并启动一轮动态 Planner |
@@ -26,6 +27,9 @@ uvicorn app.api.asgi:app --reload
 | `GET` | `/api/v1/projects/{project_id}/conversations/{conversation_id}/messages` | 查询会话消息 |
 | `GET` | `/api/v1/projects/{project_id}/runs/{trace_id}` | 查询 Trace 与进程内运行状态 |
 | `GET` | `/api/v1/projects/{project_id}/runs/{trace_id}/events` | 查询持久化控制面事件 |
+| `GET` | `/api/v1/projects/{project_id}/runs/{trace_id}/capabilities` | 查询待审批的动态能力候选 |
+| `POST` | `/api/v1/projects/{project_id}/runs/{trace_id}/capabilities/approve` | 批准 source 并立即恢复运行 |
+| `GET` | `/api/v1/projects/{project_id}/runs/{trace_id}/baseline` | 查询计划基线和当前修订 |
 | `GET` | `/api/v1/projects/{project_id}/runs/{trace_id}/memory` | 查询一次运行的会话记忆事件 |
 
 启动运行的请求只接受 `goal` 和已注册的 `workflow_id`：
@@ -44,11 +48,14 @@ uvicorn app.api.asgi:app --reload
 - `architecture_parallel`：复杂需求的多分区路径，baseline 后可并行运行多个 scope。
 - `project_delivery_minimal`：从已有需求和架构继续跑任务、环境、并行代码、测试和 Review。
 
-连续对话接口不要求调用方先选择 Workflow。会话层先用确定性规则分类意图：新需求/修改需求进入
+连续对话接口不要求调用方先选择 Workflow。系统运行路径只有两类：调用方明确选择的受控 Workflow，
+或由 Planner 动态生成 DAG。会话层先用确定性规则分类意图：新需求/修改需求进入
 普通 `PlannerService.plan()`，查看结果只读取 Trace、Artifact 和 SandboxEvidence，继续只返回
-当前任务状态，恢复才调用 checkpoint 恢复入口；授权消息不会隐式授予能力。每条 user 消息会保存
-到会话，并带有限历史进入规划；Planner 生成的本轮计划仍然拥有独立 `trace_id`。会话保存连续性，
-Trace 保存一次执行的审计事实，两者不混在同一个文件中。Trace 进入终态后，读取会话接口会追加
+当前任务状态，恢复才调用 checkpoint 恢复入口；授权消息不会隐式授予能力。会话的**首条** user 消息
+就是完整目标，原样交给 Planner 做全量规划；后续 user 消息才携带有限历史进入规划，并要求 Planner
+结合上下文只生成本轮的最小可执行计划。Planner 生成的本轮计划仍然拥有独立 `trace_id`。会话保存连续性，
+Trace 保存一次执行的审计事实，两者不混在同一个文件中。每次动态计划都会保存计划基线；会话中的
+修改请求生成局部 `PlanPatch`，只重跑受影响子图，不自动重建整条执行链。Trace 进入终态后，读取会话接口会追加
 基于事实生成的 assistant 自然语言摘要，前端无需直接解析控制面事件。
 
 ## 运行模型

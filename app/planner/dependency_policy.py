@@ -151,7 +151,11 @@ class DependencyPolicy:
                         rule_id=f"review_requires_{predecessor.removesuffix('_agent')}",
                     )
 
-        if not context.runtime.manifest_exists:
+        environment_exists = next(
+            (artifact.exists for artifact in context.artifacts if artifact.key == "environment"),
+            False,
+        )
+        if not environment_exists:
             for successor in ("code_agent", "test_agent"):
                 if successor not in selected_agents:
                     continue

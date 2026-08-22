@@ -1,24 +1,6 @@
 from app.execution_context import ExecutionMode
 from app.workflow.template import TaskBlueprint, WorkflowTemplate
 
-
-def requirement_generation_template() -> WorkflowTemplate:
-    """当前已实现的需求生成流程经验。"""
-    return WorkflowTemplate(
-        id="requirement_generation",
-        name="需求生成",
-        description="将用户目标整理并保存为项目需求文档。",
-        nodes=(
-            TaskBlueprint(
-                id="requirement",
-                agent_id="requirement_agent",
-                objective="将用户需求整理为结构化需求文档并保存到项目目录。",
-                output_key="requirement_result",
-            ),
-        ),
-    )
-
-
 def project_delivery_template() -> WorkflowTemplate:
     """从需求澄清到代码、测试和审查的默认交付流程经验。"""
     return WorkflowTemplate(

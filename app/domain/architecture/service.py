@@ -1,14 +1,19 @@
 """架构领域的本地产物能力。"""
 
+import json
+
 from app.artifact.toolset import ArtifactToolSet
 from app.artifact.repository import ArtifactRepository
 from app.execution_context import ExecutionContext, ExecutionMode
+from app.domain.architecture.layer_contract import LayerContractStore
 
 
 class ArchitectureService:
     """封装架构节点固定的产物读写边界。"""
 
     def __init__(self, project_path: str) -> None:
+        self._project_path = project_path
+        self._contract = LayerContractStore(project_path)
         self._artifacts = ArtifactToolSet(
             project_path,
             output_artifact="architecture",
@@ -19,14 +24,26 @@ class ArchitectureService:
         return self._artifacts.load(artifact)
 
     def save_architecture(self, content: str) -> str:
-        return self._artifacts.save(content)
+        result = self._artifacts.save(content)
+        if not self._contract.exists():
+            self._contract.save(json.dumps(_default_layer_contract(), ensure_ascii=False))
+        return result
+
+    def save_layer_contract(self, content: str) -> str:
+        contract = self._contract.save(content)
+        return f"已保存 Layer Contract: {len(contract.layers)} 层"
+
+    def load_layer_contract(self) -> str:
+        return json.dumps(self._contract.load().as_dict(), ensure_ascii=False, indent=2)
 
 
 class ArchitectureArtifactWorkflow:
     """架构分区、集成和发布流程的受信工具实现。"""
 
     def __init__(self, project_path: str) -> None:
+        self._project_path = project_path
         self._repository = ArtifactRepository(project_path)
+        self._contract = LayerContractStore(project_path)
 
     def load_input(self, context: ExecutionContext, ref_id: str) -> str:
         ref = next((candidate for candidate in context.input_refs if candidate.ref_id == ref_id), None)
@@ -60,6 +77,8 @@ class ArchitectureArtifactWorkflow:
             content=content,
             source_refs=context.input_refs,
         )
+        if not self._contract.exists():
+            self._contract.save(json.dumps(_default_layer_contract(), ensure_ascii=False))
         return (
             f"已创建架构候选: {candidate.id}；"
             f"集成状态: {candidate.report.status}"
@@ -80,3 +99,29 @@ _STAGED_CHAR_LIMITS = {
     "frontend": 4200,
     "design": 6000,
 }
+
+
+def _default_layer_contract() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "layers": ["api", "application", "domain", "infrastructure"],
+        "allowed_dependencies": {
+            "api": ["application"],
+            "application": ["domain", "infrastructure"],
+            "domain": [],
+            "infrastructure": ["domain", "application"],
+        },
+        "forbidden_imports": {
+            "api": ["sqlalchemy.orm.Session"],
+            "application": ["fastapi"],
+            "domain": ["fastapi", "sqlalchemy", "requests"],
+            "infrastructure": [],
+        },
+        "required_test_types": ["domain_unit", "application_unit", "api_http"],
+        "path_mapping": {
+            "api": ["backend/app/api/**", "backend/app/routers/**", "backend/app/routes/**"],
+            "application": ["backend/app/application/**", "backend/app/services/**"],
+            "domain": ["backend/app/domain/**", "backend/app/models.py", "backend/app/schemas.py"],
+            "infrastructure": ["backend/app/infrastructure/**", "backend/app/repositories/**", "backend/app/database.py"],
+        },
+    }

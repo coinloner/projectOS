@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import re
+import time
 from threading import Lock
 from uuid import uuid4
 
@@ -15,6 +16,7 @@ from app.runtime.application import (
     ApplicationService,
 )
 from app.runtime.manifest import RuntimeCatalog, RuntimeManifest
+from app.runtime.port_allocator import PortAllocationError, PortAllocator
 from app.sandbox.docker_provider import (
     DockerExecutor,
     SubprocessDockerExecutor,
@@ -32,7 +34,7 @@ class ApplicationRunStatus(str, Enum):
 class ApplicationServiceRun:
     service_id: str
     container_id: str
-    host_url: str
+    host_url: str | None
 
 
 @dataclass
@@ -44,6 +46,8 @@ class ApplicationRun:
     status: ApplicationRunStatus
     error: str | None = None
     _container_names: tuple[str, ...] = field(default=(), repr=False)
+    _network_name: str | None = field(default=None, repr=False)
+    _host_ports: tuple[int, ...] = field(default=(), repr=False)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -74,41 +78,80 @@ class DockerApplicationRunner:
     ProjectOS 的 RuntimeCatalog/ApplicationCatalog，不能由 Agent 或 HTTP 请求覆盖。
     """
 
-    def __init__(self, executor: DockerExecutor | None = None) -> None:
+    def __init__(
+        self,
+        executor: DockerExecutor | None = None,
+        port_allocator: PortAllocator | None = None,
+    ) -> None:
         self._executor = executor or SubprocessDockerExecutor()
+        self._port_allocator = port_allocator or PortAllocator()
         self._runs: dict[str, ApplicationRun] = {}
         self._lock = Lock()
 
     def start(self, project_path: str) -> ApplicationRun:
         root = Path(project_path).resolve()
         manifest = RuntimeManifest.load(str(root))
-        if not manifest.application:
+        application_id = ApplicationCatalog.resolve(str(root), manifest.application)
+        if not application_id:
             raise ApplicationRunError("项目没有声明可运行的 application")
+        # 延迟加载避免 application.environment 与 sandbox 包导出形成导入环。
+        from app.application.environment import EnvironmentProvisioner
+
+        preparation = EnvironmentProvisioner(self._executor).prepare(str(root))
+        if not preparation.ok:
+            raise ApplicationRunError(preparation.message or preparation.status)
+        manifest = RuntimeManifest.load(str(root))
         runtime = RuntimeCatalog.get(manifest.profile)
-        application = _application(manifest.application)
+        application = _application(application_id)
         workspace = root / "workspace"
         if not workspace.is_dir():
             raise ApplicationRunError(f"workspace 不存在: {workspace}")
 
-        image_check = ensure_image_available(self._executor, runtime.image)
-        if image_check.exit_code != 0:
-            raise ApplicationRunError(
-                image_check.stderr.strip()
-                or f"受信任基础镜像不可用: {runtime.image}"
-            )
-
         run_id = f"app-{uuid4().hex[:12]}"
+        network_name = _network_name(root.name, run_id)
         container_names: list[str] = []
         started: list[tuple[ApplicationService, str, str]] = []
+        # 本次启动领用的动态端口；try 块内任何失败路径都必须归还。
+        host_ports: tuple[int, ...] = ()
         try:
+            publishable = [
+                service for service in application.services
+                if service.publish_port and not service.host_port
+            ]
+            if publishable:
+                try:
+                    host_ports = tuple(
+                        self._port_allocator.allocate(len(publishable))
+                    )
+                except PortAllocationError as error:
+                    raise ApplicationRunError(str(error)) from error
+            fixed_ports = {
+                service.id: service.host_port
+                for service in application.services
+                if service.host_port
+            }
+            # service.id -> 本次运行实际使用的 host 端口（动态或固定）。
+            resolved_ports = {
+                service.id: host_ports[index]
+                for index, service in enumerate(publishable)
+            } | fixed_ports
+            self._ensure_image(runtime.image)
             for service in application.services:
-                source = workspace / service.workspace_dir
-                if not source.is_dir():
+                self._ensure_image(service.image or runtime.image)
+            network = self._executor.run(
+                ["docker", "network", "create", network_name],
+                timeout_seconds=20,
+            )
+            if network.exit_code != 0:
+                raise ApplicationRunError(network.stderr.strip() or "应用网络创建失败")
+            for service in application.services:
+                source = workspace / service.workspace_dir if service.mount_workspace else workspace
+                if service.mount_workspace and not source.is_dir():
                     raise ApplicationRunError(
                         f"应用服务 '{service.id}' 的 workspace 不存在: {source}"
                     )
-                mount_source = workspace / service.mount_dir if service.mount_dir else workspace
-                if not mount_source.is_dir():
+                mount_source = workspace / service.mount_dir if service.mount_dir else source
+                if service.mount_workspace and not mount_source.is_dir():
                     raise ApplicationRunError(
                         f"应用服务 '{service.id}' 的挂载目录不存在: {mount_source}"
                     )
@@ -118,15 +161,20 @@ class DockerApplicationRunner:
                         project_name=root.name,
                         application_id=application.id,
                         volume_id=service.data_volume,
-                        image=runtime.image,
+                        image=service.image or runtime.image,
+                        owner=service.volume_owner,
                     )
                 container_name = _container_name(root.name, run_id, service.id)
                 command = self._docker_run_command(
-                    runtime.image,
+                    service.image or runtime.image,
                     service,
                     mount_source,
                     container_name,
                     volume_name,
+                    network_name,
+                    root,
+                    manifest,
+                    host_port=resolved_ports.get(service.id, 0),
                 )
                 result = self._executor.run(command, timeout_seconds=20)
                 if result.exit_code != 0 or not result.stdout.strip():
@@ -138,9 +186,24 @@ class DockerApplicationRunner:
                 container_names.append(container_name)
                 started.append((service, container_id, container_name))
                 self._ensure_running(container_name, service.id)
-        except Exception:
+                if service.readiness:
+                    self._wait_for_readiness(container_name, service.id, service.readiness)
+        except Exception as error:
+            if host_ports:
+                self._port_allocator.release(host_ports)
+            diagnostics: list[str] = []
             for _, _, name in reversed(started):
+                logs = self._executor.run(["docker", "logs", name], timeout_seconds=10)
+                if logs.stdout.strip() or logs.stderr.strip():
+                    output = "\n".join(
+                        part for part in (logs.stdout.strip(), logs.stderr.strip()) if part
+                    )
+                    diagnostics.append(f"[{name}]\n{output[-4000:]}")
                 self._executor.run(["docker", "stop", name], timeout_seconds=10)
+                self._executor.run(["docker", "rm", "-f", name], timeout_seconds=10)
+            self._executor.run(["docker", "network", "rm", network_name], timeout_seconds=10)
+            if diagnostics and isinstance(error, ApplicationRunError):
+                raise ApplicationRunError(f"{error}: {' | '.join(diagnostics)}") from error
             raise
 
         application_run = ApplicationRun(
@@ -151,12 +214,18 @@ class DockerApplicationRunner:
                 ApplicationServiceRun(
                     service_id=service.id,
                     container_id=container_id,
-                    host_url=f"http://127.0.0.1:{service.host_port}",
+                    host_url=(
+                        f"http://127.0.0.1:{resolved_ports[service.id]}"
+                        if service.publish_port and resolved_ports.get(service.id)
+                        else None
+                    ),
                 )
                 for service, container_id, _ in started
             ),
             status=ApplicationRunStatus.RUNNING,
             _container_names=tuple(container_names),
+            _network_name=network_name,
+            _host_ports=host_ports,
         )
         with self._lock:
             self._runs[run_id] = application_run
@@ -191,11 +260,21 @@ class DockerApplicationRunner:
                 result = self._executor.run(["docker", "stop", name], timeout_seconds=15)
                 if result.exit_code != 0:
                     failures.append(name)
+                self._executor.run(["docker", "rm", "-f", name], timeout_seconds=10)
             if failures:
                 application_run.status = ApplicationRunStatus.FAILED
                 application_run.error = "停止容器失败: " + ", ".join(failures)
             else:
                 application_run.status = ApplicationRunStatus.STOPPED
+            if application_run._network_name:
+                self._executor.run(
+                    ["docker", "network", "rm", application_run._network_name],
+                    timeout_seconds=10,
+                )
+        # 端口释放放在 RUNNING 判断之外：即使容器停止失败，端口也归还
+        # （重复 release 幂等，已停止的运行再调 stop 不会误伤）。
+        if application_run._host_ports:
+            self._port_allocator.release(application_run._host_ports)
         return application_run
 
     def shutdown(self) -> None:
@@ -215,6 +294,39 @@ class DockerApplicationRunner:
         if result.exit_code != 0 or result.stdout.strip().lower() != "true":
             raise ApplicationRunError(f"服务 '{service_id}' 启动后未保持运行")
 
+    def _ensure_image(self, image: str) -> None:
+        checked = ensure_image_available(self._executor, image)
+        if checked.exit_code == 0:
+            return
+        pulled = self._executor.run(["docker", "pull", image], timeout_seconds=300)
+        if pulled.exit_code != 0:
+            raise ApplicationRunError(
+                pulled.stderr.strip() or f"受信任镜像不可用: {image}"
+            )
+
+    def _wait_for_readiness(
+        self, container_name: str, service_id: str, readiness: tuple[str, ...]
+    ) -> None:
+        deadline = time.monotonic() + 45
+        last_error = ""
+        while time.monotonic() < deadline:
+            result = self._executor.run(
+                ["docker", "exec", container_name, *readiness], timeout_seconds=10
+            )
+            if result.exit_code == 0:
+                return
+            last_error = result.stderr.strip()
+            running = self._executor.run(
+                ["docker", "inspect", "--format={{.State.Running}}", container_name],
+                timeout_seconds=10,
+            )
+            if running.exit_code != 0 or running.stdout.strip().lower() != "true":
+                raise ApplicationRunError(f"服务 '{service_id}' 在就绪前停止")
+            time.sleep(0.5)
+        raise ApplicationRunError(
+            f"服务 '{service_id}' 未在规定时间内就绪" + (f": {last_error}" if last_error else "")
+        )
+
     def _prepare_data_volume(
         self,
         *,
@@ -222,6 +334,7 @@ class DockerApplicationRunner:
         application_id: str,
         volume_id: str,
         image: str,
+        owner: str | None,
     ) -> str:
         volume_name = _volume_name(project_name, application_id, volume_id)
         created = self._executor.run(
@@ -254,7 +367,7 @@ class DockerApplicationRunner:
                 image,
                 "sh",
                 "-ec",
-                "chown 65532:65532 /data && chmod 700 /data",
+                f"chown {owner or '65532:65532'} /data && chmod 700 /data",
             ],
             timeout_seconds=20,
         )
@@ -271,21 +384,21 @@ class DockerApplicationRunner:
         source: Path,
         container_name: str,
         volume_name: str | None,
+        network_name: str,
+        project_root: Path,
+        manifest: RuntimeManifest,
+        host_port: int = 0,
     ) -> list[str]:
         command = [
             "docker",
             "run",
             "--detach",
-            "--rm",
             "--name",
             container_name,
             "--network",
-            "bridge",
-            "--publish",
-            f"127.0.0.1:{service.host_port}:{service.container_port}",
-            "--read-only",
+            network_name,
             "--user",
-            "65532:65532",
+            service.user,
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -293,23 +406,57 @@ class DockerApplicationRunner:
             "--pids-limit",
             "128",
             "--memory",
-            "512m",
+            "1g",
             "--cpus",
             "1",
             "--tmpfs",
-            "/tmp:rw,noexec,nosuid,size=64m",
-            "--mount",
-            f"type=bind,src={source},dst=/workspace,readonly",
+            "/tmp:rw,noexec,nosuid,size=512m",
             "--workdir",
             service.container_workdir,
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
         ]
+        if service.publish_port and host_port:
+            command.extend(
+                [
+                    "--publish",
+                    f"127.0.0.1:{host_port}:{service.container_port}",
+                ]
+            )
+        if service.read_only:
+            command.insert(command.index("--user"), "--read-only")
+        if service.network_alias:
+            command.extend(["--network-alias", service.network_alias])
+        if service.mount_workspace:
+            command.extend(["--mount", f"type=bind,src={source},dst=/workspace,readonly"])
+        if manifest.dependencies_file and service.mount_workspace:
+            dependencies = project_root / manifest.dependencies_file
+            digest = _sha256(dependencies)
+            cache = project_root / ".sandbox" / "wheels" / digest
+            if not (cache / ".projectos-ready").is_file():
+                raise ApplicationRunError("依赖缓存不存在；请先批准并准备环境")
+            command.extend(
+                [
+                    "--tmpfs",
+                    "/site-packages:rw,exec,nosuid,nodev,size=1g",
+                    "--mount",
+                    f"type=bind,src={dependencies},dst=/input/requirements.in,readonly",
+                    "--mount",
+                    f"type=bind,src={cache},dst=/wheels,readonly",
+                    "--env",
+                    f"PROJECTOS_DEPENDENCY_DIR=/site-packages/{digest}",
+                    "--env",
+                    f"PYTHONPATH=/site-packages/{digest}",
+                ]
+            )
         for key, value in service.environment:
             command.extend(["--env", f"{key}={value}"])
         if volume_name:
             command.extend(
-                ["--mount", f"type=volume,src={volume_name},dst=/data"]
+                [
+                    "--mount",
+                    f"type=volume,src={volume_name},dst={service.volume_mount_dir}",
+                ]
             )
         command.append(image)
         command.extend(service.command)
@@ -326,6 +473,16 @@ def _container_name(project_name: str, run_id: str, service_id: str) -> str:
 
 def _volume_name(project_name: str, application_id: str, volume_id: str) -> str:
     return _safe_name(f"projectos-{project_name}-{application_id}-{volume_id}")
+
+
+def _network_name(project_name: str, run_id: str) -> str:
+    return _safe_name(f"projectos-{project_name}-{run_id}-net")
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _safe_name(value: str) -> str:

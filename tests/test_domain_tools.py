@@ -40,7 +40,7 @@ class DomainToolContractTest(unittest.TestCase):
                 "write_staged_architecture", "create_architecture_candidate",
             },
             "task": {"load_task_input", "write_staged_tasks", "create_tasks_candidate"},
-            "bootstrap": {"configure_runtime", "inspect_runtime", "load_artifact", "save_environment"},
+            "bootstrap": {"configure_runtime", "inspect_runtime", "prepare_environment", "load_artifact", "save_environment"},
             "code": {
                 "load_artifact",
                 "save_implementation",
@@ -65,6 +65,7 @@ class DomainToolContractTest(unittest.TestCase):
                 "list_workspace_files",
                 "read_workspace_file",
                 "inspect_runtime",
+                "inspect_quality",
                 "list_sandbox_evidence",
                 "load_sandbox_evidence",
             },

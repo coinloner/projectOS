@@ -17,6 +17,12 @@ class ArchitectureToolSet:
     def save_architecture(self, content: str) -> str:
         return self._service.save_architecture(content)
 
+    def save_layer_contract(self, content: str) -> str:
+        return self._service.save_layer_contract(content)
+
+    def load_layer_contract(self) -> str:
+        return self._service.load_layer_contract()
+
 
 def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None:
     """注册兼容的独占工具和新分区/集成工具。"""

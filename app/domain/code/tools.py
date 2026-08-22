@@ -29,6 +29,9 @@ class CodeToolSet:
     def inspect_runtime(self) -> str:
         return self._service.inspect_runtime()
 
+    def load_layer_contract(self) -> str:
+        return self._service.load_layer_contract()
+
 
 def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
     """代码节点可读取设计产物，且仅能在 workspace 内写入允许的文本文件。"""
