@@ -27,6 +27,7 @@ class WorkspaceStore:
     _IGNORED_DIRECTORIES = frozenset(
         {".git", ".venv", "__pycache__", "node_modules"}
     )
+    _ALLOWED_FILENAMES = frozenset({"Dockerfile", "Makefile", "Procfile", "justfile"})
 
     def __init__(self, project_path: str) -> None:
         self._root = (Path(project_path) / "workspace").resolve()
@@ -80,7 +81,7 @@ class WorkspaceStore:
         candidate = Path(path)
         if candidate.is_absolute():
             raise PermissionError("workspace 工具只接受相对路径")
-        if candidate.suffix.lower() not in self._ALLOWED_SUFFIXES:
+        if candidate.name not in self._ALLOWED_FILENAMES and candidate.suffix.lower() not in self._ALLOWED_SUFFIXES:
             allowed = ", ".join(sorted(self._ALLOWED_SUFFIXES))
             raise PermissionError(f"不允许操作该文件类型，可用后缀: {allowed}")
 

@@ -17,6 +17,7 @@ from app.runtime.application import (
 )
 from app.runtime.manifest import RuntimeCatalog, RuntimeManifest
 from app.runtime.port_allocator import PortAllocationError, PortAllocator
+from app.runtime.port_lifecycle import PortLease, PortLifecycleManager
 from app.sandbox.docker_provider import (
     DockerExecutor,
     SubprocessDockerExecutor,
@@ -48,6 +49,8 @@ class ApplicationRun:
     _container_names: tuple[str, ...] = field(default=(), repr=False)
     _network_name: str | None = field(default=None, repr=False)
     _host_ports: tuple[int, ...] = field(default=(), repr=False)
+    _port_lease_id: str | None = field(default=None, repr=False)
+    _port_lifecycle: PortLifecycleManager | None = field(default=None, repr=False)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -82,9 +85,12 @@ class DockerApplicationRunner:
         self,
         executor: DockerExecutor | None = None,
         port_allocator: PortAllocator | None = None,
+        port_lifecycle: PortLifecycleManager | None = None,
     ) -> None:
         self._executor = executor or SubprocessDockerExecutor()
         self._port_allocator = port_allocator or PortAllocator()
+        self._port_lifecycle = port_lifecycle
+        self._project_lifecycles: dict[str, PortLifecycleManager] = {}
         self._runs: dict[str, ApplicationRun] = {}
         self._lock = Lock()
 
@@ -94,6 +100,13 @@ class DockerApplicationRunner:
         application_id = ApplicationCatalog.resolve(str(root), manifest.application)
         if not application_id:
             raise ApplicationRunError("项目没有声明可运行的 application")
+        if application_id in {"fastapi-postgres", "fastapi-postgres-web"}:
+            entrypoint = root / "workspace" / "backend" / "app" / "main.py"
+            if not entrypoint.is_file():
+                raise ApplicationRunError(
+                    "FastAPI 项目缺少 workspace/backend/app/main.py；"
+                    "受信运行时固定启动 app.main:app，请先重新生成或补齐后端入口"
+                )
         # 延迟加载避免 application.environment 与 sandbox 包导出形成导入环。
         from app.application.environment import EnvironmentProvisioner
 
@@ -113,6 +126,8 @@ class DockerApplicationRunner:
         started: list[tuple[ApplicationService, str, str]] = []
         # 本次启动领用的动态端口；try 块内任何失败路径都必须归还。
         host_ports: tuple[int, ...] = ()
+        port_lease: PortLease | None = None
+        lifecycle = self._lifecycle_for(root)
         try:
             publishable = [
                 service for service in application.services
@@ -120,9 +135,12 @@ class DockerApplicationRunner:
             ]
             if publishable:
                 try:
-                    host_ports = tuple(
-                        self._port_allocator.allocate(len(publishable))
+                    port_lease = lifecycle.acquire(
+                        run_id,
+                        len(publishable),
+                        allocator=self._port_allocator,
                     )
+                    host_ports = port_lease.ports
                 except PortAllocationError as error:
                     raise ApplicationRunError(str(error)) from error
             fixed_ports = {
@@ -190,7 +208,12 @@ class DockerApplicationRunner:
                     self._wait_for_readiness(container_name, service.id, service.readiness)
         except Exception as error:
             if host_ports:
-                self._port_allocator.release(host_ports)
+                if port_lease is not None:
+                    lifecycle.release(
+                        port_lease.lease_id, allocator=self._port_allocator
+                    )
+                else:
+                    self._port_allocator.release(host_ports)
             diagnostics: list[str] = []
             for _, _, name in reversed(started):
                 logs = self._executor.run(["docker", "logs", name], timeout_seconds=10)
@@ -226,6 +249,8 @@ class DockerApplicationRunner:
             _container_names=tuple(container_names),
             _network_name=network_name,
             _host_ports=host_ports,
+            _port_lease_id=port_lease.lease_id if port_lease is not None else None,
+            _port_lifecycle=lifecycle,
         )
         with self._lock:
             self._runs[run_id] = application_run
@@ -246,6 +271,7 @@ class DockerApplicationRunner:
             )
             if result.exit_code != 0 or result.stdout.strip().lower() != "true":
                 application_run.status = ApplicationRunStatus.STOPPED
+                self._release_ports(application_run)
                 break
         return application_run
 
@@ -273,9 +299,32 @@ class DockerApplicationRunner:
                 )
         # 端口释放放在 RUNNING 判断之外：即使容器停止失败，端口也归还
         # （重复 release 幂等，已停止的运行再调 stop 不会误伤）。
-        if application_run._host_ports:
-            self._port_allocator.release(application_run._host_ports)
+        self._release_ports(application_run)
         return application_run
+
+    def _release_ports(self, application_run: ApplicationRun) -> None:
+        if application_run._port_lease_id:
+            (application_run._port_lifecycle or self._lifecycle_for(Path(application_run.project_path))).release(
+                application_run._port_lease_id,
+                allocator=self._port_allocator,
+            )
+            application_run._port_lease_id = None
+            application_run._host_ports = ()
+        elif application_run._host_ports:
+            self._port_allocator.release(application_run._host_ports)
+            application_run._host_ports = ()
+
+    def _lifecycle_for(self, root: Path) -> PortLifecycleManager:
+        if self._port_lifecycle is not None:
+            return self._port_lifecycle
+        key = str(root.resolve())
+        manager = self._project_lifecycles.get(key)
+        if manager is None:
+            manager = PortLifecycleManager(
+                str(root / ".projectos" / "runtime" / "port-leases.json")
+            )
+            self._project_lifecycles[key] = manager
+        return manager
 
     def shutdown(self) -> None:
         with self._lock:
@@ -459,8 +508,28 @@ class DockerApplicationRunner:
                 ]
             )
         command.append(image)
-        command.extend(service.command)
+        command.extend(_runtime_command(service.command, manifest.mode))
         return command
+
+
+def _runtime_command(command: tuple[str, ...], mode: str) -> tuple[str, ...]:
+    """只在显式 development profile 下为受信 Uvicorn 命令打开 reload。"""
+    if mode != "development" or not any("uvicorn" in part for part in command):
+        return command
+    if len(command) == 3 and command[:2] == ("sh", "-ec"):
+        script = command[2]
+        if "--reload" in script:
+            return command
+        return (*command[:2], script.replace("--port 8000", "--port 8000 --reload", 1))
+    if "--reload" in command:
+        return command
+    values = list(command)
+    try:
+        port_index = values.index("--port")
+        values[port_index:port_index] = ["--reload"]
+    except ValueError:
+        values.append("--reload")
+    return tuple(values)
 
 
 def _application(application_id: str) -> ApplicationProfile:

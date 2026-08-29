@@ -63,6 +63,7 @@ class ChangeSet:
     commit: str
     changed_files: tuple[str, ...]
     worktree_path: str
+    required_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -124,8 +125,12 @@ class GitRepositoryManager:
 
     def initialize(self) -> None:
         """初始化仓库并关闭仓库 hooks，避免执行项目提供的任意 hook。"""
-        check = self._run(["rev-parse", "--git-dir"], check=False)
-        if check.returncode != 0:
+        check = self._run(["rev-parse", "--show-toplevel"], check=False)
+        current_root = Path(check.stdout.strip()).resolve() if check.returncode == 0 and check.stdout.strip() else None
+        # 生成项目可能位于 ProjectOS 自身仓库的 projects/ 子目录中。不能
+        # 复用父仓库，否则父级 .gitignore 会阻止 workspace 建立 baseline，
+        # 也会让多个项目共享同一个 Git 历史。
+        if current_root != self._root:
             self._run(["init", "--quiet"])
         self._run(["config", "user.name", "ProjectOS"])
         self._run(["config", "user.email", "projectos@localhost"])
@@ -138,6 +143,10 @@ class GitRepositoryManager:
         if result.returncode != 0:
             raise GitRepositoryError("仓库还没有可用的 commit")
         return result.stdout.strip()
+
+    def is_ancestor(self, ancestor: str, descendant: str) -> bool:
+        self.initialize()
+        return self._run(["merge-base", "--is-ancestor", ancestor, descendant], check=False).returncode == 0
 
     def freeze_baseline(
         self,

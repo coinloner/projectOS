@@ -1,5 +1,8 @@
 import tempfile
 import unittest
+import json
+from pathlib import Path
+from crewai.utilities.agent_utils import convert_tools_to_openai_schema
 
 from app.domain import (
     register_architecture_tools,
@@ -78,6 +81,66 @@ class DomainToolContractTest(unittest.TestCase):
                 domain,
             )
 
+    def test_architecture_contract_tools_are_valid_strict_function_schemas(self) -> None:
+        tools = self.gateway.tools_for("architecture_contract")
+        self.assertEqual(
+            {tool.name for tool in tools},
+            {"load_architecture", "load_requirement", "save_implementation_contract"},
+        )
+        wire, functions, _ = convert_tools_to_openai_schema(tools)
+        self.assertEqual(set(functions), {
+            "load_architecture", "load_requirement", "save_implementation_contract"
+        })
+        save = next(item for item in wire if item["function"]["name"] == "save_implementation_contract")
+        self.assertTrue(save["function"]["strict"])
+        self.assertEqual(save["function"]["parameters"]["required"], ["contract"])
+        self.assertFalse(save["function"]["parameters"]["additionalProperties"])
+        contract_schema = save["function"]["parameters"]["properties"]["contract"]
+        self.assertEqual(contract_schema["type"], "object")
+        self.assertIn("layers", contract_schema["properties"])
+        self.assertIn("implementation_units", contract_schema["properties"])
+
+    def test_structured_contract_tool_persists_one_canonical_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = ToolGateway()
+            register_architecture_tools(gateway, directory)
+            tool = next(item for item in gateway.tools_for("architecture_contract") if item.name == "save_implementation_contract")
+            contract = {
+                "schema_version": 1,
+                "layers": [{"name": "domain", "allowed_dependencies": [], "forbidden_imports": ["fastapi"], "path_mapping": ["backend/domain/**"]}],
+                "required_test_types": [], "entrypoints": {}, "required_files": [], "interfaces": [],
+                "implementation_units": [{
+                    "unit_id": "domain-model", "layer": "domain", "objective": "实现领域模型",
+                    "allowed_paths": ["backend/domain/**"], "required_files": ["backend/domain/model.py"],
+                    "owned_files": ["backend/domain/model.py"], "depends_on": [], "input_refs": [],
+                    "acceptance_criteria": [], "constraints": [], "non_goals": [], "policy_refs": [],
+                    "skill_refs": [], "requirement_ids": [], "provides_interfaces": [],
+                    "consumes_interfaces": [], "provided_symbols": [], "required_symbols": [],
+                    "forbidden_paths": [], "output_slot": "backend",
+                }],
+            }
+            result = json.loads(tool.run(contract=contract))
+            self.assertTrue(result["ok"])
+            path = Path(directory) / ".projectos/architecture/project-contract.json"
+            self.assertTrue(path.is_file())
+            self.assertFalse((path.parent / "layer-contract.json").exists())
+
+    def test_structured_contract_tool_returns_path_for_semantic_error_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = ToolGateway()
+            register_architecture_tools(gateway, directory)
+            tool = next(item for item in gateway.tools_for("architecture_contract") if item.name == "save_implementation_contract")
+            contract = {
+                "schema_version": 1,
+                "layers": [{"name": "domain", "allowed_dependencies": [], "forbidden_imports": [], "path_mapping": ["backend/domain/**"]}],
+                "required_test_types": [], "entrypoints": {}, "required_files": [],
+                "implementation_units": [{"unit_id": "domain-model", "layer": "domain", "objective": "实现领域模型", "allowed_paths": ["backend/domain/**"], "owned_files": ["backend/domain/model.py"]}],
+                "interfaces": [{"interface_id": "missing-owner", "kind": "service", "name": "Missing.owner", "owner_unit": "does-not-exist"}],
+            }
+            with self.assertRaisesRegex(ValueError, r"interfaces\[0\]\.owner_unit"):
+                tool.run(contract=contract)
+            self.assertFalse((Path(directory) / ".projectos/architecture/project-contract.json").exists())
+
     def test_only_code_domain_can_write_general_workspace_files(self) -> None:
         code_tools = {tool.name for tool in self.gateway.tools_for("code")}
 
@@ -98,6 +161,29 @@ class DomainToolContractTest(unittest.TestCase):
         self.assertEqual(
             {tool.name for tool in self.gateway.tools_for("code", context=context)},
             {"load_code_input", "write_staged_code_file"},
+        )
+
+    def test_code_partition_reads_before_terminal_write(self) -> None:
+        context = ExecutionContext(
+            trace_id="tr-code", work_item_id="code-backend",
+            agent_id="code_agent", execution_mode=ExecutionMode.PARTITIONED,
+            output_slot="backend",
+        )
+        tools = {
+            tool.name: tool for tool in self.gateway.tools_for("code", context=context)
+        }
+        self.assertFalse(tools["load_code_input"].result_as_answer)
+        self.assertTrue(tools["write_staged_code_file"].result_as_answer)
+
+    def test_code_retry_can_be_narrowed_to_terminal_writer(self) -> None:
+        context = ExecutionContext(
+            trace_id="tr-code", work_item_id="code-backend",
+            agent_id="code_agent", execution_mode=ExecutionMode.PARTITIONED,
+            output_slot="backend", tool_allowlist=("write_staged_code_file",),
+        )
+        self.assertEqual(
+            {tool.name for tool in self.gateway.tools_for("code", context=context)},
+            {"write_staged_code_file"},
         )
 
     def test_only_test_domain_can_execute_or_write_tests(self) -> None:

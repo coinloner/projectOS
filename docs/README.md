@@ -9,6 +9,7 @@
 3. [MVP 当前完成度和闭环缺口](roadmap/mvp-status.md)
 4. [总体架构](ARCHITECTURE.md)
 5. [路线图](ROADMAP.md)
+6. [系统演化复盘](EVOLUTION.md)
 
 ## 模块说明
 
@@ -20,8 +21,10 @@
 | [Orchestration](modules/orchestration.md) | WorkItem、计划执行、运行状态与 Trace |
 | [Sandbox](modules/sandbox.md) | Docker 执行隔离、依赖缓存与安全策略 |
 | [Runtime](modules/runtime.md) | runtime manifest、profile 与受控状态摘要 |
+| [Port Lifecycle](modules/port-lifecycle.md) | 动态端口租约、探测、回收和迁移行为 |
 | [Memory](modules/memory.md) | Trace 级会话记忆、执行上下文与恢复参考 |
 | [ToolGateway](modules/tool_manager.md) | ToolSet、动态 source、Catalog 与访问策略 |
+| [Skill](modules/skills.md) | 内置实现方法、项目覆盖和加载规则 |
 | [LLM](modules/llm.md) | Provider 预设、环境变量和 CrewAI LLM 工厂 |
 | [Project](modules/project.md) | 项目目录和项目元信息 |
 

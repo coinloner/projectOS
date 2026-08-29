@@ -10,8 +10,11 @@ from app.orchestration.plan import ExecutionPlan
 from app.orchestration.runner import GraphRunner, GraphRunStatus
 from app.execution_context import ExecutionContext
 from app.orchestration.trace import TraceStore
+from app.orchestration.trace import _infer_repair_paths
+from app.orchestration.delivery import DeliveryStore
 from app.orchestration.state import RunState
-from app.orchestration.work_item import WorkItem
+from app.orchestration.work_item import DependencySource, WorkItem, WorkItemDependency
+from app.llm.config import resolve_llm_selection
 
 
 class CompletedRequirementAgent:
@@ -29,6 +32,73 @@ class FailingRequirementAgent:
 
 
 class TraceStoreTest(unittest.TestCase):
+
+    def test_requirement_snapshot_initializes_delivery_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            context = traces.start_trace("保存验收标准")
+            traces.snapshot_requirement(
+                context, "## 验收标准\n\n1. **AC-1 可创建订单**"
+            )
+            matrix = DeliveryStore(project_path).load_matrix()
+            self.assertIn("AC-1", matrix.requirements)
+
+    def test_infer_repair_paths_excludes_tests_and_maps_import_modules(self) -> None:
+        stdout = "ERROR tests/infrastructure/test_postgresql.py\nfrom app.application.ports import IdempotencyEntry"
+        stderr = "backend/app/infrastructure/repositories.py:18: ImportError"
+        self.assertEqual(
+            _infer_repair_paths(stdout, stderr),
+            (
+                "backend/app/application/ports.py",
+                "backend/app/infrastructure/repositories.py",
+            ),
+        )
+
+    def test_infer_repair_paths_uses_layer_fallback_when_trace_has_no_owner(self) -> None:
+        stdout = (
+            "FAILED tests/api/test_health_http_regression.py\n"
+            "FAILED tests/application/test_orders.py\n"
+        )
+        self.assertEqual(
+            _infer_repair_paths(stdout, ""),
+            (
+                "backend/app/api/**",
+                "backend/app/application/**",
+                "backend/app/main.py",
+            ),
+        )
+
+    def test_mark_running_clears_historical_terminal_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            context = traces.start_trace("恢复运行")
+            traces.finish_trace(context, "failed", error="旧错误")
+            traces.mark_running(context.trace_id)
+            payload = traces.load_trace(context.trace_id)
+            self.assertEqual(payload["status"], "running")
+            self.assertNotIn("finished_at", payload)
+            self.assertNotIn("error", payload)
+
+    def test_trace_persists_default_and_agent_llm_routes_without_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            context = traces.start_trace("验证模型路由")
+            default = resolve_llm_selection("siliconflow", model="zai-org/GLM-5.2")
+            review = resolve_llm_selection("openai", model="gpt-4.1")
+
+            traces.set_llm_selection(context.trace_id, default)
+            traces.set_llm_overrides(context.trace_id, {"review_agent": review})
+
+            loaded = traces.load_llm_selection(context.trace_id)
+            overrides = traces.load_llm_overrides(context.trace_id)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.model, "zai-org/GLM-5.2")
+            self.assertEqual(overrides["review_agent"].provider, "openai")
+            payload = json.loads(
+                (Path(project_path) / ".projectos" / "runs" / context.trace_id / "trace.json").read_text()
+            )
+            self.assertNotIn('"api_key":', json.dumps(payload))
+
     def test_trace_records_plan_events_and_requirement_revision(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
             traces = TraceStore(project_path)
@@ -185,6 +255,55 @@ class TraceStoreTest(unittest.TestCase):
             self.assertEqual(first["revision"], 1)
             self.assertEqual(second["revision"], 2)
             self.assertEqual(traces.load_plan_baseline(context.trace_id)["revision"], 2)
+
+    def test_delivery_plan_survives_active_repair_plan_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            context = traces.start_trace("交付基线")
+            original = ExecutionPlan(
+                id="plan-delivery",
+                goal="交付基线",
+                template_id="project_delivery",
+                trace=context,
+                work_items=(
+                    WorkItem(
+                        id="wi-original-tests",
+                        agent_id="test_agent",
+                        objective="运行测试",
+                        output_key="tests",
+                    ),
+                    WorkItem(
+                        id="wi-original-review",
+                        agent_id="review_agent",
+                        objective="审查交付",
+                        output_key="review",
+                        dependencies=(
+                            WorkItemDependency(
+                                "wi-original-tests", DependencySource.SYSTEM
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            repair = ExecutionPlan(
+                id="plan-delivery-repair-1",
+                goal="交付基线",
+                trace=context,
+                work_items=(
+                    WorkItem(
+                        id="wi-repair-tests",
+                        agent_id="test_agent",
+                        objective="修复测试",
+                        output_key="tests",
+                    ),
+                ),
+            )
+            traces.record_plan(original)
+            traces.record_delivery_plan(original)
+            traces.record_plan(repair)
+
+            self.assertEqual(traces.load_plan(context.trace_id).id, repair.id)
+            self.assertEqual(traces.load_delivery_plan(context.trace_id).id, original.id)
 
     def test_finish_trace_clears_intermediate_error_on_resume(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:

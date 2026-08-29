@@ -9,6 +9,7 @@ from app.application.conversations import (
 from app.application.conversation_intent import ConversationIntent, classify_intent
 from app.application.runs import StartedRun
 from app.orchestration.trace import TraceStore
+from app.planner.service import PlannerFailure
 
 
 class FakeRunService:
@@ -33,11 +34,20 @@ class FakeRunService:
         )
 
 
+class FailingPlannerService(FakeRunService):
+    def start_dynamic_plan(self, *, project_path: str, goal: str, plan_id: str) -> StartedRun:
+        raise RuntimeError("provider HTTP 402: balance insufficient")
+
+
 class ConversationTest(unittest.TestCase):
     def test_intent_classifier_prioritizes_inspection_and_modification(self) -> None:
         self.assertEqual(classify_intent("查看运行结果"), ConversationIntent.INSPECT_RESULT)
         self.assertEqual(classify_intent("继续修改架构"), ConversationIntent.MODIFY_REQUEST)
         self.assertEqual(classify_intent("恢复任务"), ConversationIntent.RESUME)
+        self.assertEqual(
+            classify_intent("构建带管理员库存调整接口的电商平台"),
+            ConversationIntent.NEW_REQUEST,
+        )
 
     def test_conversation_and_messages_survive_new_store_instance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -94,6 +104,20 @@ class ConversationTest(unittest.TestCase):
             self.assertEqual(
                 run_service.last_goal, "为 Todo 应用实现纯 Python REST API"
             )
+
+    def test_provider_failure_is_persisted_as_conversation_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConversationStore(directory)
+            conversation = store.create("demo")
+            service = ConversationService(run_service=FailingPlannerService())
+            with self.assertRaises(PlannerFailure):
+                service.send_message(
+                    project_path=directory,
+                    conversation_id=conversation.id,
+                    content="设计一个 API",
+                )
+            turns = ConversationStore(directory).turns(conversation.id)
+            self.assertIn("provider HTTP 402", turns[-1].content)
 
     def test_follow_up_message_gets_minimal_plan_with_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

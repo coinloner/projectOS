@@ -40,6 +40,7 @@ def register_requirement_tools(gateway: ToolGateway, project_path: str) -> None:
                             },
                             "required": ["content"],
                         },
+                        completion_policy="final",
                     ),
                     tools.save_requirement,
                 ),

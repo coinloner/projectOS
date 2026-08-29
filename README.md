@@ -36,6 +36,50 @@ python3 -m venv .venv
 
 默认 API 地址为 `http://127.0.0.1:8000`，可以从 `/docs` 查看 OpenAPI 控制面。
 
+LLM 的 provider 和模型由请求方选择；`.env` 只需保存各平台 API key。前端可先调用
+`GET /api/v1/llm/providers` 和 `GET /api/v1/llm/providers/{provider}/models` 获取可选项：
+
+```dotenv
+SILICONFLOW_API_KEY=sk-...
+```
+
+请求中直接选择 provider 和任意可用模型，不修改代码或 `.env`：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/projects/demo/conversations/CONV_ID/messages \
+  -H 'content-type: application/json' \
+  -d '{"content":"实现一个 Todo 应用","provider":"siliconflow","model":"deepseek-ai/DeepSeek-V4-Pro"}'
+```
+
+Worker 默认硬截止为 900 秒。LLM 默认使用流式响应，运行期间可查询真实进度：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/projects/<project_id>/runs/<trace_id>/progress
+```
+
+可用环境变量调整监管策略：`PROJECTOS_WORKER_TIMEOUT_SECONDS`（硬截止）、
+`PROJECTOS_IDLE_LLM_STREAMING_SECONDS`（LLM 无 chunk 空闲阈值）、
+`PROJECTOS_IDLE_RUNNING_TOOL_SECONDS`（工具空闲阈值）、
+`PROJECTOS_IDLE_RUNNING_SANDBOX_SECONDS`（Sandbox 空闲阈值）和
+`PROJECTOS_PROVIDER_STALL_GRACE_SECONDS`（确认无真实进度后的终止宽限期）。LLM 无 chunk
+先记录 `provider_stalled`；只有在宽限期内 `last_progress_at` 始终没有变化时才终止 Worker，
+短暂慢请求或恢复的流式请求不会被误杀。
+设置
+`PROJECTOS_LLM_STREAM=false` 可在 Provider 不支持 SSE 时关闭流式模式。
+
+依赖准备具备受控自愈：批准后的 `requirements.in` 会优先解析二进制 wheel；网络抖动时使用全新
+容器并扩大连接重试，Docker `/tmp` 空间不足时自动切换到项目私有的宿主临时目录。失败的半成品
+缓存不会被后续测试复用。可通过 `PROJECTOS_DEPENDENCY_RETRIES`（默认 `3`）、
+`PROJECTOS_DEPENDENCY_RESOLVE_TIMEOUT_SECONDS`（默认 `600`）调整边界；需要镜像源时可设置不含
+凭据的 HTTPS `PROJECTOS_PYPI_INDEX_URL`。系统不会自动执行全局 `docker system prune`，避免影响
+其他项目或用户容器。
+
+并发调度也可按部署容量调整：`PROJECTOS_RUN_MAX_WORKERS` 控制同一 API 进程
+同时监管的项目 Worker 数量，`PROJECTOS_GRAPH_MAX_WORKERS` 控制单个项目每一批
+最多执行的 DAG 节点数。GraphRunner 会在依赖满足后分批调度，不会一次启动整个 DAG。
+默认值分别为 `4` 和 `6`；Agent 级上限由注册表约束，architecture/code 分区默认最多
+各 `4` 个实例。
+
 ## 提交一次真实交付
 
 创建项目并提交一次真实交付。首次执行测试时，环境配置节点会让控制平面自动拉取白名单镜像；用户无需手动配置 Docker：

@@ -22,7 +22,14 @@ def classify_intent(content: str) -> ConversationIntent:
         return ConversationIntent.RESUME
     if any(token in text for token in ("查看结果", "查看运行", "运行结果", "为什么失败", "测试怎么样", "状态怎么样", "发生了什么")):
         return ConversationIntent.INSPECT_RESULT
-    if any(token in text for token in ("修改", "改成", "换成", "补充", "调整", "修正", "修改需求")):
+    # Match an explicit conversation edit request.  Domain phrases such as
+    # "库存调整接口" are part of a new goal and must not route to patching.
+    modification_phrases = (
+        "修改需求", "修改计划", "修改架构", "修改任务", "继续修改",
+        "请修改", "需要修改", "改成", "换成", "补充需求", "修正需求",
+        "调整需求", "调整计划", "调整架构",
+    )
+    if any(phrase in text for phrase in modification_phrases) or text.startswith(("修改 ", "修改：", "修改:", "补充 ", "补充：")):
         return ConversationIntent.MODIFY_REQUEST
     if any(token in text for token in ("继续", "接着", "下一步", "continue")):
         return ConversationIntent.CONTINUE

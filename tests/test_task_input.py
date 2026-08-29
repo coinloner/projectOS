@@ -6,6 +6,7 @@ from app.orchestration.plan import ExecutionPlan
 from app.orchestration.state import RunState
 from app.orchestration.task_input import build_task_input
 from app.orchestration.trace import TraceContext
+from app.orchestration.retry import FailureKind, FailurePackage, FailureSignal
 from app.orchestration.work_item import DependencySource, WorkItem, WorkItemDependency
 from app.execution_context import ExecutionMode
 from app.workflow.compiler import TemplateCompiler
@@ -65,6 +66,56 @@ class TaskInputPackageTest(unittest.TestCase):
         self.assertIn("environment", prompt)
         self.assertNotIn("需求正文不应注入", prompt)
         self.assertIn("不修改 frontend", prompt)
+
+    def test_code_prompt_makes_write_and_required_path_obligations_explicit(self) -> None:
+        item = WorkItem(
+            id="code-api",
+            agent_id="code_agent",
+            objective="实现 API 入口",
+            output_key="implementation_api",
+            artifact_key="implementation",
+            execution_mode=ExecutionMode.PARTITIONED,
+            output_slot="backend",
+            allowed_paths=("backend/app/main.py",),
+            required_paths=("backend/app/main.py",),
+        )
+        plan = ExecutionPlan(
+            id="plan-code-prompt",
+            goal="交付 API",
+            work_items=(item,),
+            trace=TraceContext(requirement_id="req-code-prompt", trace_id="tr-code-prompt"),
+        )
+        prompt = build_task_input(RunState(plan=plan), item).as_prompt()
+        self.assertIn("write_staged_code_file", prompt)
+        self.assertIn("backend/app/main.py", prompt)
+        self.assertIn("不能调用 save_implementation", prompt)
+
+    def test_exclusive_repair_prompt_contains_structured_failure_and_workspace_protocol(self) -> None:
+        item = WorkItem(
+            id="repair-code",
+            agent_id="code_agent",
+            objective="修复 unit 失败涉及的实现文件",
+            output_key="implementation_patch",
+            failure_package=FailurePackage(
+                signal=FailureSignal(FailureKind.TEST_FAILURE, "ImportError", "ev-test"),
+                check_id="unit",
+                exit_code=2,
+                repair_paths=("backend/app/application/ports.py",),
+                owner_files=("backend/app/application/ports.py",),
+            ),
+        )
+        plan = ExecutionPlan(
+            id="plan-repair-input",
+            goal="修复项目",
+            work_items=(item,),
+            trace=TraceContext(requirement_id="req-repair-input", trace_id="tr-repair-input"),
+        )
+        package = build_task_input(RunState(plan=plan), item)
+        prompt = package.as_prompt()
+        self.assertEqual(package.as_dict()["failure_package"]["repair_paths"], ["backend/app/application/ports.py"])
+        self.assertIn("结构化失败证据", prompt)
+        self.assertIn("write_workspace_file", prompt)
+        self.assertIn("backend/app/application/ports.py", prompt)
 
     def test_minimal_code_template_uses_narrow_inputs_and_explicit_constraints(self) -> None:
         trace = TraceContext(

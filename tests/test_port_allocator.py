@@ -27,7 +27,13 @@ class PortAllocatorTest(unittest.TestCase):
 
     def test_skips_ports_actually_bound_by_other_processes(self) -> None:
         occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        occupied.bind(("127.0.0.1", 0))
+        try:
+            occupied.bind(("127.0.0.1", 0))
+        except OSError as error:
+            occupied.close()
+            if getattr(error, "errno", None) in {1, 13}:
+                self.skipTest("当前沙盒禁止测试进程监听本地端口")
+            raise
         occupied.listen(1)
         busy = occupied.getsockname()[1]
         try:

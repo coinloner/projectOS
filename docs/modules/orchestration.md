@@ -22,6 +22,7 @@ ExecutionPlan
 | `TaskInputPackage` | 执行前生成的结构化任务合同：输入用途、资源 scope、输出合同、前置状态、约束和非目标 |
 | `TraceStore` | 持久化计划、事件、终态、requirement 修订和 sandbox evidence |
 | `SandboxEvidence` | Docker check 的状态、退出码、耗时和原始受限输出，绑定到 Trace 与 WorkItem |
+| `ProgressTracker` | 接收 LLM 流式、工具和节点事件，写入 Worker 最近进度快照，不保存模型正文 |
 
 ## 边界
 
@@ -34,7 +35,11 @@ ExecutionPlan
   `publish_target`，只能创建候选；`QUALITY_GATE` 必须依赖一个集成 WorkItem，由 GraphRunner
   调用确定性质量门发布。三者均不能由 Planner 的自由文本直接授予。
 
-GraphRunner 使用有界 worker pool 执行相互独立的 WorkItem；同一 Agent 的并行数量受 `AgentDefinition.max_parallel_instances` 限制，默认是 `1`。这是并发 I/O 调度，不是让 Agent 取得多进程或宿主机权限。
+GraphRunner 使用有界 worker pool 分批执行相互独立的 WorkItem；单批大小由
+`PROJECTOS_GRAPH_MAX_WORKERS`（默认 `6`）控制，同一 Agent 的并行数量仍受
+`AgentDefinition.max_parallel_instances` 限制。API 进程同时监管的项目数由
+`PROJECTOS_RUN_MAX_WORKERS`（默认 `4`）控制。这些是并发 I/O 调度容量，不是让
+Agent 取得多进程或宿主机权限。
 
 对 architecture Markdown 的质量门，Runner 不调用 LLM：它加载集成 WorkItem 创建的唯一
 候选，检查 `IntegrationReport`，再决定是否调用 `ArtifactRepository.promote_candidate()`。
@@ -44,7 +49,13 @@ Docker 失败会按测试失败、超时、环境配置失败和 Agent 运行异
 每个节点结果后都会写入版本化 checkpoint；恢复时只信任已完成节点，失败、等待和 replan 节点重新调度，
 避免把中断时的半成品副作用误当成完成结果。
 
-`FailurePackage` 是编排层由 Trace evidence 生成的受控输入。Planner 只看到失败种类、摘要、证据 ID、check/runtime/exit code；修复用 Code/Test WorkItem 可看到受长度限制的 stdout/stderr，并且该文本被标记为不可信程序输出。TestAgent 必须产生当前 WorkItem 的 SandboxEvidence，否则不会被记为完成；CodeAgent 同理必须通过 `save_implementation` 保存实现摘要（implementation.md），否则按 `implementation_summary_missing` 有限重试后失败。
+Worker 监管同时使用硬截止、阶段级空闲阈值和独立 heartbeat。默认 LLM 120 秒、工具 300 秒、Sandbox 600 秒；
+发现 LLM 无 chunk 时先写入 `worker_idle_suspected`/`provider_stalled`，并进入可配置的
+`PROJECTOS_PROVIDER_STALL_GRACE_SECONDS` 宽限期；只有 `last_progress_at` 在整个宽限期内
+没有变化才终止 Worker，真实进度恢复会重置计时。API 可通过
+`/runs/{trace_id}/progress` 查询 `last_progress_at` 与 `heartbeat_at` 两类时间戳。
+
+`FailurePackage` 是编排层由 Trace evidence 生成的受控输入。Planner 只看到失败种类、摘要、证据 ID、check/runtime/exit code；修复用 Code/Test WorkItem 可看到受长度限制的 stdout/stderr，并且该文本被标记为不可信程序输出。TestAgent 必须产生当前 WorkItem 的 SandboxEvidence，否则不会被记为完成；代码分区先提交 ChangeSet，`CodeIntegrationAgent` 合并成功后生成实现摘要（implementation.md）。
 
 修复计划（携带 failure_package 的 WorkItem）另有落盘闸门：code 域的修复项必须有成功的
 `write_workspace_file` 调用记录（由 Trace 记忆中的工具事件判定），否则按
@@ -81,3 +92,55 @@ Agent 收到的是稳定摘要加结构化 JSON；正文仍需通过当前 ToolS
 因此并行 CodeAgent 可以只获得 architecture、environment 和自己的任务合同，不必重复读取
 requirement、tasks 或其他分区正文。`TaskInputPackage` 位于
 `app/orchestration/task_input.py`，不改变 ToolGateway 的权限判断。
+
+## Architecture 到 CodeAgent 的实现合同
+
+默认交付流程将架构职责拆成两个节点：`architecture_agent` 只产出并发布
+`architecture.md`，`architecture_contract_agent` 读取已发布架构并保存
+`.projectos/architecture/project-contract.json`。合同节点不修改架构正文，
+只负责把架构决策编译为执行边界。
+
+合同中的 `ProjectContract` 同时包含分层规则、依赖方向、禁止导入、路径映射、测试类型、入口、接口和实现单元；
+每个 `implementation_unit` 包含层级、目标、依赖、允许/禁止路径、必需文件、验收标准、Policy
+和 Skill 引用。`ImplementationContractCompiler` 将这些单元编译为多个 `PARTITIONED`
+CodeAgent WorkItem；CodeAgent 只执行当前单元，不重新拆分架构。旧版本在架构 Markdown 中嵌入
+标记块的方式仍兼容读取，但新流程由独立合同节点负责生成。
+
+文件交付边界有三条硬规则：
+
+- `allowed_paths`/`allowed_roots` 只表示目录授权，可以使用 glob；
+- `owned_files`、`required_paths` 和顶层 `required_files` 只能是具体文件路径；
+- 一个 CodeAgent WorkItem 必须且只能拥有一个完整文件。多文件实现单元由编译器按文件拆成
+  同一 Wave 的独立 WorkItem，`depends_on` 和接口 owner 依赖会映射到完整的前置子集。
+
+交付门在 ChangeSet 上做精确路径匹配，并按 `provided_symbols` 做最小 AST 符号检查。目录授权
+不会再被当成“已经交付”，入口文件也只会要求其唯一 owner，不会注入到 routes、schema 等兄弟
+文件任务。这样并行仍发生在 Wave 内，但每个合并单元有清晰的文件责任和可恢复边界。
+
+`project_delivery` 在合同节点完成后由 GraphRunner 自动展开代码子图；不再存在单独的
+实现规划入口。各单元仍使用现有 Git task worktree，完成后交给 `CodeIntegrationAgent`
+合并，因此并行不会互相覆盖正式 workspace。Policy 的 `preflight()` 提供实现前清单，`evaluate()` 仍负责最终确定性
+质量判定；Skill 只提供实现方法，不得绕过 Policy。
+# 授权、重试与恢复边界
+
+能力审批会写入每条 Trace 的 `capability-grants.json`，Worker 重建时从授权账本和
+`capability_approved` 事件恢复；授权支持 `node`、`trace`、`project` scope，并可通过
+`/capabilities/{grant_id}/revoke` 撤销。普通项目未在需求的“外部规范”小节显式声明主题时，
+控制面拒绝 `external_documentation` 请求。
+
+失败修复计划携带依赖图局部窗口：失败节点、直接前置节点和直接后继节点。Provider 流式
+超过阶段空闲阈值后先记录诊断，继续超过宽限期则终止当前 Worker，并允许从 checkpoint 重试。
+
+## 交付契约与运行前置
+
+`PipelineArtifactManifest`（代码中的 `DeliveryContract`）只为 ProjectOS 自己的最终项目文档声明唯一 owner 和阶段边界；
+它不是项目架构合同。它在
+`TemplateCompiler` 和 Implementation Contract 展开后校验，防止 `code-integration` 要求
+后续 `tests` 或 `review` 才能生成的文件。
+
+`ProjectRuntimePreflight` 在 TestAgent 运行前检查 Compose build context 的 Dockerfile、数据库
+初始化入口和前端 HTML 本地资源引用。检查失败返回 `runtime_preflight` 阻塞信号；它不会被 LLM
+解释为“测试通过”，修复后可从 checkpoint 恢复。
+
+TestAgent 的 `SandboxEvidence.status=setup_failed` 同样属于环境阻塞，不是完成状态。原始证据仍
+持久化，Trace 会停在 `blocked`，避免在没有执行测试的情况下生成误导性的最终 Review。

@@ -87,15 +87,6 @@ class ToolCatalog:
         self._refresh_dynamic_sources(domain, refresh_sources or set())
         return self._all_tools().get((domain, tool_name))
 
-    def source_names(self, domain: str, *, dynamic_only: bool = False) -> set[str]:
-        """返回已注册来源名，用于授权等不应触发 discover 的操作。"""
-        return {
-            source_name
-            for (registered_domain, source_name), registration in self._sources.items()
-            if registered_domain == domain
-            and (not dynamic_only or registration.source.is_dynamic)
-        }
-
     def find_sources(
         self,
         domain: str,
@@ -111,9 +102,6 @@ class ToolCatalog:
             and registration.capability == capability
             and (not dynamic_only or registration.source.is_dynamic)
         ]
-
-    def has_source(self, domain: str, source_name: str) -> bool:
-        return (domain, source_name) in self._sources
 
     def domains(self) -> set[str]:
         """返回所有注册了来源的 domain，用于跨 domain 的会话授权。"""

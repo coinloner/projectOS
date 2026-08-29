@@ -18,17 +18,17 @@ def install(container: "ProjectOSContainer") -> None:
         AgentDefinition(
             id="code_agent", domain="code",
             description="根据前置产物在受限 workspace 内实现首版代码",
-            output_key="implementation", max_parallel_instances=2,
+            output_key="implementation", max_parallel_instances=4,
         ),
         factory=lambda: CodeAgent(container.gateway),
     )
     container.agents.register(
         AgentDefinition(
-            id="code_integration_agent", domain="code",
-            description="依据代码质量策略将隔离分区合并到正式 workspace",
+            id="code_integration_agent", domain="code_integration",
+            description="使用 LLM 审核和确定性策略合并已有隔离分区 ChangeSet",
             output_key="implementation_merge", artifact_key="implementation",
         ),
         factory=lambda: CodeIntegrationAgent(
-            CodeIntegrationService(container.project_path)
+            container.gateway, CodeIntegrationService(container.project_path)
         ),
     )

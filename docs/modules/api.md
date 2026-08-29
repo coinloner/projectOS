@@ -17,6 +17,8 @@ uvicorn app.api.asgi:app --reload
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | `GET` | `/health` | 存活检查 |
+| `GET` | `/api/v1/llm/providers` | 返回可供用户选择的 provider、默认模型和兼容端点（不返回密钥） |
+| `GET` | `/api/v1/llm/providers/{provider}/models` | 从 provider 动态读取可用模型 ID |
 | `POST` | `/api/v1/projects` | 创建 ProjectOS 项目 |
 | `GET` | `/api/v1/projects/{project_id}/workflows` | 列出可由 API 直接启动的受控 Workflow |
 | `GET` | `/api/v1/projects/{project_id}/runtime/preflight` | 检查 runtime 声明、Docker 镜像和依赖前置 |
@@ -32,12 +34,20 @@ uvicorn app.api.asgi:app --reload
 | `GET` | `/api/v1/projects/{project_id}/runs/{trace_id}/baseline` | 查询计划基线和当前修订 |
 | `GET` | `/api/v1/projects/{project_id}/runs/{trace_id}/memory` | 查询一次运行的会话记忆事件 |
 
-启动运行的请求只接受 `goal` 和已注册的 `workflow_id`：
+启动运行的请求可以携带用户选择的 `provider`、`model` 和 `base_url`；不传时使用部署默认值：
 
 ```json
 {
   "goal": "根据现有需求设计系统架构",
-  "workflow_id": "architecture_parallel"
+  "workflow_id": "architecture_parallel",
+  "provider": "siliconflow",
+  "model": "zai-org/GLM-5.2",
+  "llm_overrides": {
+    "review_agent": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    }
+  }
 }
 ```
 
@@ -57,6 +67,15 @@ uvicorn app.api.asgi:app --reload
 Trace 保存一次执行的审计事实，两者不混在同一个文件中。每次动态计划都会保存计划基线；会话中的
 修改请求生成局部 `PlanPatch`，只重跑受影响子图，不自动重建整条执行链。Trace 进入终态后，读取会话接口会追加
 基于事实生成的 assistant 自然语言摘要，前端无需直接解析控制面事件。
+
+发送会话消息时也可以携带同样的 `provider`、`model`、`base_url` 字段。用户选择会被解析为本轮
+不可变的 `LLMSelection` 并写入 Trace；Planner、所有 Agent、隔离 Worker、修复和断点恢复都会
+沿用该选择，不依赖修改 `.env` 或进程级全局变量。
+
+`llm_overrides` 是 Pro 能力：键为已注册 Agent ID（也可以使用 `planner` 单独配置规划器），值为
+该 Agent 的 provider/model 配置。未列出的 Agent 自动回退到本轮默认模型。建议至少让
+`code_agent` 与 `review_agent` 使用不同的模型或不同 provider，避免“自己实现、自己审批”的单模型闭环；
+系统只提供路由能力，不强制绑定某一家模型。
 
 ## 运行模型
 

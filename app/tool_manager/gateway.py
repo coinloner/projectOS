@@ -9,6 +9,7 @@ from app.tool_manager.access_policy import ToolAccessPolicy
 from app.tool_manager.crewai_adapter import ProjectOSTool
 from app.tool_manager.source import ToolExposure, ToolSource
 from app.execution_context import ExecutionContext
+from app.tool_manager.grants import CapabilityGrant
 
 if TYPE_CHECKING:
     from app.tool_manager.source import ToolDef
@@ -66,33 +67,25 @@ class ToolGateway:
             exposure=exposure,
         )
 
-    def activate_source(self, domain: str, name: str) -> None:
-        """授予当前会话使用一个按需来源的权限，例如 MCP。"""
-        if not self._catalog.has_source(domain, name):
-            raise ValueError(f"domain '{domain}' 下不存在来源 '{name}'")
-        self._policy.activate_source(domain, name)
-
-    def activate_source_for_capability(self, capability: str, name: str) -> int:
-        """在提供某能力的所有 domain 下激活同名来源；返回激活的 domain 数。
-
-        一次审批覆盖整个交付链：docs-mcp 注册于 architecture/code/review 三个
-        domain，架构节点触发审批后，后续实现与审查节点也应直接可用，
-        而不是每到一个 domain 就再次等待审批。
-        """
+    def activate_grant(self, grant: CapabilityGrant) -> int:
+        """Activate a persisted grant without widening its scope."""
         activated = 0
         for domain in self._catalog.domains():
             if any(
-                registration.source_name == name
-                and registration.capability == capability
-                for registration in self._catalog.find_sources(domain, capability)
+                registration.source_name == grant.source_name
+                and registration.capability == grant.capability
+                for registration in self._catalog.find_sources(domain, grant.capability)
             ):
-                self.activate_source(domain, name)
+                self._policy.activate_grant(grant)
                 activated += 1
+        if activated == 0:
+            raise ValueError(
+                f"能力 '{grant.capability}' 下不存在来源 '{grant.source_name}'"
+            )
         return activated
 
-    def deactivate_source(self, domain: str, name: str) -> None:
-        """撤销一个按需来源的会话授权。"""
-        self._policy.deactivate_source(domain, name)
+    def deactivate_grant(self, grant_id: str) -> None:
+        self._policy.deactivate_grant(grant_id)
 
     def tools_for(
         self, domain: str, *, context: ExecutionContext | None = None
@@ -100,7 +93,7 @@ class ToolGateway:
         """返回当前 domain 可交给 CrewAI Agent 的已授权工具。"""
         registrations = self._catalog.list_registrations(
             domain,
-            refresh_sources=self._policy.active_source_names(domain),
+            refresh_sources=self._policy.active_grant_source_names(),
         )
         return [
             ProjectOSTool.from_registration(
@@ -109,8 +102,9 @@ class ToolGateway:
                 context=context,
             )
             for registration in registrations
-            if self._policy.is_visible(registration)
+            if self._policy.is_visible(registration, context)
             and _visible_in_execution_context(registration.definition, context)
+            and _visible_in_tool_allowlist(registration.definition, context)
         ]
 
     def find_sources_for_capability(
@@ -119,19 +113,6 @@ class ToolGateway:
         """按能力查询候选动态来源，不触发 MCP discover。"""
         return self._catalog.find_sources(domain, capability)
 
-    # 兼容过渡：旧调用方仍可使用 domain 级外部授权，但新代码应精确授权 source。
-    def enable_external(self, domain: str) -> None:
-        for source_name in self._catalog.source_names(domain, dynamic_only=True):
-            self.activate_source(domain, source_name)
-
-    def activate_external(self, domain: str) -> None:
-        self.enable_external(domain)
-
-    def deactivate_external(self, domain: str) -> None:
-        for source_name in self._catalog.source_names(domain, dynamic_only=True):
-            self.deactivate_source(domain, source_name)
-
-
 def _visible_in_execution_context(
     definition: "ToolDef", context: ExecutionContext | None
 ) -> bool:
@@ -139,3 +120,12 @@ def _visible_in_execution_context(
     if context is None or definition.execution_modes is None:
         return True
     return context.execution_mode.value in definition.execution_modes
+
+
+def _visible_in_tool_allowlist(
+    definition: "ToolDef", context: ExecutionContext | None
+) -> bool:
+    """Apply an optional control-plane narrowing for a single retry attempt."""
+    if context is None or not context.tool_allowlist:
+        return True
+    return definition.name in context.tool_allowlist

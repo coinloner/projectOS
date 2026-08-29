@@ -9,6 +9,10 @@ from app.planner.context import PlanningContext
 from app.planner.draft import PlanDraft
 from app.planner.service import PlannerFailure, PlannerService
 from app.planner.validator import PlanValidationError, PlanValidator
+from app.orchestration.plan import ExecutionPlan
+from app.orchestration.retry import FailureKind, FailurePackage, FailureSignal
+from app.orchestration.trace import TraceContext
+from app.orchestration.work_item import WorkItem
 from app.workflow.template import (
     TaskBlueprint,
     WorkflowTemplate,
@@ -359,6 +363,84 @@ class PlannerServiceTest(unittest.TestCase):
         with self.assertRaisesRegex(PlannerFailure, "goal 不能为空"):
             service.plan(goal="  ", plan_id="empty-goal")
 
+    def test_repair_package_sets_code_allowed_paths(self) -> None:
+        service = PlannerService(
+            runtime=FakePlannerRuntime([]),
+            agents=self.agents,
+            templates=self.templates,
+            artifacts=self.artifacts,
+        )
+        package = FailurePackage(
+            signal=FailureSignal(FailureKind.TEST_FAILURE, "unit failed", "ev-1"),
+            check_id="unit",
+            repair_paths=("backend/app/infrastructure/repositories.py",),
+        )
+        repair_plan = ExecutionPlan(
+            id="repair-plan",
+            goal="修复",
+            trace=TraceContext(requirement_id="req-repair", trace_id="tr-repair"),
+            work_items=(WorkItem(
+                id="repair-code",
+                agent_id="code_agent",
+                objective="修复实现",
+                output_key="implementation_patch",
+            ),),
+        )
+        attached = service._attach_failure_package(repair_plan, package)
+        item = attached.work_items[0]
+        self.assertEqual(item.allowed_paths, ("backend/app/infrastructure/repositories.py",))
+        self.assertIn("tests/**", item.forbidden_paths)
+        self.assertEqual(item.failure_package.repair_paths, item.allowed_paths)
+
+    def test_repair_retry_preserves_repair_only_agent_boundary(self) -> None:
+        """第一次草案误带 review 时，第二次仍必须使用修复专用约束。"""
+        runtime = FakePlannerRuntime(
+            [
+                '{"rationale":"误把交付审查加入修复","steps":['
+                '{"ref":"bootstrap","agent_id":"bootstrap_agent","objective":"确认环境"},'
+                '{"ref":"code-fix","agent_id":"code_agent","objective":"通过 write_workspace_file 修复实现","depends_on":["bootstrap"]},'
+                '{"ref":"test-fix","agent_id":"test_agent","objective":"通过 write_test_file 复验修复","depends_on":["code-fix"]},'
+                '{"ref":"review","agent_id":"review_agent","objective":"审查结果","depends_on":["test-fix"]}]}',
+                '{"rationale":"修复并复验","steps":['
+                '{"ref":"bootstrap","agent_id":"bootstrap_agent","objective":"确认环境"},'
+                '{"ref":"code-fix","agent_id":"code_agent","objective":"通过 write_workspace_file 修复实现","depends_on":["bootstrap"]},'
+                '{"ref":"test-fix","agent_id":"test_agent","objective":"通过 write_test_file 复验修复","depends_on":["code-fix"]}]}',
+            ]
+        )
+        service = PlannerService(
+            runtime=runtime,
+            agents=self.agents,
+            templates=self.templates,
+            artifacts=self.artifacts,
+        )
+        previous = ExecutionPlan(
+            id="initial",
+            goal="修复活动平台",
+            trace=TraceContext(requirement_id="req-repair", trace_id="tr-repair-retry"),
+            work_items=(
+                WorkItem(
+                    id="tests",
+                    agent_id="test_agent",
+                    objective="运行测试",
+                    output_key="tests",
+                ),
+            ),
+        )
+
+        result = service.plan_repair(
+            previous_plan=previous,
+            failure=FailureSignal(FailureKind.TEST_FAILURE, "unit failed"),
+            plan_id="repair-retry",
+        )
+
+        self.assertEqual(result.attempts, 2)
+        self.assertEqual(
+            [item.agent_id for item in result.plan.work_items],
+            ["bootstrap_agent", "code_agent", "test_agent"],
+        )
+        self.assertIn("禁止 code_integration_agent、review_agent", runtime.prompts[1])
+        self.assertIn("修复计划不能包含 integration/review/planning Agent", runtime.prompts[1])
+
     def setUp(self) -> None:
         self._directory = tempfile.TemporaryDirectory()
         self.artifacts = ArtifactStore(self._directory.name)
@@ -451,10 +533,10 @@ class PlannerServiceTest(unittest.TestCase):
 
             self.assertEqual(result.attempts, 2)
             self.assertEqual(result.plan.template_id, "project_delivery")
-            self.assertEqual(len(result.plan.work_items), 9)
+            self.assertEqual(len(result.plan.work_items), 10)
             self.assertEqual(
                 {item.artifact_key for item in result.plan.work_items},
-                {"requirement", "architecture", "tasks", "environment", "implementation", "tests", "review"},
+                {"requirement", "architecture", "architecture_contract", "tasks", "environment", "implementation", "tests", "review"},
             )
             self.assertIn("必须选择受控模板 'project_delivery'", runtime.prompts[1])
 

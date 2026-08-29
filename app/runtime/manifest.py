@@ -83,6 +83,7 @@ class RuntimeManifest:
     profile: str
     dependencies_file: str | None = None
     application: str | None = None
+    mode: str = "production"
 
     FILENAME = "runtime.yaml"
 
@@ -101,7 +102,7 @@ class RuntimeManifest:
     def from_dict(cls, payload: object) -> "RuntimeManifest":
         if not isinstance(payload, dict):
             raise ValueError("runtime.yaml 必须是 object")
-        allowed = {"version", "profile", "dependencies_file", "application"}
+        allowed = {"version", "profile", "dependencies_file", "application", "mode"}
         unknown = set(payload) - allowed
         if unknown:
             raise ValueError(f"runtime.yaml 包含未知字段: {', '.join(sorted(unknown))}")
@@ -109,6 +110,7 @@ class RuntimeManifest:
         profile = payload.get("profile")
         dependencies_file = payload.get("dependencies_file")
         application = payload.get("application")
+        mode = payload.get("mode", "production")
         if version != 1:
             raise ValueError("runtime.yaml.version 当前必须为 1")
         if not isinstance(profile, str) or not profile.strip():
@@ -119,11 +121,14 @@ class RuntimeManifest:
             not isinstance(application, str) or not application.strip()
         ):
             raise ValueError("runtime.yaml.application 必须是非空字符串")
+        if mode not in {"development", "production"}:
+            raise ValueError("runtime.yaml.mode 必须是 development 或 production")
         manifest = cls(
             version=version,
             profile=profile.strip(),
             dependencies_file=dependencies_file,
             application=application.strip() if application else None,
+            mode=str(mode),
         )
         runtime_profile = RuntimeCatalog.get(manifest.profile)
         if manifest.dependencies_file and not runtime_profile.supports_dependencies:
@@ -138,6 +143,8 @@ class RuntimeManifest:
             payload["dependencies_file"] = self.dependencies_file
         if self.application is not None:
             payload["application"] = self.application
+        if self.mode != "production":
+            payload["mode"] = self.mode
         return payload
 
     def save(self, project_path: str) -> None:

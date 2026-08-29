@@ -14,6 +14,7 @@ class BootstrapRuntimeTest(unittest.TestCase):
                 {
                     "requirement_agent",
                     "architecture_agent",
+                    "architecture_contract_agent",
                     "task_agent",
                     "bootstrap_agent",
                     "code_agent",
@@ -24,13 +25,12 @@ class BootstrapRuntimeTest(unittest.TestCase):
             )
             self.assertEqual(
                 container.agents.definition("architecture_agent").max_parallel_instances,
-                3,
+                4,
             )
             self.assertIsNotNone(container.templates.get("project_delivery"))
             self.assertIsNotNone(container.templates.get("architecture_compact"))
             self.assertIsNotNone(container.templates.get("architecture_parallel"))
             self.assertIsNotNone(container.templates.get("project_delivery_minimal"))
-            self.assertIsNone(container.templates.get("requirement_generation"))
             self.assertEqual(
                 {tool.name for tool in container.gateway.tools_for("architecture")},
                 {
@@ -40,6 +40,10 @@ class BootstrapRuntimeTest(unittest.TestCase):
                     "write_staged_architecture",
                     "create_architecture_candidate",
                 },
+            )
+            self.assertEqual(
+                {tool.name for tool in container.gateway.tools_for("architecture_contract")},
+                {"load_architecture", "load_requirement", "save_implementation_contract"},
             )
             self.assertIsNotNone(container.planner)
             self.assertIsNotNone(container.runner)

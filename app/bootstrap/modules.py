@@ -19,6 +19,8 @@ from app.domain.requirement.module import install as install_requirement
 from app.domain.review.module import install as install_review
 from app.domain.task.module import install as install_task
 from app.domain.test.module import install as install_test
+from app.policy.module import install as install_policy
+from app.skill.module import install as install_skill
 from app.workflow.templates import (
     architecture_compact_template,
     architecture_parallel_template,
@@ -28,6 +30,8 @@ from app.workflow.templates import (
 
 
 MODULES: tuple[Callable[["ProjectOSContainer"], None], ...] = (
+    install_policy,
+    install_skill,
     install_requirement,
     install_architecture,
     install_task,
@@ -61,10 +65,8 @@ def _install_external_sources(container: "ProjectOSContainer") -> None:
     url = os.environ.get(
         "PROJECTOS_DOCS_MCP_URL", "http://127.0.0.1:8090/mcp"
     )
-    # 外部文档能力是跨领域能力：需求（规范核实后落需求）、架构（接口契约）、
-    # 实现（代码细节）与审查（规范一致性核验）都可能在交付链上请求同一来源。
-    # 任一节点先发起请求都会经 activate_source_for_capability 一次性激活全部
-    # 已注册 domain，后续节点直接可用，不再产生第二次等待。
+    # 外部文档能力可由审批授予 node、trace 或 project scope；Gateway 在
+    # 每次节点构造工具和执行工具时按 ExecutionContext 做最终隔离。
     for domain in ("requirement", "architecture", "code", "review"):
         container.gateway.register_source(
             domain=domain,

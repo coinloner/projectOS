@@ -10,6 +10,7 @@ from typing import Protocol
 from crewai import Agent, Task
 
 from app.llm.factory import build_llm
+from app.llm.config import LLMSelection
 
 
 class PlannerRuntime(Protocol):
@@ -22,7 +23,12 @@ class PlannerRuntime(Protocol):
 class CrewAIPlannerRuntime:
     """无工具 CrewAI Agent，用于输出严格 JSON 的 PlanDraft。"""
 
-    def __init__(self, *, cache_enabled: bool | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        cache_enabled: bool | None = None,
+        llm_selection: LLMSelection | None = None,
+    ) -> None:
         self._llm = None
         self._lock = Lock()
         self._cache_enabled = (
@@ -31,6 +37,7 @@ class CrewAIPlannerRuntime:
             else cache_enabled
         )
         self._cache: dict[str, str] = {}
+        self._llm_selection = llm_selection
 
     def generate(self, prompt: str) -> str:
         cache_key = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
@@ -41,7 +48,10 @@ class CrewAIPlannerRuntime:
                 return cached
         with self._lock:
             if self._llm is None:
-                self._llm = build_llm(temperature=0.0, seed=0)
+                kwargs = {"temperature": 0.0, "seed": 0}
+                if self._llm_selection is not None:
+                    kwargs["selection"] = self._llm_selection
+                self._llm = build_llm(**kwargs)
         agent = Agent(
             role="执行计划编排者",
             goal="在已注册 Agent 合同范围内生成最小、可执行的任务计划",
@@ -103,10 +113,10 @@ output key、文件路径或 Python 代码。
    bootstrap_agent；Bootstrap 负责声明 runtime，不执行依赖安装。
 6. runtime.dependencies_configured 为 true 而 dependency_cache_ready 为 false 时，
    说明需要项目所有者批准依赖解析；不要假设测试可运行。
-7. layer_contract.exists 为 true 时，implementation/code_agent 的 objective 或 constraints
+7. project_contract.exists 为 true 时，implementation/code_agent 的 objective 或 constraints
    必须明确遵守契约层和 path_mapping；test_agent 必须覆盖 required_test_types。
-   layer_contract.exists 为 false 且目标要求代码交付时，必须先让 architecture_agent 产出并保存契约，
-   不得把分层标准留给代码节点临时猜测。
+   project_contract.exists 为 false 且目标要求代码交付时，必须先选择 architecture_agent，随后由
+   architecture_contract_agent 读取已发布架构并保存实现合同，不得把分层标准留给代码节点临时猜测。
 8. 优先产出完成目标所需的最小步骤集合。
 9. 默认模板的依赖会由系统自动加入。只有确实不适用时，才在
    template_dependency_overrides 中提供 predecessor_agent_id、successor_agent_id 和原因。

@@ -12,6 +12,11 @@ import re
 import sqlite3
 from pathlib import Path
 
+try:  # pragma: no cover - Windows fallback keeps the index usable
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
+
 from app.memory.store_types import IndexedMemoryEvent
 
 
@@ -23,9 +28,11 @@ class MemoryIndex:
 
     def __init__(self, project_path: str) -> None:
         self._path = Path(project_path) / ".projectos" / "memory" / "index.sqlite3"
+        self._lock_path = self._path.with_suffix(".lock")
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connection() as connection:
-            connection.executescript(
+        with self._exclusive_lock():
+            with self._connection() as connection:
+                connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS memory_events (
                     event_id TEXT PRIMARY KEY,
@@ -51,44 +58,52 @@ class MemoryIndex:
                     tokenize='unicode61'
                 );
                 """
-            )
+                )
 
     def sync(self, events: Iterable[IndexedMemoryEvent]) -> None:
         rows = tuple(events)
         if not rows:
             return
-        with self._connection() as connection:
-            for event in rows:
-                connection.execute(
-                    """
-                    INSERT OR REPLACE INTO memory_events (
-                        event_id, trace_id, sequence, work_item_id, role,
-                        event_type, tier, lifecycle, retrieval_enabled,
-                        expires_at, content
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event.id,
-                        event.trace_id,
-                        event.sequence,
-                        event.work_item_id,
-                        event.role,
-                        event.event_type,
-                        event.tier,
-                        event.lifecycle,
-                        int(event.retrieval_enabled),
-                        event.expires_at,
-                        event.content,
-                    ),
-                )
-                connection.execute(
-                    "DELETE FROM memory_events_fts WHERE event_id = ?",
-                    (event.id,),
-                )
-                connection.execute(
-                    "INSERT INTO memory_events_fts(event_id, trace_id, content) VALUES (?, ?, ?)",
-                    (event.id, event.trace_id, event.content),
-                )
+        with self._exclusive_lock():
+            try:
+                with self._connection() as connection:
+                    for event in rows:
+                        connection.execute(
+                            """
+                            INSERT OR REPLACE INTO memory_events (
+                                event_id, trace_id, sequence, work_item_id, role,
+                                event_type, tier, lifecycle, retrieval_enabled,
+                                expires_at, content
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                event.id,
+                                event.trace_id,
+                                event.sequence,
+                                event.work_item_id,
+                                event.role,
+                                event.event_type,
+                                event.tier,
+                                event.lifecycle,
+                                int(event.retrieval_enabled),
+                                event.expires_at,
+                                event.content,
+                            ),
+                        )
+                        connection.execute(
+                            "DELETE FROM memory_events_fts WHERE event_id = ?",
+                            (event.id,),
+                        )
+                        connection.execute(
+                            "INSERT INTO memory_events_fts(event_id, trace_id, content) VALUES (?, ?, ?)",
+                            (event.id, event.trace_id, event.content),
+                        )
+            except BaseException as error:
+                # Memory indexing is an optimization; JSONL remains the source
+                # of truth. CrewAI telemetry may turn a lock OperationalError
+                # into SystemExit(0), so a locked index must not kill a Worker.
+                if not _is_lock_error(error):
+                    raise
 
     def search(
         self,
@@ -176,12 +191,23 @@ class MemoryIndex:
         return tuple(str(row[0]) for row in rows)
 
     def _query(self, statement: str, parameters: list[object]) -> list[tuple[object, ...]]:
-        with self._connection() as connection:
-            return [tuple(row) for row in connection.execute(statement, parameters)]
+        try:
+            with self._connection() as connection:
+                return [tuple(row) for row in connection.execute(statement, parameters)]
+        except BaseException as error:
+            if _is_lock_error(error):
+                return []
+            raise
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path)
+        connection = sqlite3.connect(self._path, timeout=30.0)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=30000")
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.OperationalError:
+            pass
         return connection
 
     @contextmanager
@@ -192,6 +218,28 @@ class MemoryIndex:
             connection.commit()
         finally:
             connection.close()
+
+    @contextmanager
+    def _exclusive_lock(self):
+        """Serialize cross-process schema/index writes with a lock file."""
+        handle = self._lock_path.open("a+")
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+
+
+def _is_lock_error(error: BaseException) -> bool:
+    """Recognize SQLite lock failures, including CrewAI's telemetry wrapper."""
+    if isinstance(error, sqlite3.OperationalError):
+        return "locked" in str(error).lower() or "busy" in str(error).lower()
+    # CrewAI telemetry currently converts an instrumented SQLite lock into
+    # SystemExit(0), losing the original exception text.
+    return isinstance(error, SystemExit)
 
 
 def _fts_query(query: str) -> str:

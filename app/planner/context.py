@@ -10,7 +10,7 @@ from app.artifact.store import ArtifactStore
 from app.workflow.template import WorkflowTemplateRegistry
 from app.workspace.store import WorkspaceStore
 from app.runtime.state import RuntimeSnapshot, runtime_snapshot
-from app.domain.architecture.layer_contract import LayerContractStore
+from app.domain.architecture.implementation_contract import ProjectContractStore
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ class WorkspaceSnapshot:
 
 
 @dataclass(frozen=True)
-class LayerContractSnapshot:
+class ProjectContractSnapshot:
     exists: bool
     layers: tuple[str, ...] = ()
     required_test_types: tuple[str, ...] = ()
@@ -90,7 +90,7 @@ class PlanningContext:
     templates: tuple[TemplateHint, ...]
     workspace: WorkspaceSnapshot
     runtime: RuntimeSnapshot
-    layer_contract: LayerContractSnapshot
+    project_contract: ProjectContractSnapshot
     source_templates: tuple["WorkflowTemplate", ...] = field(
         default=(), repr=False, compare=False
     )
@@ -135,20 +135,20 @@ class PlanningContext:
             _template_hint(template) for template in templates.templates()
         )
         workspace = WorkspaceStore(artifacts.project_path)
-        contract_store = LayerContractStore(artifacts.project_path)
+        contract_store = ProjectContractStore(artifacts.project_path)
         if contract_store.exists():
             try:
                 contract = contract_store.load()
-                layer_contract = LayerContractSnapshot(
+                project_contract = ProjectContractSnapshot(
                     exists=True,
                     layers=contract.layers,
                     required_test_types=contract.required_test_types,
                     path_mapping=contract.path_mapping,
                 )
             except ValueError:
-                layer_contract = LayerContractSnapshot(exists=False)
+                project_contract = ProjectContractSnapshot(exists=False)
         else:
-            layer_contract = LayerContractSnapshot(exists=False)
+            project_contract = ProjectContractSnapshot(exists=False)
         return cls(
             goal=goal.strip(),
             artifacts=snapshots,
@@ -158,7 +158,7 @@ class PlanningContext:
                 implementation_file_count=workspace.implementation_file_count()
             ),
             runtime=runtime_snapshot(artifacts.project_path),
-            layer_contract=layer_contract,
+            project_contract=project_contract,
             source_templates=templates.templates(),
         )
 
@@ -195,7 +195,7 @@ class PlanningContext:
                 ],
                 "workspace": self.workspace.__dict__,
                 "runtime": self.runtime.__dict__,
-                "layer_contract": self.layer_contract.as_dict(),
+                "project_contract": self.project_contract.as_dict(),
             },
             ensure_ascii=False,
             indent=2,

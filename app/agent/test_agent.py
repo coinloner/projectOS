@@ -41,4 +41,4 @@ run_sandbox_check 的 check_id 选择规则（只能从 profile 白名单中选�
 - ## 未覆盖风险
 
 原则：只报告工具实际返回的结果。若现有实现无法用 unittest 或 node:test 验证，明确写入未覆盖风险，不要伪造通过结果。"""
-_BACKSTORY += "\nDocker 镜像缺失、依赖缓存未准备或 sandbox setup_failed 都属于测试环境失败；不要返回 capability_request，也不要要求激活外部工具。即使 setup_failed，也要先保存 tests.md，再在报告中写明阻塞原因。"
+_BACKSTORY += "\nDocker 镜像缺失、依赖缓存未准备或 sandbox setup_failed 都属于测试环境未就绪；不要把它报告为测试完成。控制面会持久化原始证据并将 Trace 标记为 BLOCKED，修复环境后从 checkpoint 恢复。"

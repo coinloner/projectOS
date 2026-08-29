@@ -5,9 +5,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 import re
+import os
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import Body, FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
+from dotenv import dotenv_values
 
 from app.application.runs import RunCoordinator, RunService
 from app.bootstrap.runtime import build_container
@@ -22,14 +25,24 @@ from app.memory.store import MemoryStore
 from app.sandbox.application_runner import ApplicationRunError
 from app.sandbox.controller import SandboxController
 from app.orchestration.trace import TraceStore
+from app.orchestration.progress import idle_for
 from app.planner.service import PlannerFailure
 from app.project.project import Project
 from app.project.paths import ProjectPathRegistry
 from app.runtime.startup import ensure_startup_scripts
 from app.runtime.local_status import LocalRuntimeStatusStore
+from app.skill.module import SkillModule
+from app.runtime.port_lifecycle import PortLifecycleManager
+from app.llm.config import (
+    LLMSelection,
+    available_provider_configs,
+    discover_provider_models,
+    resolve_llm_selection,
+)
 
 
 _PROJECT_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+_AGENT_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
 
 class ProjectCreateRequest(BaseModel):
@@ -42,9 +55,19 @@ class ProjectImportRequest(BaseModel):
     path: str = Field(min_length=1, max_length=1024)
 
 
+class LLMSelectionRequest(BaseModel):
+    provider: str | None = Field(default=None, min_length=1, max_length=64)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    base_url: str | None = Field(default=None, min_length=1, max_length=500)
+
+
 class StartRunRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=2000)
     workflow_id: str = Field(min_length=1, max_length=100)
+    provider: str | None = Field(default=None, min_length=1, max_length=64)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    base_url: str | None = Field(default=None, min_length=1, max_length=500)
+    llm_overrides: dict[str, LLMSelectionRequest] = Field(default_factory=dict)
 
 
 class MemoryDecisionRequest(BaseModel):
@@ -53,10 +76,27 @@ class MemoryDecisionRequest(BaseModel):
 
 class ConversationMessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
+    provider: str | None = Field(default=None, min_length=1, max_length=64)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    base_url: str | None = Field(default=None, min_length=1, max_length=500)
+    llm_overrides: dict[str, LLMSelectionRequest] = Field(default_factory=dict)
 
 
 class CapabilityApprovalRequest(BaseModel):
     source_name: str = Field(min_length=1, max_length=128)
+    scope: Literal["node", "trace", "project"] = "trace"
+
+
+class ResumeRequest(BaseModel):
+    source_name: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class AgentSkillRequest(BaseModel):
+    refs: list[str] = Field(default_factory=list, max_length=12)
+
+
+class ProjectSkillRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=16000)
 
 
 def create_app(*, projects_root: str = "./projects") -> FastAPI:
@@ -66,7 +106,11 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        coordinator = RunCoordinator()
+        try:
+            run_workers = int(os.environ.get("PROJECTOS_RUN_MAX_WORKERS", "4"))
+        except (TypeError, ValueError):
+            run_workers = 4
+        coordinator = RunCoordinator(max_workers=max(1, run_workers))
         app.state.coordinator = coordinator
         app.state.run_service = RunService(coordinator=coordinator)
         app.state.conversations = ConversationService(
@@ -86,6 +130,31 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/v1/llm/providers")
+    def list_llm_providers() -> dict[str, object]:
+        """返回 UI 可选择的非敏感模型配置，不返回任何 key 内容。"""
+        file_values = dotenv_values(".env")
+        providers = [
+            {
+                **config,
+                "key_configured": bool(
+                    os.environ.get(config["api_key_env"])
+                    or file_values.get(config["api_key_env"])
+                ),
+            }
+            for config in available_provider_configs()
+        ]
+        return {"providers": providers}
+
+    @app.get("/api/v1/llm/providers/{provider}/models")
+    def list_llm_models(provider: str) -> dict[str, object]:
+        """从 provider 动态读取模型 ID，供前端选择；不返回密钥。"""
+        try:
+            models = discover_provider_models(provider)
+        except (RuntimeError, ValueError) as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        return {"provider": provider.strip().lower(), "models": list(models)}
 
     @app.post("/api/v1/projects", status_code=status.HTTP_201_CREATED)
     def create_project(payload: ProjectCreateRequest) -> dict[str, str]:
@@ -129,12 +198,70 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             "workflows": service.controlled_workflows(str(project_path)),
         }
 
+    @app.get("/api/v1/projects/{project_id}/skills")
+    def list_project_skills(project_id: str) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        module = SkillModule(str(project_path))
+        return {
+            "project_id": project_id,
+            "skills": list(module.list_skills()),
+            "assignments": [item.as_dict() for item in module.assignments()],
+        }
+
+    @app.get("/api/v1/projects/{project_id}/agents/{agent_id}/skills")
+    def get_agent_skills(project_id: str, agent_id: str) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        container = build_container(str(project_path))
+        if container.agents.definition(agent_id) is None:
+            raise HTTPException(status_code=404, detail=f"未注册 Agent: {agent_id}")
+        module = SkillModule(str(project_path))
+        return {"project_id": project_id, "agent_id": agent_id, "refs": list(module.refs_for(agent_id))}
+
+    @app.put("/api/v1/projects/{project_id}/skills/{skill_ref}")
+    def save_project_skill(
+        project_id: str, skill_ref: str, payload: ProjectSkillRequest
+    ) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        try:
+            skill = SkillModule(str(project_path)).save_project_skill(skill_ref, payload.content)
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"project_id": project_id, "skill": skill, "status": "updated"}
+
+    @app.put("/api/v1/projects/{project_id}/agents/{agent_id}/skills")
+    def assign_agent_skills(
+        project_id: str, agent_id: str, payload: AgentSkillRequest
+    ) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        container = build_container(str(project_path))
+        if container.agents.definition(agent_id) is None:
+            raise HTTPException(status_code=404, detail=f"未注册 Agent: {agent_id}")
+        try:
+            assignment = SkillModule(str(project_path)).assign(agent_id, payload.refs)
+        except (FileNotFoundError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"project_id": project_id, **assignment.as_dict(), "status": "updated"}
+
     @app.get("/api/v1/projects/{project_id}/runtime/preflight")
     def runtime_preflight(project_id: str) -> dict[str, object]:
         project_path = _project_path(root, project_id)
+        from app.policy.quality import ProjectRuntimePreflight
+        static = ProjectRuntimePreflight().evaluate(str(project_path))
         return {
             "project_id": project_id,
             "sandbox": SandboxController().preflight(str(project_path)),
+            "project": {
+                "policy_id": static.policy_id,
+                "passed": static.passed,
+                "issues": [
+                    {
+                        "rule_id": issue.rule_id,
+                        "summary": issue.summary,
+                        "evidence_refs": list(issue.evidence_refs),
+                    }
+                    for issue in static.issues
+                ],
+            },
         }
 
     @app.get("/api/v1/projects/{project_id}/runtime/status")
@@ -144,6 +271,18 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             "project_id": project_id,
             "environment": EnvironmentProvisioner().status(str(project_path)),
             "local": LocalRuntimeStatusStore().read(str(project_path)),
+        }
+
+    @app.get("/api/v1/projects/{project_id}/runtime/ports")
+    def runtime_ports(project_id: str) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        manager = PortLifecycleManager(
+            str(project_path / ".projectos" / "runtime" / "port-leases.json")
+        )
+        return {
+            "project_id": project_id,
+            "registry": manager.registry_path,
+            "leases": [lease.as_dict() for lease in manager.active_leases()],
         }
 
     @app.get("/api/v1/projects/{project_id}/runtime/local-status")
@@ -178,12 +317,24 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
         project_path = _project_path(root, project_id)
         service: RunService = request.app.state.run_service
         try:
+            selection = (
+                resolve_llm_selection(
+                    payload.provider,
+                    model=payload.model,
+                    base_url=payload.base_url,
+                )
+                if any((payload.provider, payload.model, payload.base_url))
+                else None
+            )
+            overrides = _resolve_llm_overrides(payload.llm_overrides)
             started = service.start_controlled_workflow(
                 project_path=str(project_path),
                 goal=payload.goal,
                 workflow_id=payload.workflow_id,
+                llm_selection=selection,
+                llm_overrides=overrides,
             )
-        except PlannerFailure as error:
+        except (PlannerFailure, RuntimeError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {
             "trace_id": started.trace_id,
@@ -225,16 +376,28 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
         project_path = _project_path(root, project_id)
         service: ConversationService = request.app.state.conversations
         try:
+            selection = (
+                resolve_llm_selection(
+                    payload.provider,
+                    model=payload.model,
+                    base_url=payload.base_url,
+                )
+                if any((payload.provider, payload.model, payload.base_url))
+                else None
+            )
+            overrides = _resolve_llm_overrides(payload.llm_overrides)
             action = service.send_message(
                 project_path=str(project_path),
                 conversation_id=conversation_id,
                 content=payload.content,
+                llm_selection=selection,
+                llm_overrides=overrides,
             )
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ConversationBusy as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
-        except (PlannerFailure, ValueError) as error:
+        except (PlannerFailure, RuntimeError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {
             "intent": action.intent.value,
@@ -271,9 +434,13 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
         except (FileNotFoundError, ValueError) as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         coordinator: RunCoordinator = request.app.state.coordinator
+        progress = traces.load_progress(trace_id)
+        if progress is not None:
+            progress = {**progress, "idle_for_seconds": idle_for(progress)}
         return {
             **trace,
             "runtime_status": coordinator.status(trace_id) or trace["status"],
+            "progress": progress,
         }
 
     @app.post(
@@ -282,7 +449,7 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
     )
     def resume_run(
         project_id: str, trace_id: str, request: Request,
-        payload: CapabilityApprovalRequest | None = None,
+        payload: ResumeRequest | None = Body(default=None),
     ) -> dict[str, str]:
         project_path = _project_path(root, project_id)
         service: RunService = request.app.state.run_service
@@ -320,6 +487,7 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
                 project_path=str(project_path),
                 trace_id=trace_id,
                 source_name=payload.source_name,
+                scope=payload.scope,
             )
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
@@ -331,6 +499,7 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             "workflow_id": resumed.workflow_id,
             "status": resumed.status,
             "approved_source": payload.source_name,
+            "scope": payload.scope,
         }
 
     @app.get("/api/v1/projects/{project_id}/runs/{trace_id}/capabilities")
@@ -348,16 +517,18 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             (event for event in reversed(events) if event.get("type") == "work_item_waiting_capability"),
             None,
         )
+        from app.tool_manager.grants import CapabilityGrantStore
+        grants = [grant.as_dict() for grant in CapabilityGrantStore(str(project_path), trace_id).list(include_inactive=True)]
         if waiting is None:
-            return {"trace_id": trace_id, "status": trace.get("status"), "capabilities": [], "candidates": []}
+            return {"trace_id": trace_id, "status": trace.get("status"), "capabilities": grants, "candidates": []}
         plan = traces.load_plan(trace_id)
         item = plan.work_item(str(waiting.get("work_item_id", "")))
         if item is None:
-            return {"trace_id": trace_id, "status": trace.get("status"), "capabilities": [], "candidates": []}
+            return {"trace_id": trace_id, "status": trace.get("status"), "capabilities": grants, "candidates": []}
         container = build_container(str(project_path))
         definition = container.agents.definition(item.agent_id)
         if definition is None:
-            return {"trace_id": trace_id, "status": trace.get("status"), "capabilities": [], "candidates": []}
+            return {"trace_id": trace_id, "status": trace.get("status"), "capabilities": grants, "candidates": []}
         capability = str(waiting.get("details", {}).get("capability", ""))
         candidates = container.gateway.find_sources_for_capability(
             definition.domain, capability
@@ -369,7 +540,22 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             "capability": capability,
             "reason": waiting.get("details", {}).get("reason"),
             "candidates": [source.source_name for source in candidates],
+            "capabilities": grants,
         }
+
+    @app.post("/api/v1/projects/{project_id}/runs/{trace_id}/capabilities/{grant_id}/revoke", status_code=status.HTTP_202_ACCEPTED)
+    def revoke_run_capability(project_id: str, trace_id: str, grant_id: str) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        from app.tool_manager.grants import CapabilityGrantStore
+        try:
+            grant = CapabilityGrantStore(str(project_path), trace_id).revoke(grant_id)
+            TraceStore(str(project_path)).record_event(
+                TraceStore(str(project_path)).load_plan(trace_id).trace,
+                "control", "capability_revoked", details={"grant_id": grant_id},
+            )
+        except (FileNotFoundError, KeyError, ValueError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return {"trace_id": trace_id, "grant": grant.as_dict()}
 
     @app.get("/api/v1/projects/{project_id}/runs/{trace_id}/events")
     def get_run_events(project_id: str, trace_id: str) -> dict[str, object]:
@@ -381,6 +567,23 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
         except (FileNotFoundError, ValueError) as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         return {"trace_id": trace_id, "events": events}
+
+    @app.get("/api/v1/projects/{project_id}/runs/{trace_id}/progress")
+    def get_run_progress(project_id: str, trace_id: str) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        traces = TraceStore(str(project_path))
+        try:
+            trace = traces.load_trace(trace_id)
+        except (FileNotFoundError, ValueError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        progress = traces.load_progress(trace_id)
+        if progress is not None:
+            progress = {**progress, "idle_for_seconds": idle_for(progress)}
+        return {
+            "trace_id": trace_id,
+            "status": trace.get("status"),
+            "progress": progress,
+        }
 
     @app.get("/api/v1/projects/{project_id}/runs/{trace_id}/baseline")
     def get_run_baseline(project_id: str, trace_id: str) -> dict[str, object]:
@@ -492,7 +695,7 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
         runtime: ProjectRuntimeService = request.app.state.project_runtime
         try:
             return runtime.start(str(project_path)).as_dict()
-        except (ApplicationRunError, FileNotFoundError, ValueError) as error:
+        except (ApplicationRunError, FileNotFoundError, ValueError, TypeError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
     @app.get("/api/v1/projects/{project_id}/runtime/runs/{run_id}")
@@ -527,6 +730,25 @@ def _project_id_or_422(project_id: str) -> str:
             detail="project_id 只能包含字母、数字、下划线和连字符，且必须以字母开头",
         )
     return project_id
+
+
+def _resolve_llm_overrides(
+    payload: dict[str, LLMSelectionRequest],
+) -> dict[str, LLMSelection]:
+    if len(payload) > 16:
+        raise ValueError("每次运行最多配置 16 个 Agent 的 LLM 覆盖")
+    result: dict[str, LLMSelection] = {}
+    for agent_id, request in payload.items():
+        if not _AGENT_ID.fullmatch(agent_id):
+            raise ValueError(f"Agent ID 格式无效: {agent_id}")
+        if not any((request.provider, request.model, request.base_url)):
+            raise ValueError(f"Agent '{agent_id}' 的 LLM 覆盖不能为空")
+        result[agent_id] = resolve_llm_selection(
+            request.provider,
+            model=request.model,
+            base_url=request.base_url,
+        )
+    return result
 
 
 def _project_path(root: Path, project_id: str) -> Path:

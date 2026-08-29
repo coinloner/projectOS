@@ -14,10 +14,10 @@ class BootstrapToolSet:
     def configure_runtime(
         self,
         profile: str,
-        dependencies: str = "",
+        dependencies: str | None = None,
         application: str | None = None,
     ) -> str:
-        return self._service.configure_runtime(profile, dependencies, application)
+        return self._service.configure_runtime(profile, dependencies or "", application)
 
     def inspect_runtime(self) -> str:
         return self._service.inspect_runtime()
@@ -46,7 +46,8 @@ def register_bootstrap_tools(gateway: ToolGateway, project_path: str) -> None:
                             "声明受支持 runtime profile、可选 requirements.in 内容和可选白名单应用。"
                             "不执行依赖安装。可用 application: static-web（纯静态前端，"
                             "workspace 根目录有 index.html）、todo-web（workspace/backend + "
-                            "workspace/frontend）、fastapi-postgres（FastAPI + PostgreSQL 结构）或 "
+                            "workspace/frontend）、python-backend（纯 Python 后端，backend/http_adapter.py）、"
+                            "fastapi-postgres（FastAPI + PostgreSQL 结构）或 "
                             "fastapi-postgres-web（后端同时挂载 workspace/frontend）。"
                         ),
                         parameters={
@@ -57,7 +58,7 @@ def register_bootstrap_tools(gateway: ToolGateway, project_path: str) -> None:
                                 "application": {
                                     "type": "string",
                                     "description": (
-                                        "可选的受信应用标识（static-web / todo-web / "
+                                        "可选的受信应用标识（static-web / todo-web / python-backend / "
                                         "fastapi-postgres / fastapi-postgres-web）；与架构声明的应用形态匹配时声明，"
                                         "不确定时留空，控制面会按项目形状自动探测。"
                                     ),
@@ -95,7 +96,7 @@ def register_bootstrap_tools(gateway: ToolGateway, project_path: str) -> None:
                 (
                     ToolDef(
                         name="load_artifact",
-                        description="读取前置产物。可读取: requirement、architecture、tasks。",
+                        description="读取前置产物。可读取: requirement、architecture、architecture_contract、tasks。",
                         parameters={
                             "type": "object",
                             "properties": {"artifact": {"type": "string", "description": "前置产物标识"}},
@@ -113,6 +114,7 @@ def register_bootstrap_tools(gateway: ToolGateway, project_path: str) -> None:
                             "properties": {"content": {"type": "string", "description": "完整 Markdown 内容"}},
                             "required": ["content"],
                         },
+                        completion_policy="final",
                     ),
                     tools.save_environment,
                 ),

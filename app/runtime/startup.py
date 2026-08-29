@@ -98,6 +98,13 @@ escaped_path=$(printf '%s' "$PROJECTOS_PROJECT_PATH" | sed 's/\\\\/\\\\\\\\/g; s
 payload=$(printf '{{"name":"%s","path":"%s"}}' "$PROJECTOS_PROJECT_ID" "$escaped_path")
 curl --fail --silent --show-error -X POST "$PROJECTOS_API_URL/api/v1/projects/import" \\
   -H 'content-type: application/json' -d "$payload" >/dev/null || true
+echo "正在确认依赖审批并准备运行环境 ..."
+curl --fail --silent --show-error -X POST \\
+  "$PROJECTOS_API_URL/api/v1/projects/$PROJECTOS_PROJECT_ID/runtime/dependency-approvals/approve" \\
+  >/dev/null || {{
+  echo "依赖审批或环境准备失败，请检查 ProjectOS API 和 Docker 状态。" >&2
+  exit 1
+}}
 echo "正在通过 ProjectOS 启动项目 $PROJECTOS_PROJECT_ID ..."
 curl --fail --show-error -X POST \\
   "$PROJECTOS_API_URL/api/v1/projects/$PROJECTOS_PROJECT_ID/runtime/runs"
@@ -114,6 +121,8 @@ Invoke-RestMethod "$api/health" | Out-Null
 $payload = @{{ name = $projectId; path = $projectPath }} | ConvertTo-Json -Compress
 try {{ Invoke-RestMethod "$api/api/v1/projects/import" -Method Post -ContentType "application/json" -Body $payload | Out-Null }}
 catch {{ if ($_.Exception.Response.StatusCode.value__ -ne 409) {{ throw }} }}
+Write-Host "正在确认依赖审批并准备运行环境 ..."
+Invoke-RestMethod "$api/api/v1/projects/$projectId/runtime/dependency-approvals/approve" -Method Post | Out-Null
 Write-Host "正在通过 ProjectOS 启动项目 $projectId ..."
 Invoke-RestMethod "$api/api/v1/projects/$projectId/runtime/runs" -Method Post | ConvertTo-Json -Depth 8
 '''
@@ -135,7 +144,8 @@ exit "$status"
 def _compose_yaml(root: Path, project_id: str, application_id: str | None, profile_id: str | None) -> str:
     if not application_id or not profile_id:
         return "# ProjectOS will refresh this file after runtime.yaml declares a trusted application.\n"
-    from app.runtime.manifest import RuntimeCatalog
+    from app.runtime.manifest import RuntimeCatalog, RuntimeManifest
+    mode = RuntimeManifest.load(str(root)).mode if (root / "runtime.yaml").is_file() else "production"
 
     profile = ApplicationCatalog.get(application_id)
     runtime_image = RuntimeCatalog.get(profile_id).image
@@ -147,7 +157,7 @@ def _compose_yaml(root: Path, project_id: str, application_id: str | None, profi
             source = f"./workspace/{service.mount_dir}"
         item: dict[str, Any] = {
             "image": service.image or runtime_image,
-            "command": list(_local_command(service.command)),
+            "command": list(_local_command(service.command, mode=mode)),
             "working_dir": service.container_workdir,
             "user": service.user,
             "read_only": service.read_only,
@@ -189,12 +199,23 @@ def _compose_yaml(root: Path, project_id: str, application_id: str | None, profi
     return yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
 
 
-def _local_command(command: tuple[str, ...]) -> tuple[str, ...]:
+def _local_command(command: tuple[str, ...], *, mode: str = "production") -> tuple[str, ...]:
     if len(command) != 3 or command[0:2] != ("sh", "-ec") or "PROJECTOS_DEPENDENCY_DIR" not in command[2]:
         return command
     script = command[2]
     tail = script[script.index("if [ -f migrate.py ]"):] if "if [ -f migrate.py ]" in script else "exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    # Generated projects may keep the migration entrypoint under the
+    # operations layer (operations/migrate.sh) instead of backend/migrate.py.
+    # Keep both conventions valid in the trusted launcher; the shell script is
+    # mounted read-only and remains independently runnable.
+    if "operations/migrate.sh" not in tail:
+        tail = tail.replace(
+            "if [ -f migrate.py ]; then python migrate.py; elif [ -f init_db.py ]; then python init_db.py; fi",
+            "if [ -f migrate.py ]; then python migrate.py; elif [ -f init_db.py ]; then python init_db.py; elif [ -f /workspace/operations/migrate.sh ]; then sh /workspace/operations/migrate.sh; fi",
+        )
     install = "mkdir -p /tmp/projectos-site && python -m pip install --no-cache-dir --disable-pip-version-check -r /input/requirements.in --target /tmp/projectos-site && export PYTHONPATH=/tmp/projectos-site"
+    if mode == "development" and "uvicorn" in tail and "--reload" not in tail:
+        tail = tail.replace("--port 8000", "--port 8000 --reload", 1)
     return ("sh", "-ec", f"{install} && {tail}")
 
 
@@ -211,7 +232,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / ".projectos" / "runtime" / "local-run.json"
-CONFIG = {encoded!r}
+CONFIG = json.loads({encoded!r})
 PROJECT = os.environ.get("COMPOSE_PROJECT_NAME", "projectos-{project_id}")
 COMPOSE = ["docker", "compose", "-p", PROJECT, "-f", str(ROOT / "docker-compose.yml")]
 
@@ -237,6 +258,12 @@ def write_state(status, error=None):
 def main(command):
     if not CONFIG["application_id"]:
         print("runtime.yaml 尚未声明受信 application，请先完成环境节点。", file=sys.stderr); return 2
+    if CONFIG["application_id"] in ("fastapi-postgres", "fastapi-postgres-web"):
+        entrypoint = ROOT / "workspace" / "backend" / "app" / "main.py"
+        if not entrypoint.is_file():
+            print("FastAPI 项目缺少 workspace/backend/app/main.py，无法启动 app.main:app。", file=sys.stderr)
+            print("请重新生成后端 API 分区，或补齐该入口后再启动。", file=sys.stderr)
+            return 2
     if command == "start":
         result = run("up", "-d")
         if result.returncode: write_state("failed", "docker compose up 失败"); return result.returncode

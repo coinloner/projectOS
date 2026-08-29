@@ -15,6 +15,7 @@ from app.application.conversation_intent import ConversationIntent, classify_int
 from app.application.result_summary import ResultSummarizer
 from app.orchestration.trace import TraceStore
 from app.planner.service import PlannerFailure
+from app.llm.config import LLMSelection
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -223,6 +224,8 @@ class ConversationService:
         project_path: str,
         conversation_id: str,
         content: str,
+        llm_selection: LLMSelection | None = None,
+        llm_overrides: dict[str, LLMSelection] | None = None,
     ) -> ConversationActionResult:
         store = ConversationStore(project_path)
         conversation = store.load(conversation_id)
@@ -310,11 +313,12 @@ class ConversationService:
             )
         plan_id = f"{conversation.id}-{uuid4().hex[:8]}"
         try:
-            started = self._run_service.start_dynamic_plan(
-                project_path=project_path,
-                goal=goal,
-                plan_id=plan_id,
-            )
+            kwargs = {"project_path": project_path, "goal": goal, "plan_id": plan_id}
+            if llm_selection is not None:
+                kwargs["llm_selection"] = llm_selection
+            if llm_overrides:
+                kwargs["llm_overrides"] = llm_overrides
+            started = self._run_service.start_dynamic_plan(**kwargs)
         except PlannerFailure:
             store.append(
                 conversation_id,
@@ -322,6 +326,13 @@ class ConversationService:
                 content="Planner 无法为本轮请求生成合法执行计划。",
             )
             raise
+        except Exception as error:
+            # Provider/API failures are part of the conversation contract: the
+            # caller receives a PlannerFailure and the persisted conversation
+            # retains an actionable assistant-visible diagnostic.
+            message = f"本轮模型规划未完成：{type(error).__name__}: {error}"
+            store.append(conversation_id, role="assistant", content=message)
+            raise PlannerFailure(message) from error
         system_turn = store.append(
             conversation_id,
             role="system",

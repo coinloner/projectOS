@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from app.runtime.manifest import RuntimeManifest
 from app.runtime.application import ApplicationCatalog
 from app.sandbox.docker_provider import (
@@ -11,7 +9,7 @@ from app.sandbox.docker_provider import (
     SubprocessDockerExecutor,
     ensure_image_available,
 )
-from app.sandbox.policy import SandboxPolicy
+from app.sandbox.policy import SandboxPolicy, discover_web_tests
 from app.sandbox.result import SandboxResult, SandboxStatus
 
 
@@ -108,16 +106,5 @@ class SandboxController:
 
 
 def _has_web_tests(project_path: str) -> bool:
-    """匹配 Node --test 的默认发现约定，避免空测试集伪通过。"""
-    workspace = Path(project_path).resolve() / "workspace"
-    if not workspace.is_dir():
-        return False
-    for path in workspace.rglob("*.js"):
-        if (
-            path.name.startswith("test-")
-            or path.name.endswith(".test.js")
-            or path.name.endswith(".test.mjs")
-            or path.name.endswith("_test.js")
-        ):
-            return True
-    return False
+    """Use the same discovery contract as the command builder."""
+    return bool(discover_web_tests(project_path))

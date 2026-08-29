@@ -207,6 +207,15 @@ def apply_patch(
                 output_slot=item.output_slot,
                 publish_target=item.publish_target,
                 candidate_from_work_item_id=item.candidate_from_work_item_id,
+                implementation_unit_id=item.implementation_unit_id,
+                allowed_paths=item.allowed_paths,
+                forbidden_paths=item.forbidden_paths,
+                required_paths=item.required_paths,
+                wave=item.wave,
+                owned_files=item.owned_files,
+                policy_refs=item.policy_refs,
+                skill_refs=item.skill_refs,
+                requirement_ids=item.requirement_ids,
             )
         )
         invalidated.add(item.id)

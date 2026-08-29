@@ -248,6 +248,7 @@ class PlannerService:
         previous_plan: ExecutionPlan,
         failure: FailureSignal,
         plan_id: str,
+        repair_scope: tuple[str, ...] = (),
     ) -> PlannerResult:
         """为可信失败信号追加一段新计划，不修改已经执行过的 WorkItem。"""
         context = PlanningContext.build(
@@ -257,10 +258,12 @@ class PlannerService:
             artifacts=self._artifacts,
         )
         package = self._traces.failure_package(previous_plan.trace, failure)
+        package = replace(package, repair_scope=repair_scope)
         prompt = _repair_planning_prompt(
             context,
             previous_plan,
             package,
+            repair_scope=repair_scope,
             memory_context=self._memory_context.build(
                 trace_id=previous_plan.trace.trace_id,
                 work_item_id=None,
@@ -294,6 +297,26 @@ class PlannerService:
                     plan_id=plan_id,
                     trace=previous_plan.trace,
                 )
+                # Repair plans are append-only patches, never a fresh delivery
+                # workflow.  Integration/review/bootstrap agents cannot repair
+                # a failed test signal and their default EXCLUSIVE mode would
+                # violate their execution contracts.  Reject such drafts before
+                # they reach the Worker so the second planner attempt can fix
+                # the scope instead of producing a deterministic runtime error.
+                repair_domains = {
+                    self._agents.definition(item.agent_id).domain
+                    for item in plan.work_items
+                    if self._agents.definition(item.agent_id) is not None
+                }
+                # bootstrap is permitted for environment/setup failures; the
+                # repair plan still must never recreate integration/review or
+                # planning nodes as generic EXCLUSIVE tasks.
+                invalid_domains = repair_domains - {"bootstrap", "code", "test"}
+                if invalid_domains:
+                    invalid = ", ".join(sorted(invalid_domains))
+                    raise PlanValidationError(
+                        "修复计划不能包含 integration/review/planning Agent: " + invalid
+                    )
                 plan = self._attach_failure_package(plan, package)
                 return PlannerResult(
                     plan=plan,
@@ -306,19 +329,56 @@ class PlannerService:
                     raise PlannerFailure(
                         f"Planner 在修复计划后仍无法生成合法计划: {error}"
                     ) from error
-                prompt = _repair_prompt(context, raw_draft, str(error))
+                # 修复规划的重试必须继续携带局部修复约束。普通的
+                # ``_repair_prompt`` 只适合初始计划，会丢失“禁止 review /
+                # integration”等控制面边界，导致模型在第二次尝试再次生成
+                # 无法执行的交付节点。
+                prompt = _repair_planning_retry_prompt(
+                    context,
+                    previous_plan,
+                    package,
+                    raw_draft,
+                    str(error),
+                    repair_scope=repair_scope,
+                    memory_context=self._memory_context.build(
+                        trace_id=previous_plan.trace.trace_id,
+                        work_item_id=None,
+                        query=f"{previous_plan.goal} {failure.summary}",
+                        include_durable=True,
+                    ).as_prompt(),
+                )
         raise AssertionError("Planner repair 循环未按预期结束")
 
     def _attach_failure_package(
         self, plan: ExecutionPlan, package: FailurePackage
     ) -> ExecutionPlan:
-        work_items = tuple(
-            replace(item, failure_package=package)
-            if (definition := self._agents.definition(item.agent_id)) is not None
-            and definition.domain in {"code", "test"}
-            else item
-            for item in plan.work_items
-        )
+        work_items = []
+        for item in plan.work_items:
+            definition = self._agents.definition(item.agent_id)
+            if definition is None or definition.domain not in {"code", "test"}:
+                work_items.append(item)
+                continue
+            repair_paths = package.repair_paths or item.allowed_paths or item.required_paths
+            forbidden_rework = package.forbidden_rework or item.forbidden_paths
+            # EXCLUSIVE CodeAgent repairs must never touch tests or control-plane
+            # metadata. Keep this deterministic even when the Planner omits paths.
+            if definition.domain == "code":
+                forbidden_rework = tuple(dict.fromkeys((*forbidden_rework,
+                    "tests/**", ".projectos/**", "project.yaml", "runtime.yaml")))
+            scoped = replace(
+                package,
+                repair_paths=repair_paths,
+                forbidden_rework=forbidden_rework,
+                unsatisfied_constraints=item.acceptance_criteria,
+                satisfied_constraints=tuple(
+                    criterion for criterion in item.constraints
+                    if criterion not in item.acceptance_criteria
+                ),
+                owner_files=item.owned_files or item.required_paths,
+            )
+            if definition.domain == "code" and repair_paths:
+                item = replace(item, allowed_paths=tuple(repair_paths), forbidden_paths=tuple(forbidden_rework))
+            work_items.append(replace(item, failure_package=scoped))
         return replace(plan, work_items=work_items)
 
 
@@ -390,6 +450,7 @@ def _repair_planning_prompt(
     previous_plan: ExecutionPlan,
     package: FailurePackage,
     *,
+    repair_scope: tuple[str, ...] = (),
     memory_context: str = "",
 ) -> str:
     previous_steps = [
@@ -400,18 +461,61 @@ def _repair_planning_prompt(
         }
         for item in previous_plan.work_items
     ]
+    scope_text = (
+        "本次允许影响的局部节点：" + ", ".join(repair_scope) + "\n\n"
+        if repair_scope else ""
+    )
     return (
         "请为一次受控失败生成追加 PlanDraft JSON。\n\n"
         "失败信号（可信控制面数据）：\n"
         f"{json.dumps(package.as_planner_data(), ensure_ascii=False)}\n\n"
         "历史计划摘要（只读，不能修改或复用其 WorkItem id）：\n"
         f"{previous_steps!r}\n\n"
-        "当前可用控制面上下文：\n"
+        + scope_text
+        + "当前可用控制面上下文：\n"
         f"{context.as_prompt_json()}\n\n"
         + (f"历史会话记忆：\n{memory_context}\n\n" if memory_context else "")
         + "只输出新的 PlanDraft JSON。新步骤只能使用已注册 Agent，目标必须针对失败"
         + "进行修复或再验证；不要创建工具、修改权限、复用历史 step ref，或编写业务代码。"
+        + "修复计划只允许 code_agent、test_agent；只有 sandbox/environment 故障时才可加入 "
+        + "bootstrap_agent。禁止 code_integration_agent、review_agent、architecture_agent 和 task_agent。"
         + "修复步骤必须产生实际变更：code_agent 的修复步骤必须在 objective 中明确要求"
         + "通过 write_workspace_file 实际修改 workspace 文件；test_agent 的修复步骤必须"
         + "通过 write_test_file 修改测试。只读诊断不构成修复步骤。"
+        + "每个 steps 项的 acceptance_criteria 最多 5 条、constraints 最多 8 条、"
+        + "non_goals 最多 8 条；steps 总数最多 10 个。"
+    )
+
+
+def _repair_planning_retry_prompt(
+    context: PlanningContext,
+    previous_plan: ExecutionPlan,
+    package: FailurePackage,
+    invalid_draft: str,
+    error: str,
+    *,
+    repair_scope: tuple[str, ...] = (),
+    memory_context: str = "",
+) -> str:
+    """保留修复边界的第二次 Planner 提示。
+
+    修复计划不是普通的动态规划：它只能追加局部的环境、代码和测试步骤。
+    重试时把上一份草案和控制面校验错误作为诊断输入，但重新声明完整的
+    修复协议，避免模型因通用纠错提示而重新加入 review/integration 节点。
+    """
+    return (
+        _repair_planning_prompt(
+            context,
+            previous_plan,
+            package,
+            repair_scope=repair_scope,
+            memory_context=memory_context,
+        )
+        + "\n\n上一份修复草案（不可信，仅用于定位校验错误）：\n"
+        + invalid_draft
+        + "\n\n控制面校验错误：\n"
+        + error
+        + "\n\n请重新输出一份满足上述修复协议和 PlanDraft 数量上限的 JSON；"
+        + "每个步骤 acceptance_criteria 不超过 5 条、constraints 不超过 8 条、"
+        + "non_goals 不超过 8 条；不要保留被拒绝的 Agent。"
     )

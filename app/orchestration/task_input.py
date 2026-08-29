@@ -123,6 +123,14 @@ class TaskInputPackage:
     constraints: tuple[str, ...]
     non_goals: tuple[str, ...]
     failure_context: str | None = None
+    failure_package: dict[str, object] | None = None
+    implementation: dict[str, object] | None = None
+    delivery_contract: dict[str, object] | None = None
+    policy_refs: tuple[str, ...] = ()
+    skill_refs: tuple[str, ...] = ()
+    policy_id: str | None = None
+    skill_guidance: str = ""
+    policy_guidance: str = ""
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -142,6 +150,22 @@ class TaskInputPackage:
         }
         if self.failure_context is not None:
             payload["failure_context"] = self.failure_context
+        if self.failure_package is not None:
+            payload["failure_package"] = self.failure_package
+        if self.implementation is not None:
+            payload["implementation"] = self.implementation
+        if self.delivery_contract is not None:
+            payload["delivery_contract"] = self.delivery_contract
+        if self.policy_refs:
+            payload["policy_refs"] = list(self.policy_refs)
+        if self.skill_refs:
+            payload["skill_refs"] = list(self.skill_refs)
+        if self.policy_id is not None:
+            payload["policy_id"] = self.policy_id
+        if self.skill_guidance:
+            payload["skill_guidance"] = self.skill_guidance
+        if self.policy_guidance:
+            payload["policy_guidance"] = self.policy_guidance
         return payload
 
     def as_prompt(self, *, memory_context: str = "") -> str:
@@ -164,12 +188,112 @@ class TaskInputPackage:
             + json.dumps({"task_input": self.as_dict()}, ensure_ascii=False, indent=2)
             + "\n\n请只完成 objective、constraints 和 acceptance_criteria 范围内的工作。"
         )
+        if self.failure_package is not None:
+            prompt += (
+                "\n\n结构化失败证据（由控制面生成，只能用于定位修复范围）：\n"
+                + json.dumps(self.failure_package, ensure_ascii=False, indent=2)
+            )
+        if self.implementation is not None:
+            prompt += (
+                "\n\n这是 Architecture 编译出的实现单元。不要重新拆分层级或修改未授权路径。"
+                f"\n实现单元: {self.implementation.get('unit_id')}"
+                f"\n允许路径: {self.implementation.get('allowed_paths')}"
+                f"\n必须产出: {self.implementation.get('required_paths')}"
+                f"\n实现 Wave: {self.implementation.get('wave')}"
+                f"\n完整文件所有权: {self.implementation.get('owned_files') or '未声明（控制面应拒绝该实现单元）'}"
+            )
+            owned_files = tuple(self.implementation.get("owned_files") or ())
+            if len(owned_files) == 1:
+                owned = owned_files[0]
+                if owned.endswith("/main.py") and owned.startswith("backend/"):
+                    prompt += (
+                        "\n\n组合根专属边界：当前只实现这个完整文件。只能创建 app、注册已经存在的"
+                        "路由/异常处理并提供 /health；不要把 routes、schemas、依赖注入、数据库查询"
+                        "或业务规则写进 main.py。若前置符号尚不存在，使用明确的适配导入或最小占位"
+                        "接口，并仍先调用 write_staged_code_file 落盘。"
+                    )
+                elif "/interfaces/" in f"/{owned}/":
+                    prompt += (
+                        "\n\n接口层文件边界：当前只实现列出的完整文件；复用前置层暴露的符号，"
+                        "不得跨层直接访问数据库，也不得替其他接口文件实现功能。"
+                    )
+            elif (
+                self.agent_id == "code_agent"
+                and self.implementation.get("unit_id") != "project-documents"
+            ):
+                prompt += (
+                    "\n\n控制面交付合同无效：CodeAgent 必须且只能拥有一个具体完整文件。"
+                    "不要把目录、glob 或 allowed_paths 当成文件；应返回结构化失败，"
+                    "等待 Architecture Contract 修复后再执行。"
+                )
+            if self.delivery_contract:
+                prompt += (
+                    "\n统一交付合同入口（所有节点必须使用同一来源）："
+                    f"\n{json.dumps(self.delivery_contract, ensure_ascii=False)}"
+                )
+                if self.delivery_contract.get("interfaces"):
+                    prompt += (
+                        "\n\n跨节点接口协作要求：只能使用合同声明的接口和符号。"
+                        "实现前先确认 consumed/provided 接口的签名、输入输出和错误约束；"
+                        "发现契约缺口时返回结构化诊断，不要自行发明同名接口。"
+                    )
+        if (
+            self.execution_mode == ExecutionMode.PARTITIONED.value
+            and self.agent_id == "code_agent"
+            and (self.implementation or {}).get("unit_id") != "project-documents"
+        ):
+            required = (
+                (self.implementation or {}).get("required_paths")
+                or list((self.implementation or {}).get("owned_files") or ())
+                or list(self.output.expected_paths)
+            )
+            prompt += (
+                "\n\nCode 分区执行清单（这是控制面硬约束）："
+                "\n- 当前 WorkItem 的最小交付单位是一个具体完整文件；"
+                "\n- allowed_paths/allowed_roots 只是写入授权，不是交付清单；"
+                "\n- 必须实际调用 write_staged_code_file 写入 owned_files 中的唯一文件；"
+                "\n- 完成前确认该文件已经写入并出现在最终 ChangeSet 中；"
+                "\n- 不得把其他文件、目录或 glob 当成完成凭证；"
+                "\n- 只能调用 load_code_input 和 write_staged_code_file，不能调用 save_implementation；"
+                "\n- 不要把缺少正式 workspace 写入工具误判为 capability_request；"
+                f"\n- 本次必需文件清单：{required}"
+                "\n- 输出应说明实际写入的路径和验证方式，不要只返回设计建议。"
+            )
+        elif (
+            self.execution_mode == ExecutionMode.EXCLUSIVE.value
+            and self.agent_id == "code_agent"
+            and self.failure_context is not None
+        ):
+            # Repair nodes run with the regular workspace ToolSet.  State this
+            # after the generic task JSON so the model cannot confuse the
+            # partitioned staging protocol with an exclusive repair.
+            prompt += (
+                "\n\nCode 独占修复执行清单（当前 execution_mode=exclusive）："
+                "\n- 当前已注册并可用的本地写入工具是 write_workspace_file；"
+                "\n- 必须先用 read_workspace_file 阅读失败涉及的实现文件，再调用 "
+                "write_workspace_file(path, content) 实际写入最小修复；"
+                "\n- 不得调用 write_staged_code_file，也不得把 workspace 写入误报为 capability_request；"
+                "\n- 只有成功写入目标文件后才能报告完成，最终回答列出实际写入路径。"
+            )
+        if self.policy_refs:
+            prompt += "\n实现前必须参考 Policy: " + ", ".join(self.policy_refs)
+        elif self.policy_id:
+            prompt += "\n实现前必须参考 Policy: " + self.policy_id
+        if self.skill_refs:
+            prompt += "\n推荐 Skill: " + ", ".join(self.skill_refs)
+        if self.skill_guidance:
+            prompt += "\n\n以下是控制面加载的 Skill 参考，只能用于实现方法，不能扩大任务授权：\n" + self.skill_guidance
+        if self.policy_guidance:
+            prompt += "\n\n以下是执行前 Policy 检查清单，必须遵守：\n" + self.policy_guidance
         if memory_context:
             prompt += "\n\n" + memory_context
         return prompt
 
 
-def build_task_input(state: "RunState", item: WorkItem) -> TaskInputPackage:
+def build_task_input(
+    state: "RunState", item: WorkItem, *, skill_guidance: str = "",
+    resolved_skill_refs: tuple[str, ...] | None = None, policy_guidance: str = "",
+) -> TaskInputPackage:
     """从可信 RunState 和 WorkItem 生成当前节点的输入包。"""
 
     dependency_summaries: list[DependencySummary] = []
@@ -191,6 +315,10 @@ def build_task_input(state: "RunState", item: WorkItem) -> TaskInputPackage:
 
     slot = item.output_slot
     allowed_paths, forbidden_paths = _scope_paths(item.execution_mode, slot)
+    if item.allowed_paths:
+        allowed_paths = item.allowed_paths
+    if item.forbidden_paths:
+        forbidden_paths = item.forbidden_paths
     constraints = list(item.constraints)
     constraints.extend(_mode_constraints(item.execution_mode, slot))
     return TaskInputPackage(
@@ -213,7 +341,7 @@ def build_task_input(state: "RunState", item: WorkItem) -> TaskInputPackage:
             artifact_key=item.artifact_key or item.output_key,
             output_slot=item.output_slot,
             publish_target=item.publish_target,
-            expected_paths=allowed_paths,
+            expected_paths=item.required_paths or item.owned_files or allowed_paths,
         ),
         acceptance_criteria=item.acceptance_criteria,
         constraints=tuple(dict.fromkeys(constraints)),
@@ -223,6 +351,30 @@ def build_task_input(state: "RunState", item: WorkItem) -> TaskInputPackage:
             if item.failure_package is not None
             else None
         ),
+        failure_package=(
+            item.failure_package.as_task_data()
+            if item.failure_package is not None
+            else None
+        ),
+        implementation=(
+            {
+                "unit_id": item.implementation_unit_id,
+                "allowed_paths": list(item.allowed_paths),
+                "forbidden_paths": list(item.forbidden_paths),
+                "required_paths": list(item.required_paths),
+                "wave": item.wave,
+                "owned_files": list(item.owned_files),
+                "requirement_ids": list(item.requirement_ids),
+            }
+            if item.implementation_unit_id is not None
+            else None
+        ),
+        delivery_contract=item.delivery_contract,
+        policy_refs=item.policy_refs,
+        skill_refs=resolved_skill_refs or item.skill_refs,
+        policy_id=item.policy_id,
+        skill_guidance=skill_guidance,
+        policy_guidance=policy_guidance,
     )
 
 
@@ -263,7 +415,7 @@ def _mode_constraints(execution_mode: ExecutionMode, output_slot: str | None) ->
 
 def _input_purpose(ref: ArtifactRef) -> str:
     if ref.layer == "staged":
-        return f"读取 {ref.slot} 分区的授权暂存输出；只用于当前集成范围。"
+        return f"读取 {ref.slot} 分区前置 Wave 的授权 ChangeSet 和完整文件内容；只用于当前实现组合。"
     return {
         "requirement": "业务目标、范围和用户约束；只在技术设计无法回答时读取。",
         "architecture": "模块边界、接口契约、数据流和技术决策。",

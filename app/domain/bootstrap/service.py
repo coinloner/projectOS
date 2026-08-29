@@ -19,7 +19,7 @@ class BootstrapService:
         self._artifacts = ArtifactToolSet(
             project_path,
             output_artifact="environment",
-            readable_artifacts=("requirement", "architecture", "tasks"),
+            readable_artifacts=("requirement", "architecture", "architecture_contract", "tasks"),
         )
 
     def configure_runtime(
@@ -63,8 +63,13 @@ class BootstrapService:
 
     def prepare_environment(self) -> str:
         """通过控制平面准备白名单镜像；Agent 不获得 Docker 命令权限。"""
+        approval = self._provisioner.dependency_approval(str(self._project_path))
         result = self._provisioner.prepare(
-            str(self._project_path), dependencies_approved=False
+            str(self._project_path),
+            # The approval endpoint persists a digest-scoped decision.  Reuse
+            # that decision here so a resumed EnvironmentAgent does not lose
+            # the owner's approval and deterministically block again.
+            dependencies_approved=bool(approval.get("approved", False)),
         )
         return "\n".join(
             [
@@ -72,6 +77,9 @@ class BootstrapService:
                 f"profile={result.profile or 'none'}",
                 f"image={result.image or 'none'}",
                 f"dependencies={result.dependencies}",
+                f"attempts={result.attempts}",
+                *([f"failure_kind={result.failure_kind}"] if result.failure_kind else []),
+                *([f"recovery_actions={','.join(result.recovery_actions)}"] if result.recovery_actions else []),
                 *([f"message={result.message}"] if result.message else []),
             ]
         )

@@ -21,6 +21,16 @@ class ToolDef:
     description: str
     parameters: dict
     execution_modes: tuple[str, ...] | None = None
+    # ``final`` means a successful invocation is the node's terminal answer.
+    # ``continue`` is used for iterative tools such as file writes and reads.
+    completion_policy: str = "continue"
+
+    def __post_init__(self) -> None:
+        if self.completion_policy not in {"continue", "final"}:
+            raise ValueError(
+                f"工具 '{self.name}' 的 completion_policy 必须是 'continue' 或 'final'"
+            )
+
 
 class ToolExposure(str, Enum):
     """工具向普通 Agent 暴露时的默认策略。"""

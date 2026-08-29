@@ -33,6 +33,9 @@ class EnvironmentPreparation:
     dependencies: str = "none"
     message: str | None = None
     stderr: str = ""
+    failure_kind: str | None = None
+    attempts: int = 0
+    recovery_actions: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -101,6 +104,8 @@ class EnvironmentProvisioner:
                 self._persist(root, result)
                 return result
 
+        resolution_attempts = 0
+        resolution_actions: tuple[str, ...] = ()
         if manifest.dependencies_file:
             if not dependencies_approved and not self._has_approved_dependencies(root, manifest):
                 result = EnvironmentPreparation(
@@ -122,6 +127,8 @@ class EnvironmentProvisioner:
                 resolution = DockerDependencyResolver(self._executor).resolve(
                     str(root), approved=True
                 )
+                resolution_attempts = resolution.attempts
+                resolution_actions = resolution.recovery_actions
                 if not resolution.ok:
                     result = EnvironmentPreparation(
                         "dependency_failed",
@@ -131,6 +138,9 @@ class EnvironmentProvisioner:
                         dependencies="required",
                         message=resolution.message,
                         stderr=resolution.stderr,
+                        failure_kind=resolution.failure_kind,
+                        attempts=resolution.attempts,
+                        recovery_actions=resolution.recovery_actions,
                     )
                     self._persist(root, result)
                     return result
@@ -141,6 +151,8 @@ class EnvironmentProvisioner:
             image=profile.image,
             application=application,
             dependencies="required" if manifest.dependencies_file else "none",
+            attempts=resolution_attempts,
+            recovery_actions=resolution_actions,
         )
         self._persist(root, result)
         return result
@@ -221,6 +233,8 @@ class EnvironmentProvisioner:
 
 
 def _dependency_digest(path: Path) -> str:
+    # The digest is also used as the on-disk wheel cache key; keep it byte
+    # exact so an existing cache can be reused across process restarts.
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 

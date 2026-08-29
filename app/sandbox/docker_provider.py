@@ -44,14 +44,14 @@ class SubprocessDockerExecutor:
         except subprocess.TimeoutExpired as error:
             return CommandResult(
                 exit_code=124,
-                stdout=error.stdout or "",
-                stderr=error.stderr or "",
+                stdout=_text_output(error.stdout),
+                stderr=_text_output(error.stderr),
                 timed_out=True,
             )
         return CommandResult(
             exit_code=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
+            stdout=_text_output(result.stdout),
+            stderr=_text_output(result.stderr),
         )
 
 
@@ -71,6 +71,15 @@ def ensure_image_available(
     if listed.exit_code == 0 and image in listed.stdout.splitlines():
         return CommandResult(exit_code=0, stdout=listed.stdout)
     return listed if listed.exit_code != 0 else inspected
+
+
+def _text_output(value: object) -> str:
+    """Normalize subprocess output before it crosses the runtime API boundary."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
 
 
 class DockerSandboxProvider:
@@ -149,18 +158,21 @@ class DockerSandboxProvider:
                     f"type=bind,src={spec.dependencies_file},dst=/input/requirements.in,readonly",
                     "--mount",
                     f"type=bind,src={spec.wheel_cache},dst=/wheels,readonly",
-                    "--env",
-                    "PYTHONPATH=/site-packages",
                 ]
             )
+        # Generated backends live under workspace/backend. Keep that import
+        # root available for both unittest and pytest without exposing any
+        # host path beyond the read-only workspace mount.
+        command.extend(["--env", "PYTHONPATH=/workspace/backend:/site-packages"])
         command.append(spec.image)
         command.extend(self._fixed_command(spec))
         return command
 
     @staticmethod
     def _fixed_command(spec: SandboxSpec) -> list[str]:
-        check = list(spec.profile.checks[spec.check_id].command)
-        if not spec.dependencies_file or not spec.profile.checks[spec.check_id].install_dependencies:
+        check_spec = spec.profile.checks[spec.check_id]
+        check = list(spec.command_override or check_spec.command)
+        if not spec.dependencies_file or not check_spec.install_dependencies:
             return check
         install = (
             "python -m pip install --no-index --find-links=/wheels "

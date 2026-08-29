@@ -14,9 +14,31 @@
 ```text
 build_llm(provider=...)
   -> PROJECTOS_LLM_PROVIDER
-  -> ACTIVE_PROVIDER (默认 deepseek)
+  -> ACTIVE_PROVIDER (默认 fhl / gpt-5.6-terra)
 ```
 
-`PROJECTOS_LLM_MODEL` 与 `PROJECTOS_LLM_BASE_URL` 可以覆盖已选 provider 的预设。API Key 只从对应环境变量读取，例如 `DEEPSEEK_API_KEY`；它不会写入项目产物、Planner 上下文或 Docker Sandbox。
+API Key 只从对应环境变量读取，例如 `DEEPSEEK_API_KEY`；它不会写入项目产物、Planner 上下文或 Docker Sandbox。
+Provider 和模型由用户请求选择；`PROJECTOS_LLM_PROVIDER`、`PROJECTOS_LLM_MODEL` 和
+`PROJECTOS_LLM_BASE_URL` 仅作为旧部署的兼容默认覆盖，不再是必需配置。
+
+### 使用硅基流动
+
+硅基流动兼容 OpenAI API，可以只通过部署环境切换，不需要修改 Planner、Agent 或
+GraphRunner：
+
+```dotenv
+SILICONFLOW_API_KEY=sk-...
+```
+
+硅基流动在 CrewAI 内部使用 `openai` 兼容适配器；API Key 环境变量是
+`SILICONFLOW_API_KEY`。模型列表通过 `/api/v1/llm/providers/siliconflow/models` 动态获取，
+不会把某个模型写死为唯一选择。
+
+模型切换属于用户请求配置，不需要修改代码或 `.env`。
 
 当前配置由 Planner 和所有 Domain Agent 共享。模型切换属于部署配置，不属于 Workflow 或 Agent 规划决策。
+
+`build_llm()` 默认开启 `stream=True`（可用 `PROJECTOS_LLM_STREAM=false` 关闭）。CrewAI 的
+事件总线由编排进度监听器消费，记录 `llm_call_started`、`llm_stream_chunk`、完成和失败，
+只写 chunk 数、字节数和时间戳，不写入 token 正文。Provider 不支持 SSE 时仍可正常完成请求，
+但进度阶段会显示为 `llm_request`，由 Worker 的硬截止和空闲阈值兜底。

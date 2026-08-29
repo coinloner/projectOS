@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from threading import Barrier
 import tempfile
 from pathlib import Path
@@ -8,11 +9,17 @@ from app.agent.result import AgentResult
 from app.artifact.repository import ArtifactRef, ArtifactRepository
 from app.memory.store import MemoryStore
 from app.domain.architecture.service import ArchitectureArtifactWorkflow
-from app.orchestration.retry import FailureKind, FailurePackage, FailureSignal
+from app.orchestration.retry import FailureKind, FailurePackage, FailureSignal, RecoveryAction, RetryPolicy
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import MCPToolSource
 from app.orchestration.plan import ExecutionPlan
-from app.orchestration.runner import GraphRunner, GraphRunStatus
+from app.orchestration.runner import (
+    GraphRunner,
+    GraphRunStatus,
+    _partitioned_code_retry_prompt,
+    _refresh_review_quality_section,
+    _summarize_sandbox_evidence,
+)
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.orchestration.trace import TraceContext, TraceStore
 from app.workflow.template import (
@@ -54,6 +61,37 @@ class FakeMCPClient:
 
     def call_tool(self, name: str, arguments: dict) -> str:
         return "unused"
+
+
+class ReviewQualityRefreshTest(unittest.TestCase):
+    def test_refresh_replaces_stale_quality_appendix(self) -> None:
+        old = (
+            "# 交付审查\n\n## 审查结论\nBLOCKED\n\n"
+            "## 确定性质量检查\n```text\nstatus=failed\n```\n\n"
+            "## 阻塞问题\n旧报告"
+        )
+        refreshed = _refresh_review_quality_section(
+            old, "policy_id=project.quality.v1\nstatus=passed\nissues=0"
+        )
+        self.assertEqual(refreshed.count("## 确定性质量策略"), 1)
+        self.assertIn("status=passed", refreshed)
+        self.assertNotIn("status=failed", refreshed)
+        self.assertIn("## 审查结论\nPASS", refreshed)
+
+    def test_sandbox_summary_keeps_latest_result_per_check(self) -> None:
+        evidence = [
+            SimpleNamespace(
+                id="old", work_item_id="tests", check_id="unit", status=SimpleNamespace(value="failed"),
+                exit_code=1, created_at="2026-08-29T10:00:00Z", stdout="FAILED old", stderr="",
+            ),
+            SimpleNamespace(
+                id="new", work_item_id="repair-tests", check_id="unit", status=SimpleNamespace(value="passed"),
+                exit_code=0, created_at="2026-08-29T11:00:00Z", stdout="", stderr="",
+            ),
+        ]
+        summary = _summarize_sandbox_evidence(evidence)
+        self.assertIn("evidence_id=new", summary)
+        self.assertNotIn("evidence_id=old", summary)
 
 
 def make_node(
@@ -103,6 +141,79 @@ def plan_from_template(template: WorkflowTemplate) -> ExecutionPlan:
 
 
 class GraphRunnerTest(unittest.TestCase):
+    def test_partitioned_code_retry_prompt_is_write_first_and_compact(self) -> None:
+        item = WorkItem(
+            id="wi-code-interface-dependencies",
+            agent_id="code_agent",
+            objective="实现接口依赖文件",
+            output_key="code-interface-dependencies",
+            execution_mode=ExecutionMode.PARTITIONED,
+            output_slot="backend",
+            implementation_unit_id="u-interface-dependencies",
+            owned_files=("backend/app/interface/dependencies.py",),
+            required_paths=("backend/app/interface/dependencies.py",),
+            allowed_paths=("backend/app/interface/**",),
+            forbidden_paths=("backend/app/domain/**", ".projectos/**"),
+            input_refs=(
+                ArtifactRef.published("architecture"),
+                ArtifactRef.staged(
+                    artifact_key="code-ports",
+                    trace_id="tr-test",
+                    work_item_id="wi-code-ports",
+                    slot="backend",
+                ),
+            ),
+        )
+        prompt = _partitioned_code_retry_prompt(
+            item, failure_reason="没有生成 Git ChangeSet"
+        )
+        self.assertIn("write_staged_code_file", prompt)
+        self.assertIn("backend/app/interface/dependencies.py", prompt)
+        self.assertIn("没有生成 Git ChangeSet", prompt)
+        self.assertNotIn('"task_input"', prompt)
+        self.assertNotIn("重新设计", prompt)
+
+    def test_code_delivery_failure_has_dedicated_retry_budget(self) -> None:
+        signal = FailureSignal(FailureKind.CODE_DELIVERY_INCOMPLETE, "缺少 ChangeSet")
+        policy = RetryPolicy()
+        self.assertEqual(
+            policy.action_for(signal, total_retries=0, item_retries=0, kind_retries=0),
+            RecoveryAction.RETRY_ITEM,
+        )
+    def test_code_delivery_checks_python_syntax_and_entrypoint_symbol(self) -> None:
+        from app.orchestration.runner import GraphRunner
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "workspace" / "backend" / "app"
+            path.mkdir(parents=True)
+            (path / "main.py").write_text("from fastapi import FastAPI\n", encoding="utf-8")
+            change = SimpleNamespace(worktree_path=directory)
+            item = SimpleNamespace(
+                delivery_contract={"entrypoints": {"backend_file": "backend/app/main.py"}}
+            )
+            issues = GraphRunner._validate_delivered_content(
+                item, change, {"backend/app/main.py"}
+            )
+            self.assertIn("入口文件缺少必需符号", " ".join(issues))
+
+    def test_code_delivery_checks_declared_public_symbols(self) -> None:
+        from app.orchestration.runner import GraphRunner
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "workspace" / "backend" / "domain"
+            path.mkdir(parents=True)
+            (path / "order.py").write_text(
+                "class Order:\n    pass\n", encoding="utf-8"
+            )
+            change = SimpleNamespace(worktree_path=directory)
+            item = SimpleNamespace(
+                delivery_contract={"provided_symbols": ["Order", "Order.total"]}
+            )
+            issues = GraphRunner._validate_delivered_content(
+                item, change, {"backend/domain/order.py"}
+            )
+            self.assertIn("交付文件缺少合同声明符号", " ".join(issues))
+
     def setUp(self) -> None:
         self.tools = ToolGateway()
         self.agents = AgentRegistry()
@@ -334,7 +445,7 @@ class GraphRunnerTest(unittest.TestCase):
             self.assertIn("test_evidence_missing", result.error)
             self.assertEqual(len(created), 2)
 
-    def test_setup_failed_evidence_allows_review_to_publish_blocked_result(self) -> None:
+    def test_setup_failed_evidence_blocks_before_review(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
             traces = TraceStore(project_path)
             trace = traces.start_trace("测试环境缺失仍需交付审查")
@@ -380,8 +491,9 @@ class GraphRunnerTest(unittest.TestCase):
 
             result = GraphRunner(agents, ToolGateway(), traces=traces).run(plan)
 
-            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
-            self.assertIn("BLOCKED", result.state.artifacts["review"])
+            self.assertEqual(result.status, GraphRunStatus.BLOCKED)
+            self.assertIn("测试 sandbox 未就绪", result.error)
+            self.assertNotIn("review", result.state.artifacts)
 
     def test_test_capability_request_is_recorded_as_setup_failure(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
@@ -408,11 +520,62 @@ class GraphRunnerTest(unittest.TestCase):
 
             result = GraphRunner(agents, ToolGateway(), traces=traces).run(plan)
 
-            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+            self.assertEqual(result.status, GraphRunStatus.BLOCKED)
             evidence = traces.list_sandbox_evidence(
                 ExecutionContext(trace_id=trace.trace_id, work_item_id="test", agent_id="test_agent")
             )
             self.assertEqual(evidence[-1].status, SandboxStatus.SETUP_FAILED)
+
+    def test_code_staging_capability_request_becomes_bounded_retry(self) -> None:
+        """A hallucinated local write-tool gap must not dead-end the run."""
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("代码暂存工具误报")
+            created: list[FakeAgent] = []
+
+            def factory() -> FakeAgent:
+                agent = FakeAgent(
+                    AgentResult.needs_capability(
+                        "write_staged_code_file", "当前未提供 write_staged_code_file 工具"
+                    )
+                )
+                created.append(agent)
+                return agent
+
+            agents = AgentRegistry()
+            agents.register(
+                AgentDefinition(
+                    "code_agent", "code", "code", "implementation", max_parallel_instances=1
+                ),
+                factory=factory,
+            )
+            plan = ExecutionPlan(
+                id="code-capability-retry",
+                goal="代码暂存工具误报",
+                trace=trace,
+                work_items=(
+                    WorkItem(
+                        id="code",
+                        agent_id="code_agent",
+                        objective="写入完整文件",
+                        output_key="implementation_code",
+                        execution_mode=ExecutionMode.PARTITIONED,
+                        output_slot="backend",
+                        implementation_unit_id="unit",
+                        allowed_paths=("backend/app.py",),
+                        required_paths=("backend/app.py",),
+                        owned_files=("backend/app.py",),
+                    ),
+                ),
+            )
+            result = GraphRunner(agents, ToolGateway(), traces=traces).run(plan)
+            self.assertEqual(result.status, GraphRunStatus.FAILED)
+            self.assertEqual(len(created), 3)
+            events = traces.list_events(trace.trace_id)
+            self.assertEqual(
+                [event["type"] for event in events if event["type"] == "work_item_waiting_capability"],
+                [],
+            )
 
     def test_architecture_scopes_integrate_then_quality_gate_promotes_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
@@ -500,6 +663,7 @@ class WorkflowTemplateTest(unittest.TestCase):
         for agent_id, domain, content in (
             ("requirement_agent", "requirement", "需求文档"),
             ("architecture_agent", "architecture", "架构文档"),
+            ("architecture_contract_agent", "architecture_contract", "实现合同"),
             ("task_agent", "task", "任务清单"),
             ("bootstrap_agent", "bootstrap", "环境报告"),
             ("code_agent", "code", "实现摘要"),
@@ -523,6 +687,7 @@ class WorkflowTemplateTest(unittest.TestCase):
                     output_key={
                         "requirement_agent": "requirement",
                         "architecture_agent": "architecture",
+                        "architecture_contract_agent": "architecture_contract",
                         "task_agent": "tasks",
                         "bootstrap_agent": "environment",
                         "code_agent": "implementation",
@@ -548,30 +713,35 @@ class WorkflowTemplateTest(unittest.TestCase):
             [
                 "requirement_agent",
                 "architecture_agent",
+                "architecture_contract_agent",
                 "task_agent",
                 "task_agent",
                 "task_agent",
                 "bootstrap_agent",
-                "code_agent",
+                "code_integration_agent",
                 "test_agent",
                 "review_agent",
             ],
         )
         self.assertEqual(template.nodes[1].depends_on, ("requirement",))
+        self.assertEqual(template.nodes[2].depends_on, ("architecture",))
         self.assertEqual(
-            template.nodes[2].depends_on, ("requirement", "architecture")
+            template.nodes[3].depends_on,
+            ("requirement", "architecture", "architecture-contract"),
         )
-        self.assertEqual(template.nodes[3].depends_on, ("tasks-plan",))
-        self.assertEqual(template.nodes[4].depends_on, ("tasks-integration",))
-        self.assertEqual(
-            template.nodes[5].depends_on,
-            ("requirement", "architecture", "tasks-quality-gate"),
-        )
-        self.assertEqual(template.nodes[5].output_key, "environment")
+        self.assertEqual(template.nodes[4].depends_on, ("tasks-plan",))
+        self.assertEqual(template.nodes[5].depends_on, ("tasks-integration",))
         self.assertEqual(
             template.nodes[6].depends_on,
-            ("requirement", "architecture", "tasks-quality-gate", "environment"),
+            ("requirement", "architecture", "architecture-contract", "tasks-quality-gate"),
         )
+        self.assertEqual(template.nodes[6].output_key, "environment")
+        self.assertEqual(
+            template.nodes[7].depends_on,
+            ("architecture-contract", "tasks-quality-gate", "environment"),
+        )
+        self.assertEqual(template.nodes[7].execution_mode, ExecutionMode.INTEGRATION)
+        self.assertEqual(template.nodes[7].publish_target, "workspace")
 
     def test_template_registry_returns_template_experience(self) -> None:
         template = WorkflowTemplate(
@@ -736,6 +906,56 @@ class WorkflowTemplateTest(unittest.TestCase):
             # 重试一次仍不落盘时，修复项判定失败而不是假装完成
             self.assertEqual(result.status, GraphRunStatus.FAILED)
             self.assertEqual(len(created), 2)
+            self.assertIn("repair_no_file_change", result.error or "")
+
+    def test_repair_gate_ignores_historical_writes_for_reused_work_item(self) -> None:
+        """同一 WorkItem 跨修复轮次复用时，旧写入不能满足本轮落盘闸门。"""
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("忽略历史修复写入")
+            memory = MemoryStore(project_path)
+            memory.append(
+                trace_id=trace.trace_id,
+                role="tool",
+                event_type="tool_result",
+                content="已写入 workspace/old.py",
+                work_item_id="repair-code",
+                agent_id="code_agent",
+                tool_name="write_workspace_file",
+            )
+
+            agents = AgentRegistry()
+            agents.register(
+                AgentDefinition("code_agent", "code", "code", "implementation"),
+                factory=lambda: FakeAgent(AgentResult.completed("本轮未写入")),
+            )
+            repair_item = make_node("repair-code", agent_id="code_agent")
+            plan = ExecutionPlan(
+                id="repair-ignore-history",
+                goal="修复测试失败",
+                trace=trace,
+                work_items=(
+                    WorkItem(
+                        id=repair_item.id,
+                        agent_id=repair_item.agent_id,
+                        objective=repair_item.objective,
+                        output_key=repair_item.output_key,
+                        failure_package=FailurePackage(
+                            signal=FailureSignal(FailureKind.TEST_FAILURE, "unit failed")
+                        ),
+                    ),
+                ),
+            )
+
+            result = GraphRunner(
+                agents,
+                ToolGateway(),
+                traces=traces,
+                artifacts=ArtifactRepository(project_path),
+                memory=memory,
+            ).run(plan)
+
+            self.assertEqual(result.status, GraphRunStatus.FAILED)
             self.assertIn("repair_no_file_change", result.error or "")
 
     def test_repair_code_item_with_file_writes_completes(self) -> None:

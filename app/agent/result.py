@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import json
+import re
 
 
 class AgentStatus(str, Enum):
@@ -16,6 +17,36 @@ class CapabilityRequest:
 
     capability: str
     reason: str
+
+    def normalized(self) -> "CapabilityRequest":
+        """Return a canonical single capability id at the Agent boundary."""
+        return CapabilityRequest(normalize_capability(self.capability), self.reason.strip())
+
+
+def normalize_capability(value: str) -> str:
+    """Normalize model wording without turning a multi-capability list into an id."""
+    raw = str(value or "").strip().lower()
+    parts = [part.strip() for part in re.split(r"[,，、;；|\s]+", raw) if part.strip()]
+    if set(parts) >= {"prepare_environment", "save_environment"}:
+        return "environment_preparation"
+    # Models sometimes collapse the two local environment steps and the
+    # dependency approval into one descriptive identifier.  That is still the
+    # same control-plane capability: once dependencies are approved and the
+    # environment is ready, the checkpoint can resume without an external
+    # source.  Keep this normalization at the Agent boundary so API and runner
+    # see one canonical value.
+    if (
+        "environment" in raw
+        and ("save" in raw or "prepare" in raw)
+        and ("approval" in raw or "dependency" in raw)
+    ):
+        return "environment_preparation"
+    aliases = {
+        "save environment": "save_environment",
+        "prepare environment": "prepare_environment",
+        "external documentation": "external_documentation",
+    }
+    return aliases.get(raw, raw)
 
 
 @dataclass(frozen=True)
@@ -37,10 +68,8 @@ class AgentResult:
     def needs_capability(
         cls, capability: str, reason: str
     ) -> AgentResult:
-        return cls(
-            status=AgentStatus.NEEDS_CAPABILITY,
-            capability_request=CapabilityRequest(capability, reason),
-        )
+        return cls(status=AgentStatus.NEEDS_CAPABILITY,
+                   capability_request=CapabilityRequest(capability, reason).normalized())
 
     def __str__(self) -> str:
         """让现有 CLI 输出在迁移期间仍可直接打印结果。"""

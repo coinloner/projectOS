@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.artifact.repository import ArtifactRef
 
 if TYPE_CHECKING:
     from app.memory.store import MemoryStore
+    from app.llm.config import LLMSelection
 
 
 class ExecutionMode(str, Enum):
@@ -36,7 +37,17 @@ class ExecutionContext:
     input_refs: tuple[ArtifactRef, ...] = ()
     output_slot: str | None = None
     publish_target: str | None = None
+    allowed_paths: tuple[str, ...] = ()
+    forbidden_paths: tuple[str, ...] = ()
+    required_paths: tuple[str, ...] = ()
+    implementation_unit_id: str | None = None
     memory: "MemoryStore | None" = None
+    progress: Any | None = None
+    llm_selection: "LLMSelection | None" = None
+    owned_files: tuple[str, ...] = ()
+    # Optional per-attempt narrowing used by the control plane for bounded
+    # retries.  Empty means the normal execution-mode tool set.
+    tool_allowlist: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for field_name in ("trace_id", "work_item_id", "agent_id"):

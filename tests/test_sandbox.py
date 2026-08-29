@@ -110,6 +110,46 @@ class SandboxTest(unittest.TestCase):
         self.assertIn("node:22-alpine", command)
         self.assertEqual(command[-2:], ["node", "--test"])
 
+    def test_python_pip_selects_pytest_when_declared(self) -> None:
+        root = Path(self.project_path)
+        RuntimeManifest(
+            version=1,
+            profile="python-pip",
+            dependencies_file="requirements.in",
+        ).save(self.project_path)
+        (root / "requirements.in").write_text("pytest\n", encoding="utf-8")
+        # Policy only requires a digest-matching marker before creating a spec.
+        import hashlib
+
+        digest = hashlib.sha256((root / "requirements.in").read_bytes()).hexdigest()
+        cache = root / ".sandbox" / "wheels" / digest
+        cache.mkdir(parents=True)
+        (cache / ".projectos-ready").write_text(digest, encoding="utf-8")
+
+        spec = SandboxPolicy().create_spec(
+            project_path=self.project_path,
+            manifest=RuntimeManifest.load(self.project_path),
+            check_id="unit",
+        )
+
+        self.assertEqual(spec.command_override, ("python", "-m", "pytest", "-q"))
+
+    def test_controller_recognises_underscore_frontend_test_name(self) -> None:
+        from app.sandbox.controller import _has_web_tests
+
+        frontend_test = Path(self.project_path) / "workspace" / "tests" / "test_frontend.js"
+        frontend_test.write_text("test('ok', () => {});\n", encoding="utf-8")
+        self.assertTrue(_has_web_tests(self.project_path))
+        spec = SandboxPolicy().create_spec(
+            project_path=self.project_path,
+            manifest=RuntimeManifest.from_dict({"version": 1, "profile": "python-stdlib"}),
+            check_id="web-unit",
+        )
+        self.assertEqual(
+            spec.command_override,
+            ("node", "--test", "tests/test_frontend.js"),
+        )
+
     def test_policy_rejects_check_id_outside_profile_whitelist(self) -> None:
         manifest = RuntimeManifest.from_dict(
             {"version": 1, "profile": "python-stdlib"}
@@ -167,6 +207,52 @@ class SandboxTest(unittest.TestCase):
         self.assertIn("/input", " ".join(command))
         self.assertIn("/wheels", " ".join(command))
         self.assertNotIn("--require-hashes", command)
+
+    def test_dependency_resolver_retries_in_fresh_container_and_cleans_partial_cache(self) -> None:
+        root = Path(self.project_path)
+        RuntimeManifest(version=1, profile="python-pip", dependencies_file="requirements.in").save(self.project_path)
+        (root / "requirements.in").write_text("example==1.0.0\n", encoding="utf-8")
+        executor = FakeDockerExecutor([
+            CommandResult(exit_code=0),
+            CommandResult(exit_code=1, stderr="OSError: [Errno 28] No space left on device"),
+            CommandResult(exit_code=0),
+        ])
+        result = DockerDependencyResolver(executor).resolve(self.project_path, approved=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(len(executor.commands), 3)
+        self.assertIn("--only-binary", executor.commands[2])
+        self.assertTrue((result.cache_path / ".projectos-ready").is_file())
+
+    def test_dependency_failure_message_classifies_network_and_storage(self) -> None:
+        self.assertIn("网络连接不稳定", DockerDependencyResolver._failure_message(
+            CommandResult(exit_code=1, stderr="SSLEOFError: connection aborted")
+        ))
+        self.assertIn("临时存储空间不足", DockerDependencyResolver._failure_message(
+            CommandResult(exit_code=1, stderr="No space left on device")
+        ))
+
+    def test_dependency_recovery_uses_host_temp_after_storage_failure(self) -> None:
+        root = Path(self.project_path)
+        RuntimeManifest(version=1, profile="python-pip", dependencies_file="requirements.in").save(self.project_path)
+        (root / "requirements.in").write_text("example==1.0.0\n", encoding="utf-8")
+        executor = FakeDockerExecutor([
+            CommandResult(exit_code=0),
+            CommandResult(exit_code=1, stderr="No space left on device"),
+            CommandResult(exit_code=0),
+        ])
+        result = DockerDependencyResolver(executor).resolve(self.project_path, approved=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.attempts, 2)
+        self.assertIn("host_backed_temp", result.recovery_actions)
+        self.assertIn("type=bind", " ".join(executor.commands[2]))
+        self.assertIn("/tmp", " ".join(executor.commands[2]))
+
+    def test_dependency_failure_metadata_classifies_incompatible_requirements(self) -> None:
+        result = DockerDependencyResolver(FakeDockerExecutor([]))
+        self.assertEqual(
+            result.classify_failure(CommandResult(exit_code=1, stderr="No matching distribution found" )).value,
+            "incompatible",
+        )
 
     def test_environment_provisioner_pulls_allowlisted_image_when_missing(self) -> None:
         root = Path(self.project_path)

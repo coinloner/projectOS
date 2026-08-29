@@ -19,6 +19,7 @@ from app.orchestration.task_input import (
 )
 from app.execution_context import ExecutionContext
 from app.orchestration.evidence import SandboxEvidence
+from app.orchestration.delivery_contract import DeliveryArtifact, DeliveryContract
 from app.orchestration.trace import TraceContext, TraceStore
 from app.orchestration.work_item import (
     DependencySource,
@@ -39,6 +40,8 @@ __all__ = [
     "OutputContract",
     "RunState",
     "SandboxEvidence",
+    "DeliveryArtifact",
+    "DeliveryContract",
     "SourceCandidate",
     "TraceContext",
     "TraceStore",

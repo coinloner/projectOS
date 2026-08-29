@@ -1,9 +1,31 @@
 from crewai import Agent, Task
+from crewai.events import crewai_event_bus
 
 from app.agent.result import AgentResult, from_llm_content
 from app.llm.factory import build_llm
 from app.execution_context import ExecutionContext
 from app.tool_manager.gateway import ToolGateway
+import json
+import re
+
+
+_SERIALIZED_TOOL_CALL = re.compile(
+    r"to=functions\.([A-Za-z_][A-Za-z0-9_]*)\s+code:\s*"
+)
+_LOCAL_FALLBACK_TOOLS = frozenset(
+    {
+        "load_artifact",
+        "save_implementation",
+        "save_tests",
+        "list_workspace_files",
+        "read_workspace_file",
+        "write_workspace_file",
+        "write_test_file",
+        "write_staged_code_file",
+        "load_code_input",
+        "inspect_runtime",
+    }
+)
 
 
 class BaseAgent:
@@ -52,17 +74,30 @@ class BaseAgent:
         Agent 不参与暴露策略决策。它只从 Gateway 取得当前可用工具；Gateway
         根据 Catalog 和当前 source 授权决定工具集合。
 
-        MCP 由调用方（GraphRunner 的上层）通过 gateway.activate_source() 激活。
+        动态来源由运行时 grant 授权，并由 ExecutionContext 限定可见范围。
         当前工具不足时，Agent 返回结构化 AgentResult，而不自行连接 MCP。
         """
         if not task or not task.strip():
             raise RuntimeError("❌ task 不能为空")
 
+        # CrewAI registers a process-wide event bus.  Some provider/runtime
+        # failures can shut that bus down while the API process itself stays
+        # alive; subsequent retries would otherwise fail before an LLM call is
+        # scheduled.  Re-initialize the lazy bus only when it is already in
+        # that terminal state so normal runs keep the shared executor.
+        event_executor = getattr(crewai_event_bus, "_sync_executor", None)
+        executor_shutdown = bool(getattr(event_executor, "_shutdown", False))
+        if getattr(crewai_event_bus, "_shutting_down", False) or executor_shutdown:
+            crewai_event_bus._initialize()
+
         crew_agent = Agent(
             role=self._role,
             goal=self._goal,
             backstory=f"{self._backstory}\n\n{_LANGUAGE_PROMPT}\n\n{_CAPABILITY_REQUEST_PROMPT}",
-            llm=build_llm(),
+            # Respect the deployment/request-level stream setting.  Forcing SSE
+            # here breaks providers whose CrewAI adapter cannot parse streamed
+            # responses from some OpenAI-compatible gateways.
+            llm=build_llm(selection=getattr(context, "llm_selection", None)),
             tools=self._gateway.tools_for(self._domain, context=context),
             max_iter=self._max_iterations,
             verbose=False,
@@ -74,11 +109,85 @@ class BaseAgent:
             agent=crew_agent,
         )
 
+        progress = getattr(context, "progress", None)
+        if progress is not None:
+            progress.bind_agent(crew_agent)
         try:
+            if progress is not None and progress.cancel_requested():
+                raise RuntimeError("Worker 收到取消请求，停止提交新的 LLM 调用")
             output = crew_agent.execute_task(crew_task)
         except Exception as error:
+            if progress is not None:
+                progress.llm_failed(type("Event", (), {"error": str(error)})())
+                progress.failed(str(error))
             raise RuntimeError(f"❌ CrewAI Agent 执行失败: {error}") from error
-        return from_llm_content(str(output))
+        finally:
+            if progress is not None:
+                progress.unbind_agent()
+        if progress is not None:
+            # execute_task returning is the authoritative non-stream terminal
+            # signal when CrewAI did not emit its completed callback.
+            progress.llm_completed_from_agent_return()
+            progress.completed()
+        output_text = str(output)
+        # Some OpenAI-compatible gateways return a textual representation of
+        # CrewAI's tool-call envelope instead of dispatching the function call.
+        # Execute only the known local tools that are currently exposed by the
+        # Gateway; unauthorized or external tools are never inferred from text.
+        _execute_serialized_local_tools(output_text, self._gateway, self._domain, context)
+        return from_llm_content(output_text)
+
+
+def _execute_serialized_local_tools(
+    output: str,
+    gateway: ToolGateway,
+    domain: str,
+    context: ExecutionContext | None,
+) -> tuple[str, ...]:
+    """Replay gateway-local tool calls rendered as plain text by a provider.
+
+    This is a compatibility guard for providers that do not preserve native
+    tool-call messages. It is deliberately allow-listed and authorization
+    checked through ``gateway.tools_for``; malformed JSON and unknown tools are
+    ignored so ordinary natural-language output remains unchanged.
+    """
+    matches = tuple(_SERIALIZED_TOOL_CALL.finditer(output))
+    if not matches:
+        return ()
+    exposed = {
+        str(tool.name): tool
+        for tool in gateway.tools_for(domain, context=context)
+        if str(tool.name) in _LOCAL_FALLBACK_TOOLS
+    }
+    if not exposed:
+        return ()
+    decoder = json.JSONDecoder()
+    executed: list[str] = []
+    for match in matches:
+        name = match.group(1)
+        tool = exposed.get(name)
+        if tool is None:
+            continue
+        start = match.end()
+        while start < len(output) and output[start].isspace():
+            start += 1
+        if start >= len(output) or output[start] != "{":
+            continue
+        try:
+            arguments, _ = decoder.raw_decode(output[start:])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(arguments, dict):
+            continue
+        try:
+            tool.run(**arguments)
+        except Exception:
+            # The normal CrewAI loop would expose the tool error to the model;
+            # a textual fallback cannot continue the conversation, so leave
+            # the control-plane delivery gate to classify the missing write.
+            continue
+        executed.append(name)
+    return tuple(executed)
 
 _CAPABILITY_REQUEST_PROMPT = """\
 只使用当前提供的工具完成任务。若当前工具无法完成任务中的关键部分，且缺少的

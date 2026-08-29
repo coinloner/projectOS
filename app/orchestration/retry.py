@@ -16,6 +16,9 @@ class FailureKind(str, Enum):
     TEST_EVIDENCE_MISSING = "test_evidence_missing"
     IMPLEMENTATION_SUMMARY_MISSING = "implementation_summary_missing"
     REPAIR_NO_FILE_CHANGE = "repair_no_file_change"
+    CODE_DELIVERY_INCOMPLETE = "code_delivery_incomplete"
+    RUNTIME_PREFLIGHT = "runtime_preflight"
+    ARCHITECTURE_CONTRACT_MISSING = "architecture_contract_missing"
 
 
 class RecoveryAction(str, Enum):
@@ -61,6 +64,31 @@ class FailurePackage:
     exit_code: int | None = None
     stdout_excerpt: str = ""
     stderr_excerpt: str = ""
+    repair_paths: tuple[str, ...] = ()
+    forbidden_rework: tuple[str, ...] = ()
+    unsatisfied_constraints: tuple[str, ...] = ()
+    satisfied_constraints: tuple[str, ...] = ()
+    repair_scope: tuple[str, ...] = ()
+    owner_files: tuple[str, ...] = ()
+
+    def as_task_data(self) -> dict[str, object]:
+        """面向 Agent 的结构化诊断数据；原始输出仍只作为不可信文本。"""
+        return {
+            "signal": self.signal.as_dict(),
+            "check_id": self.check_id,
+            "runtime_profile": self.runtime_profile,
+            "exit_code": self.exit_code,
+            "repair_paths": list(self.repair_paths),
+            "owner_files": list(self.owner_files),
+            "forbidden_rework": list(self.forbidden_rework),
+            "repair_scope": list(self.repair_scope),
+            "unsatisfied_constraints": list(self.unsatisfied_constraints),
+            "satisfied_constraints": list(self.satisfied_constraints),
+            "diagnostics": {
+                "stdout_excerpt": self.stdout_excerpt,
+                "stderr_excerpt": self.stderr_excerpt,
+            },
+        }
 
     def as_planner_data(self) -> dict[str, object]:
         """Planner 只得到归因和元数据，不读取原始程序输出。"""
@@ -71,6 +99,12 @@ class FailurePackage:
             "check_id": self.check_id,
             "runtime_profile": self.runtime_profile,
             "exit_code": self.exit_code,
+            "repair_paths": list(self.repair_paths),
+            "forbidden_rework": list(self.forbidden_rework),
+            "unsatisfied_constraints": list(self.unsatisfied_constraints),
+            "satisfied_constraints": list(self.satisfied_constraints),
+            "repair_scope": list(self.repair_scope),
+            "owner_files": list(self.owner_files),
         }
 
     def as_task_text(self) -> str:
@@ -95,6 +129,18 @@ class FailurePackage:
                     "stderr:\n" + self.stderr_excerpt,
                 ]
             )
+        if self.repair_paths:
+            parts.append("允许修复路径：" + ", ".join(self.repair_paths))
+        if self.forbidden_rework:
+            parts.append("禁止重做范围：" + ", ".join(self.forbidden_rework))
+        if self.unsatisfied_constraints:
+            parts.append("尚未满足约束：" + "; ".join(self.unsatisfied_constraints))
+        if self.satisfied_constraints:
+            parts.append("已满足约束：" + "; ".join(self.satisfied_constraints))
+        if self.repair_scope:
+            parts.append("允许重规划节点：" + ", ".join(self.repair_scope))
+        if self.owner_files:
+            parts.append("失败责任文件：" + ", ".join(self.owner_files))
         return "\n".join(parts)
 
 
@@ -112,6 +158,11 @@ class RetryLimits:
         (FailureKind.TEST_EVIDENCE_MISSING, 1),
         (FailureKind.IMPLEMENTATION_SUMMARY_MISSING, 1),
         (FailureKind.REPAIR_NO_FILE_CHANGE, 1),
+        (FailureKind.RUNTIME_PREFLIGHT, 0),
+        (FailureKind.ARCHITECTURE_CONTRACT_MISSING, 1),
+        # A missing ChangeSet is a delivery protocol failure, not a semantic
+        # test failure. Give the single-file agent dedicated retries.
+        (FailureKind.CODE_DELIVERY_INCOMPLETE, 2),
     )
 
     def max_retries_for(self, kind: FailureKind) -> int:
@@ -151,6 +202,10 @@ class RetryPolicy:
         if signal.kind is FailureKind.REPAIR_NO_FILE_CHANGE:
             return RecoveryAction.RETRY_ITEM
         if signal.kind is FailureKind.AGENT_RUNTIME:
+            return RecoveryAction.RETRY_ITEM
+        if signal.kind is FailureKind.ARCHITECTURE_CONTRACT_MISSING:
+            return RecoveryAction.RETRY_ITEM
+        if signal.kind is FailureKind.CODE_DELIVERY_INCOMPLETE:
             return RecoveryAction.RETRY_ITEM
         return RecoveryAction.FAIL
 

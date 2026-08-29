@@ -11,6 +11,7 @@ class ArtifactStore:
     _FILENAMES = {
         "requirement": "requirement.md",
         "architecture": "architecture.md",
+        "architecture_contract": ".projectos/architecture/project-contract.json",
         "tasks": "tasks.md",
         "implementation": "implementation.md",
         "environment": "environment.md",
@@ -33,13 +34,20 @@ class ArtifactStore:
 
     def load(self, artifact: str) -> str:
         path = self._path_for(artifact)
+        if artifact == "architecture_contract" and not path.exists():
+            legacy = self._project_path / ".projectos/architecture/implementation-contract.json"
+            if legacy.exists():
+                path = legacy
         if not path.exists():
             return f"（尚未创建 {self._FILENAMES[artifact]}）"
         return path.read_text(encoding="utf-8")
 
     def exists(self, artifact: str) -> bool:
         """返回已知产物是否已落盘，不读取内容。"""
-        return self._path_for(artifact).exists()
+        path = self._path_for(artifact)
+        if artifact == "architecture_contract" and not path.exists():
+            return (self._project_path / ".projectos/architecture/implementation-contract.json").exists()
+        return path.exists()
 
     @classmethod
     def filename_for(cls, artifact: str) -> str:

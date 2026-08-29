@@ -1,6 +1,14 @@
 """ArchitectureAgent 的工具合同。"""
 
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from pydantic import ValidationError
+
 from app.domain.architecture.service import ArchitectureArtifactWorkflow, ArchitectureService
+from app.domain.architecture.contract_input import ProjectContractInput
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import ExecutionToolSetSource, ToolDef, ToolSetSource
 
@@ -17,11 +25,27 @@ class ArchitectureToolSet:
     def save_architecture(self, content: str) -> str:
         return self._service.save_architecture(content)
 
-    def save_layer_contract(self, content: str) -> str:
-        return self._service.save_layer_contract(content)
+    def save_implementation_contract(self, contract: dict[str, Any]) -> str:
+        return _save_contract(self._service, contract)
 
-    def load_layer_contract(self) -> str:
-        return self._service.load_layer_contract()
+    def load_project_contract(self) -> str:
+        return self._service.load_implementation_contract()
+
+
+class ArchitectureContractToolSet:
+    """ArchitectureContractAgent 的架构读取和合同写入能力。"""
+
+    def __init__(self, service: ArchitectureService) -> None:
+        self._service = service
+
+    def load_architecture(self) -> str:
+        return self._service.load_architecture()
+
+    def load_requirement(self) -> str:
+        return self._service.load_requirement()
+
+    def save_implementation_contract(self, contract: dict[str, Any]) -> str:
+        return _save_contract(self._service, contract)
 
 
 def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None:
@@ -62,12 +86,63 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                             "required": ["content"],
                         },
                         execution_modes=("exclusive",),
+                        completion_policy="final",
                     ),
                     tools.save_architecture,
                 ),
             ]
         ),
     )
+
+    contract_tools = ArchitectureContractToolSet(ArchitectureService(project_path))
+    gateway.register_toolset(
+        domain="architecture_contract",
+        name="contract_artifacts",
+        toolset=ToolSetSource(
+            [
+                (
+                    ToolDef(
+                        name="load_architecture",
+                        description="读取已发布的 architecture.md，供实现合同编译使用。",
+                        parameters={"type": "object", "properties": {}},
+                        execution_modes=("exclusive",),
+                    ),
+                    contract_tools.load_architecture,
+                ),
+                (
+                    ToolDef(
+                        name="load_requirement",
+                        description="读取 requirement.md 中的 AC 编号，供实现合同建立可追踪映射。",
+                        parameters={"type": "object", "properties": {}},
+                        execution_modes=("exclusive",),
+                    ),
+                    contract_tools.load_requirement,
+                ),
+                (
+                    ToolDef(
+                        name="save_implementation_contract",
+                        description=(
+                            "保存经过控制面校验的唯一 Project Contract。contract 必须是结构化对象，"
+                            "层级使用 layers 数组对象表达，不要传 JSON 字符串。"
+                        ),
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "contract": ProjectContractInput.model_json_schema(),
+                            },
+                            "required": ["contract"],
+                            "additionalProperties": False,
+                        },
+                        execution_modes=("exclusive",),
+                        completion_policy="final",
+                    ),
+                    contract_tools.save_implementation_contract,
+                ),
+            ]
+        ),
+    )
+
+
     workflow = ArchitectureArtifactWorkflow(project_path)
     gateway.register_toolset(
         domain="architecture",
@@ -101,6 +176,7 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                             "additionalProperties": False,
                         },
                         execution_modes=("partitioned",),
+                        completion_policy="final",
                     ),
                     workflow.write_staged,
                 ),
@@ -115,9 +191,85 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                             "additionalProperties": False,
                         },
                         execution_modes=("integration",),
+                        completion_policy="final",
                     ),
                     workflow.create_candidate,
                 ),
             ]
         ),
     )
+
+
+def _save_contract(service: ArchitectureService, contract: dict[str, Any]) -> str:
+    """Return machine-readable success/failure while keeping validation atomic."""
+
+    # ToolDef exposes a single named argument; the domain service receives the
+    # contract object itself.  Keeping this unwrap at the adapter boundary means
+    # callers cannot accidentally persist an envelope as the canonical object.
+    if isinstance(contract, dict) and set(contract) == {"contract"}:
+        contract = contract["contract"]
+    try:
+        result = service.save_implementation_contract(contract)
+    except ValidationError as error:
+        return json.dumps(
+            {
+                "ok": False,
+                "error_type": "contract_schema",
+                "errors": [_validation_error_item(item) for item in error.errors()],
+            },
+            ensure_ascii=False,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        return json.dumps(
+            {
+                "ok": False,
+                "error_type": "contract_validation",
+                "errors": [_semantic_error_item(contract, str(error))],
+            },
+            ensure_ascii=False,
+        )
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return json.dumps({"ok": True, "message": str(result)}, ensure_ascii=False)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _validation_error_item(error: dict[str, Any]) -> dict[str, Any]:
+    location = error.get("loc", ())
+    path = ""
+    for part in location:
+        path += f"[{part}]" if isinstance(part, int) else ("." if path else "") + str(part)
+    item: dict[str, Any] = {
+        "path": path or "$",
+        "code": str(error.get("type", "invalid")),
+        "message": str(error.get("msg", "输入不合法")),
+    }
+    if "input" in error and isinstance(error["input"], (str, int, float, bool, type(None))):
+        item["value"] = error["input"]
+    return item
+
+
+def _semantic_error_item(contract: Any, message: str) -> dict[str, Any]:
+    """Attach a useful JSON path to cross-field parser errors when possible."""
+
+    path = "$"
+    text = message.lower()
+    if "owner_unit" in text or "owner_unit" in message:
+        interfaces = contract.get("interfaces", []) if isinstance(contract, dict) else []
+        units = {
+            str(item.get("unit_id"))
+            for item in (contract.get("implementation_units", []) if isinstance(contract, dict) else [])
+            if isinstance(item, dict)
+        }
+        for index, interface in enumerate(interfaces):
+            if isinstance(interface, dict) and interface.get("owner_unit") not in units:
+                path = f"interfaces[{index}].owner_unit"
+                break
+    elif "重复 unit_id" in message:
+        path = "implementation_units"
+    elif "重复 interface_id" in message:
+        path = "interfaces"
+    elif "循环依赖" in message:
+        path = "implementation_units[].depends_on"
+    return {"path": path, "code": "semantic_invalid", "message": message}

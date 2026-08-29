@@ -9,10 +9,17 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
+from contextlib import contextmanager
 from threading import RLock
 from uuid import uuid4
+
+try:  # pragma: no cover - Windows fallback keeps the JSONL usable
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 from app.memory.index import MemoryIndex
 from app.memory.vector import EmbeddingProvider, MemoryVectorIndex
@@ -159,37 +166,48 @@ class MemoryStore:
     ) -> MemoryEvent:
         _validate_id("trace id", trace_id)
         with self._lock:
-            events = self._read(trace_id)
-            event = MemoryEvent(
-                id=f"mem-{uuid4().hex[:12]}",
-                trace_id=trace_id,
-                sequence=len(events) + 1,
-                role=role,
-                content=_clip(content),
-                event_type=event_type,
-                work_item_id=work_item_id,
-                agent_id=agent_id,
-                attempt=attempt,
-                tool_name=tool_name,
-                source_refs=source_refs,
-                metadata=metadata or {},
-                created_at=_now(),
-                tier=tier,
-                lifecycle=lifecycle,
-                expires_at=expires_at,
-                retrieval_enabled=(
-                    tier != "temporary"
-                    and _default_retrieval_enabled(role, event_type)
-                    if retrieval_enabled is None
-                    else retrieval_enabled
-                ),
-            )
-            path = self._path(trace_id)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(event.as_dict(), ensure_ascii=False) + "\n")
-            self._index.sync((event,))
-            return event
+            # RLock only serializes threads in one Worker. The sidecar lock
+            # serializes append/read access across API and Worker processes.
+            with self._trace_lock(trace_id, exclusive=True):
+                events = self._read_unlocked(trace_id)
+                event = MemoryEvent(
+                    id=f"mem-{uuid4().hex[:12]}",
+                    trace_id=trace_id,
+                    sequence=len(events) + 1,
+                    role=role,
+                    content=_clip(content),
+                    event_type=event_type,
+                    work_item_id=work_item_id,
+                    agent_id=agent_id,
+                    attempt=attempt,
+                    tool_name=tool_name,
+                    source_refs=source_refs,
+                    metadata=metadata or {},
+                    created_at=_now(),
+                    tier=tier,
+                    lifecycle=lifecycle,
+                    expires_at=expires_at,
+                    retrieval_enabled=(
+                        tier != "temporary"
+                        and _default_retrieval_enabled(role, event_type)
+                        if retrieval_enabled is None
+                        else retrieval_enabled
+                    ),
+                )
+                path = self._path(trace_id)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(event.as_dict(), ensure_ascii=False) + "\n")
+                    stream.flush()
+                    # A checkpoint/event is only acknowledged after its bytes
+                    # reach the OS, so a killed Worker cannot acknowledge a
+                    # record that was never durable.
+                    try:
+                        os.fsync(stream.fileno())
+                    except OSError:
+                        pass
+                self._index.sync((event,))
+                return event
 
     def events(
         self,
@@ -489,11 +507,13 @@ class MemoryStore:
         `source_refs`，后续可以替换为经过校验的 LLM 摘要器。
         """
         all_events = self._read(trace_id)
+        suppressed = self._suppressed_ids(all_events)
         previous = [
             event
             for event in all_events
             if event.event_type == "run_summary"
             and event.lifecycle == "active"
+            and event.id not in suppressed
         ]
         for event in previous:
             self.supersede(event.id, trace_id=trace_id)
@@ -558,14 +578,46 @@ class MemoryStore:
         return self._root / trace_id / "memory.jsonl"
 
     def _read(self, trace_id: str) -> list[MemoryEvent]:
+        with self._trace_lock(trace_id, exclusive=False):
+            return self._read_unlocked(trace_id)
+
+    def _read_unlocked(self, trace_id: str) -> list[MemoryEvent]:
         path = self._path(trace_id)
         if not path.is_file():
             return []
-        return [
-            MemoryEvent.from_dict(json.loads(line))
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        lines = path.read_text(encoding="utf-8").splitlines()
+        events: list[MemoryEvent] = []
+        for index, line in enumerate(lines):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                # A process can be killed between write() and the newline.
+                # Under the trace lock this can only be a stale final record;
+                # ignore that incomplete tail and keep all prior events usable.
+                if index == len(lines) - 1:
+                    break
+                raise
+            events.append(MemoryEvent.from_dict(payload))
+        return events
+
+    @contextmanager
+    def _trace_lock(self, trace_id: str, *, exclusive: bool):
+        """Coordinate JSONL reads and writes across independent Workers."""
+        path = self._path(trace_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_name("memory.jsonl.lock")
+        handle = lock_path.open("a+", encoding="utf-8")
+        try:
+            if fcntl is not None:
+                operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                fcntl.flock(handle.fileno(), operation)
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
 
     def _all_events(self) -> list[MemoryEvent]:
         events: list[MemoryEvent] = []

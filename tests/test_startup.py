@@ -9,20 +9,24 @@ from app.runtime.startup import ensure_startup_scripts
 
 
 class StartupScriptTest(unittest.TestCase):
-    def test_generates_cross_platform_scripts_using_control_plane_api(self) -> None:
+    def test_generates_independent_and_managed_cross_platform_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             shell, powershell = ensure_startup_scripts(directory, project_id="demo")
             self.assertTrue(shell.is_file())
             self.assertTrue(powershell.is_file())
             self.assertTrue(os.stat(shell).st_mode & stat.S_IXUSR)
             shell_text = shell.read_text(encoding="utf-8")
-            self.assertIn("/api/v1/projects/$PROJECTOS_PROJECT_ID/runtime/runs", shell_text)
-            self.assertIn("/api/v1/projects/import", shell_text)
+            self.assertIn("local_runtime.py", shell_text)
+            self.assertNotIn("curl --fail", shell_text)
             self.assertNotIn("docker run", shell_text)
             ps_text = powershell.read_text(encoding="utf-8")
-            self.assertIn("/runtime/runs", ps_text)
+            self.assertIn("local_runtime.py", ps_text)
             self.assertNotIn("docker run", ps_text)
-            self.assertTrue((Path(directory) / "start-managed.sh").is_file())
+            managed = Path(directory) / "start-managed.sh"
+            self.assertTrue(managed.is_file())
+            self.assertIn("/api/v1/projects/import", managed.read_text(encoding="utf-8"))
+            self.assertIn("dependency-approvals/approve", managed.read_text(encoding="utf-8"))
+            self.assertTrue((Path(directory) / "start-managed.ps1").is_file())
             self.assertTrue((Path(directory) / "start.command").is_file())
             self.assertTrue((Path(directory) / "docker-compose.yml").is_file())
             self.assertTrue((Path(directory) / ".projectos" / "local_runtime.py").is_file())

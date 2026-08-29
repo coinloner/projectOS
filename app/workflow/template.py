@@ -29,6 +29,13 @@ class TaskBlueprint:
     acceptance_criteria: tuple[str, ...] = ()
     constraints: tuple[str, ...] = ()
     non_goals: tuple[str, ...] = ()
+    implementation_unit_id: str | None = None
+    allowed_paths: tuple[str, ...] = ()
+    forbidden_paths: tuple[str, ...] = ()
+    required_paths: tuple[str, ...] = ()
+    owned_files: tuple[str, ...] = ()
+    policy_refs: tuple[str, ...] = ()
+    skill_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for field_name in ("id", "agent_id", "objective", "output_key"):
@@ -39,6 +46,18 @@ class TaskBlueprint:
             value = getattr(self, field_name)
             if value is not None and not value.strip():
                 raise ValueError(f"TaskBlueprint.{field_name} 不能是空字符串")
+        if self.implementation_unit_id is not None and not self.implementation_unit_id.strip():
+            raise ValueError("TaskBlueprint.implementation_unit_id 不能是空字符串")
+        for field_name in ("allowed_paths", "forbidden_paths", "required_paths", "owned_files", "policy_refs", "skill_refs"):
+            if any(not value.strip() for value in getattr(self, field_name)):
+                raise ValueError(f"TaskBlueprint.{field_name} 不能包含空字符串")
+        if self.agent_id == "code_agent":
+            for path in self.owned_files:
+                normalized = path.replace("\\", "/").strip()
+                if normalized.endswith("/") or any(token in normalized for token in ("*", "?", "[", "]")):
+                    raise ValueError(
+                        "TaskBlueprint.owned_files 必须是具体文件路径；目录/glob 只能用于 allowed_paths"
+                    )
         if any(not value.strip() for value in self.input_artifacts):
             raise ValueError("TaskBlueprint.input_artifacts 不能包含空字符串")
         if any(not value.strip() for value in self.input_from):

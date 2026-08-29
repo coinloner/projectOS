@@ -5,7 +5,6 @@ from app.execution_context import ExecutionContext, ExecutionMode
 from app.domain.code.git_service import GitCodeIntegrationService, GitCodeStagingService
 from app.runtime.state import runtime_snapshot
 from app.workspace.toolset import CodeWorkspaceToolSet
-from app.domain.architecture.layer_contract import LayerContractStore
 
 
 class CodeService:
@@ -16,7 +15,12 @@ class CodeService:
         self._artifacts = ArtifactToolSet(
             project_path,
             output_artifact="implementation",
-            readable_artifacts=("requirement", "architecture", "tasks", "environment"),
+            # 修复节点需要保留既有实现摘要中的历史凭证；这只增加只读权限，
+            # 不改变 workspace 写入边界，也不会让分区节点看到该工具。
+            readable_artifacts=(
+                "requirement", "architecture", "architecture_contract", "tasks",
+                "environment", "implementation",
+            ),
         )
         self._workspace = CodeWorkspaceToolSet(project_path, read_char_limit=4_000)
 
@@ -37,10 +41,6 @@ class CodeService:
 
     def inspect_runtime(self) -> str:
         return runtime_snapshot(self._project_path).as_text()
-
-    def load_layer_contract(self) -> str:
-        import json
-        return json.dumps(LayerContractStore(self._project_path).load().as_dict(), ensure_ascii=False, indent=2)
 
 
 class CodeStagingService:
@@ -66,9 +66,8 @@ class CodeStagingService:
     def load_baseline(self, trace_id: str) -> str:
         return self._service.load_baseline(trace_id)
 
-    def load_layer_contract(self) -> str:
-        import json
-        return json.dumps(LayerContractStore(self._project_path).load().as_dict(), ensure_ascii=False, indent=2)
+    def refresh_baseline(self, trace_id: str, *, integrated_commits: tuple[str, ...] = ()) -> str:
+        return self._service.refresh_baseline(trace_id, integrated_commits=integrated_commits)
 
 
 class CodeIntegrationService:
@@ -77,7 +76,24 @@ class CodeIntegrationService:
     def __init__(self, project_path: str) -> None:
         self._service = GitCodeIntegrationService(project_path)
 
-    def integrate(self, context: ExecutionContext) -> str:
+    def review_evidence(self, context: ExecutionContext) -> str:
+        return self._service.review_evidence(context)
+
+    def integrate(self, context: ExecutionContext, *, review: object | None = None) -> str:
         if context.execution_mode is not ExecutionMode.INTEGRATION:
             raise PermissionError("代码合并只能由 INTEGRATION 节点执行")
-        return self._service.integrate(context)
+        return self._service.integrate(context, review=review)
+
+    def integrate_wave(self, context: ExecutionContext) -> str:
+        if context.execution_mode is not ExecutionMode.INTEGRATION:
+            raise PermissionError("Wave 合并只能由 INTEGRATION 控制面执行")
+        return self._service.integrate(
+            context, publish_summary=False, refresh_baseline=True
+        )
+
+    def record_review(self, context: ExecutionContext, review: object) -> None:
+        self._service.record_review(context, review)
+
+    @staticmethod
+    def _validate_local_imports(integration):
+        return GitCodeIntegrationService._validate_local_imports(integration)

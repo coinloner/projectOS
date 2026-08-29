@@ -2,13 +2,34 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.policy.quality import ProjectQualityPolicy
+from app.policy.quality import ProjectQualityPolicy, _evaluate_project_contract
 from app.runtime.manifest import RuntimeManifest
 from app.runtime.startup import ensure_startup_scripts
-from app.domain.architecture.layer_contract import LayerContractStore
+from app.domain.architecture.implementation_contract import ImplementationContract, ProjectContractStore
 
 
 class ProjectQualityPolicyTest(unittest.TestCase):
+    @staticmethod
+    def _contract(*, required_test_types=()):
+        return ImplementationContract.parse({
+            "schema_version": 1,
+            "entrypoints": {"backend_file": "backend/app/main.py"},
+            "layers": ["api", "operations", "domain"],
+            "allowed_dependencies": {"api": [], "operations": [], "domain": []},
+            "path_mapping": {
+                "api": ["backend/app/api/**"],
+                "operations": ["backend/app/operations/**"],
+                "domain": ["backend/app/domain/**"],
+            },
+            "required_test_types": list(required_test_types),
+            "implementation_units": [{
+                "unit_id": "domain-file",
+                "layer": "domain",
+                "objective": "领域文件",
+                "allowed_paths": ["backend/app/domain/**"],
+            }],
+        })
+
     def test_architecture_contract_is_validated_and_saved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             content = {
@@ -20,7 +41,14 @@ class ProjectQualityPolicyTest(unittest.TestCase):
                 "path_mapping": {"api": ["workspace/backend/api/**"], "domain": ["workspace/backend/domain/**"]},
             }
             import json
-            store = LayerContractStore(directory)
+            content["implementation_units"] = [{
+                "unit_id": "domain-file",
+                "layer": "domain",
+                "objective": "领域文件",
+                "allowed_paths": ["backend/domain/**"],
+                "owned_files": ["backend/domain/entities.py"],
+            }]
+            store = ProjectContractStore(directory)
             store.save(json.dumps(content))
             self.assertEqual(store.load().layers, ("api", "domain"))
     def test_web_backend_without_application_layer_is_rejected(self) -> None:
@@ -52,6 +80,41 @@ class ProjectQualityPolicyTest(unittest.TestCase):
             tests.mkdir(parents=True)
             (tests / "test_smoke.py").write_text("", encoding="utf-8")
             self.assertTrue(ProjectQualityPolicy().evaluate(directory).passed)
+
+    def test_declared_entrypoints_and_worker_wrapper_are_effective_layer_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            (workspace / "backend" / "app").mkdir(parents=True)
+            (workspace / "backend" / "app" / "main.py").write_text("", encoding="utf-8")
+            (workspace / "backend" / "worker.py").write_text("", encoding="utf-8")
+            (workspace / "backend" / "extra.py").write_text("", encoding="utf-8")
+            issues = _evaluate_project_contract(workspace, self._contract())
+            boundaries = [
+                issue.summary for issue in issues if issue.rule_id == "project.layer_path_boundary"
+            ]
+            self.assertEqual(len(boundaries), 1)
+            self.assertIn("backend/extra.py", boundaries[0])
+
+    def test_postgresql_and_concurrency_evidence_uses_paths_and_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            test_dir = workspace / "tests" / "infrastructure"
+            test_dir.mkdir(parents=True)
+            (test_dir / "test_postgresql.py").write_text(
+                "import asyncpg\nDATABASE_URL = 'postgresql://example'\n",
+                encoding="utf-8",
+            )
+            concurrency_dir = workspace / "tests" / "concurrency"
+            concurrency_dir.mkdir(parents=True)
+            (concurrency_dir / "test_inventory.py").write_text(
+                "asyncio.gather(worker_a(), worker_b())\n",
+                encoding="utf-8",
+            )
+            issues = _evaluate_project_contract(
+                workspace,
+                self._contract(required_test_types=("postgresql_integration", "concurrency")),
+            )
+            self.assertFalse(any(issue.rule_id == "project.required_test_type_missing" for issue in issues))
 
 
 if __name__ == "__main__":

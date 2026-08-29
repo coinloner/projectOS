@@ -92,6 +92,7 @@ def register_review_tools(
                             "properties": {"content": {"type": "string", "description": "完整 Markdown 内容"}},
                             "required": ["content"],
                         },
+                        completion_policy="final",
                     ),
                     tools.save_review,
                 ),

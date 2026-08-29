@@ -118,11 +118,11 @@ class PlanValidator:
                     dict.fromkeys(
                         [*step.constraints]
                         + ([
-                            "遵守 Layer Contract 分层: "
-                            + ",".join(context.layer_contract.layers)
+                            "遵守 Project Contract 分层: "
+                            + ",".join(context.project_contract.layers)
                             + "；测试覆盖: "
-                            + ",".join(context.layer_contract.required_test_types)
-                        ] if context.layer_contract.exists else [])
+                            + ",".join(context.project_contract.required_test_types)
+                        ] if context.project_contract.exists else [])
                     )
                 ),
                 non_goals=tuple(step.non_goals),

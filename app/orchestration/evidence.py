@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 
 from app.execution_context import ExecutionContext
 from app.sandbox.result import SandboxResult, SandboxStatus
+from uuid import uuid4
 
 
 @dataclass(frozen=True)
@@ -74,3 +75,29 @@ class SandboxEvidence:
         if self.stderr:
             parts.append("stderr:\n" + self.stderr)
         return "\n".join(parts)
+
+
+@dataclass(frozen=True)
+class RuntimeEvidence:
+    """控制面阶段证据，统一记录环境、构建、迁移、启动和健康检查。"""
+
+    id: str
+    trace_id: str
+    phase: str
+    status: str
+    work_item_id: str | None = None
+    exit_code: int | None = None
+    duration_ms: int = 0
+    command: tuple[str, ...] = ()
+    stdout: str = ""
+    stderr: str = ""
+    message: str | None = None
+
+    @classmethod
+    def create(cls, *, trace_id: str, phase: str, status: str, **kwargs: object) -> "RuntimeEvidence":
+        return cls(id=f"rev-{uuid4().hex[:12]}", trace_id=trace_id, phase=phase, status=status, **kwargs)
+
+    def as_dict(self) -> dict[str, object]:
+        payload = asdict(self)
+        payload["command"] = list(self.command)
+        return payload

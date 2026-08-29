@@ -51,6 +51,16 @@ class WorkItem:
     output_slot: str | None = None
     publish_target: str | None = None
     candidate_from_work_item_id: str | None = None
+    implementation_unit_id: str | None = None
+    allowed_paths: tuple[str, ...] = ()
+    forbidden_paths: tuple[str, ...] = ()
+    required_paths: tuple[str, ...] = ()
+    policy_refs: tuple[str, ...] = ()
+    skill_refs: tuple[str, ...] = ()
+    requirement_ids: tuple[str, ...] = ()
+    wave: int = 0
+    owned_files: tuple[str, ...] = ()
+    delivery_contract: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("id", "agent_id", "objective", "output_key"):
@@ -63,6 +73,36 @@ class WorkItem:
             raise ValueError("WorkItem.artifact_key 不能为空")
         if self.policy_id is not None and not self.policy_id.strip():
             raise ValueError("WorkItem.policy_id 不能是空字符串")
+        for field_name in ("implementation_unit_id",):
+            value = getattr(self, field_name)
+            if value is not None and not value.strip():
+                raise ValueError(f"WorkItem.{field_name} 不能是空字符串")
+        for field_name in ("allowed_paths", "forbidden_paths", "required_paths", "policy_refs", "skill_refs", "requirement_ids"):
+            if any(not value.strip() for value in getattr(self, field_name)):
+                raise ValueError(f"WorkItem.{field_name} 不能包含空字符串")
+        if self.wave < 0:
+            raise ValueError("WorkItem.wave 不能小于 0")
+        if (
+            self.agent_id == "code_agent"
+            and self.execution_mode is ExecutionMode.PARTITIONED
+            and self.implementation_unit_id is not None
+            and self.implementation_unit_id != "project-documents"
+        ):
+            if len(self.owned_files) != 1:
+                raise ValueError(
+                    "CodeAgent 实现 WorkItem 必须且只能拥有一个具体 owned_files 文件"
+                )
+            owned = self.owned_files[0].replace("\\", "/").strip()
+            if (
+                not owned
+                or owned.endswith("/")
+                or any(token in owned for token in ("*", "?", "[", "]"))
+            ):
+                raise ValueError(
+                    "CodeAgent owned_files 必须是具体文件路径；目录/glob 只能用于 allowed_paths"
+                )
+        if self.delivery_contract is not None and not isinstance(self.delivery_contract, dict):
+            raise ValueError("WorkItem.delivery_contract 必须是对象")
         dependency_ids = self.dependency_ids
         if len(set(dependency_ids)) != len(dependency_ids):
             raise ValueError(f"WorkItem '{self.id}' 包含重复依赖")

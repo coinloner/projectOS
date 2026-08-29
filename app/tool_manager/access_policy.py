@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.tool_manager.catalog import ToolRegistration
 from app.tool_manager.source import ToolExposure
+
+if TYPE_CHECKING:
+    from app.execution_context import ExecutionContext
+    from app.tool_manager.grants import CapabilityGrant
 
 
 class ToolAccessPolicy:
@@ -12,24 +18,60 @@ class ToolAccessPolicy:
     """
 
     def __init__(self) -> None:
-        self._active_sources: set[tuple[str, str]] = set()
+        self._active_grants: dict[str, CapabilityGrant] = {}
 
-    def activate_source(self, domain: str, source_name: str) -> None:
-        self._active_sources.add((domain, source_name))
+    def activate_grant(self, grant: "CapabilityGrant") -> None:
+        if grant.is_active():
+            self._active_grants[grant.grant_id] = grant
 
-    def deactivate_source(self, domain: str, source_name: str) -> None:
-        self._active_sources.discard((domain, source_name))
+    def deactivate_grant(self, grant_id: str) -> None:
+        self._active_grants.pop(grant_id, None)
 
-    def active_source_names(self, domain: str) -> set[str]:
+    def active_grant_source_names(self) -> set[str]:
         return {
-            source_name
-            for active_domain, source_name in self._active_sources
-            if active_domain == domain
+            grant.source_name
+            for grant in self._active_grants.values()
+            if grant.is_active()
         }
 
-    def is_visible(self, registration: ToolRegistration) -> bool:
+    def is_visible(
+        self,
+        registration: ToolRegistration,
+        context: "ExecutionContext | None" = None,
+    ) -> bool:
         if registration.exposure is ToolExposure.ALWAYS:
             return True
         if registration.exposure is ToolExposure.ON_DEMAND:
-            return (registration.domain, registration.source_name) in self._active_sources
+            return any(
+                self._grant_matches(registration, grant, context)
+                for grant in self._active_grants.values()
+            )
         return False
+
+    @staticmethod
+    def _grant_matches(
+        registration: ToolRegistration,
+        grant: "CapabilityGrant",
+        context: "ExecutionContext | None",
+    ) -> bool:
+        if not grant.is_active():
+            return False
+        if (
+            registration.capability != grant.capability
+            or registration.source_name != grant.source_name
+        ):
+            return False
+        # Scoped grants must never be exposed without a trusted execution identity.
+        if context is None:
+            return False
+        if grant.scope == "project":
+            return True
+        if grant.trace_id != context.trace_id:
+            return False
+        if grant.scope == "trace":
+            return True
+        return (
+            grant.scope == "node"
+            and grant.work_item_id is not None
+            and grant.work_item_id == context.work_item_id
+        )

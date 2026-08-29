@@ -45,6 +45,7 @@ AgentRegistry.create(agent_id: str) -> AgentRunner
 ```python
 RequirementAgent(gateway: ToolGateway)
 ArchitectureAgent(gateway: ToolGateway)
+ArchitectureContractAgent(gateway: ToolGateway)
 TaskAgent(gateway: ToolGateway)
 BootstrapAgent(gateway: ToolGateway)
 CodeAgent(gateway: ToolGateway)

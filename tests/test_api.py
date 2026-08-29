@@ -6,6 +6,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.api.app import create_app
+from app.application.runs import StartedRun
 from app.memory.store import MemoryStore
 from app.orchestration.trace import TraceStore
 from app.project.project import Project
@@ -20,6 +21,17 @@ class ApiTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.client.__exit__(None, None, None)
         self._directory.cleanup()
+
+    def test_llm_provider_catalog_is_available_for_user_selection(self) -> None:
+        response = self.client.get("/api/v1/llm/providers")
+
+        self.assertEqual(response.status_code, 200)
+        providers = {item["id"]: item for item in response.json()["providers"]}
+        self.assertIn("siliconflow", providers)
+        self.assertEqual(providers["siliconflow"]["model"], "deepseek-ai/DeepSeek-V4-Pro")
+        self.assertIn("fhl", providers)
+        self.assertEqual(providers["fhl"]["model"], "gpt-5.6-terra")
+        self.assertNotIn("api_key", providers["siliconflow"])
 
     def test_project_creation_and_controlled_workflow_discovery(self) -> None:
         created = self.client.post("/api/v1/projects", json={"name": "demo"})
@@ -45,7 +57,7 @@ class ApiTest(unittest.TestCase):
                 {
                     "id": "project_delivery",
                     "name": "项目交付草案",
-                    "description": "生成需求、架构、实施任务、首版代码、测试证据和审查报告。",
+                    "description": "生成需求、架构合同、实施任务、并行代码分区、测试证据和审查报告。",
                 },
                 {
                     "id": "project_delivery_minimal",
@@ -53,6 +65,43 @@ class ApiTest(unittest.TestCase):
                     "description": "使用已有需求和架构，生成任务、环境、并行代码、测试和审查结果。",
                 },
             ],
+        )
+
+    def test_agent_skill_configuration_is_project_scoped(self) -> None:
+        created = self.client.post("/api/v1/projects", json={"name": "demo"})
+        self.assertEqual(created.status_code, 201)
+
+        available = self.client.get("/api/v1/projects/demo/skills")
+        self.assertEqual(available.status_code, 200)
+        refs = {item["ref"] for item in available.json()["skills"]}
+        self.assertIn("python.http-service.v1", refs)
+
+        updated = self.client.put(
+            "/api/v1/projects/demo/agents/code_agent/skills",
+            json={"refs": ["python.http-service.v1", "security.baseline.v1"]},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["refs"], ["python.http-service.v1", "security.baseline.v1"])
+
+        loaded = self.client.get("/api/v1/projects/demo/agents/code_agent/skills")
+        self.assertEqual(loaded.status_code, 200)
+        self.assertEqual(loaded.json()["refs"], ["python.http-service.v1", "security.baseline.v1"])
+
+        unknown = self.client.put(
+            "/api/v1/projects/demo/agents/code_agent/skills",
+            json={"refs": ["missing.skill.v1"]},
+        )
+        self.assertEqual(unknown.status_code, 422)
+
+        custom = self.client.put(
+            "/api/v1/projects/demo/skills/company.review.v1",
+            json={"content": "# Company Review\n\n必须保留审计证据"},
+        )
+        self.assertEqual(custom.status_code, 200)
+        available_after = self.client.get("/api/v1/projects/demo/skills")
+        self.assertIn(
+            "company.review.v1",
+            {item["ref"] for item in available_after.json()["skills"]},
         )
 
     def test_project_creation_accepts_custom_local_path_and_reuses_mapping(self) -> None:
@@ -125,6 +174,7 @@ class ApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(response.json()["sandbox"]["status"], {"ready", "image_missing", "invalid_runtime"})
+        self.assertIn("project", response.json())
 
     def test_local_runtime_status_is_visible_without_managed_run(self) -> None:
         created = self.client.post("/api/v1/projects", json={"name": "demo"})
@@ -166,6 +216,49 @@ class ApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["candidates"], [])
+
+    def test_run_progress_endpoint_reads_persisted_worker_snapshot(self) -> None:
+        self.client.post("/api/v1/projects", json={"name": "demo"})
+        project_path = Path(self._directory.name) / "demo"
+        trace = TraceStore(str(project_path)).start_trace("进度查询")
+        from app.orchestration.progress import WorkerProgressStore
+
+        WorkerProgressStore(str(project_path)).write(
+            trace.trace_id,
+            {
+                "trace_id": trace.trace_id,
+                "phase": "llm_streaming",
+                "event": "llm_chunk_received",
+                "last_progress_at": "2026-08-22T00:00:00+00:00",
+                "counters": {"llm_chunks": 3},
+            },
+        )
+        response = self.client.get(
+            f"/api/v1/projects/demo/runs/{trace.trace_id}/progress"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["progress"]["phase"], "llm_streaming")
+
+    def test_resume_accepts_empty_json_body(self) -> None:
+        self.client.post("/api/v1/projects", json={"name": "demo"})
+        project_path = Path(self._directory.name) / "demo"
+        trace = TraceStore(str(project_path)).start_trace("恢复测试")
+        with patch.object(
+            self.client.app.state.run_service,
+            "resume_run",
+            return_value=StartedRun(
+                trace_id=trace.trace_id,
+                plan_id="plan-1",
+                workflow_id="project_delivery",
+                status="running",
+            ),
+        ):
+            response = self.client.post(
+                f"/api/v1/projects/demo/runs/{trace.trace_id}/resume", json={}
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["trace_id"], trace.trace_id)
 
     def test_api_rejects_path_like_project_id_and_unknown_workflow(self) -> None:
         invalid = self.client.post("/api/v1/projects", json={"name": "../escape"})

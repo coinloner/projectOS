@@ -41,9 +41,11 @@ Planner 输出不可信 JSON。它用临时 `ref` 描述步骤间依赖；`PlanV
 ```text
 requirement
   -> architecture
+  -> architecture-contract
   -> tasks
   -> environment (Bootstrap)
-  -> implementation (Code)
+  -> implementation units (parallel CodeAgents, batched by limits)
+  -> code-integration
   -> tests (Test)
   -> review
 ```

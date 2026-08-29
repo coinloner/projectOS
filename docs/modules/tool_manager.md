@@ -31,7 +31,7 @@ ToolGateway
 
 | 对象 | 职责 |
 |---|---|
-| `ToolDef` | 描述工具：name / description / parameters，及可选 `execution_modes` |
+| `ToolDef` | 描述工具：name / description / parameters，及可选 `execution_modes` 与 `completion_policy` |
 | `ToolSetSource` | 承载本地 ToolSet，保存 `ToolDef -> Callable` 映射 |
 | `ExecutionToolSetSource` | 承载需要可信执行身份的本地工具，系统注入 `ExecutionContext` |
 | 动态 `ToolSource` | 未来通过可注入的 MCP client 发现和调用远端工具 |
@@ -45,7 +45,7 @@ ToolGateway
 | 来源 | 暴露方式 | 存储 | 生命周期 |
 |---|---|---|---|
 | 本地 ToolSet | `always` | Catalog | session 持久 |
-| MCP Source | `on_demand` + `activate_source()` | Catalog 动态刷新 | 单次查询 |
+| MCP Source | `on_demand` + `activate_grant()` | Catalog 动态刷新 | 按 grant scope |
 
 `register_toolset(..., toolset=ToolSetSource(...))` 中的 `toolset` 是本地工具集，不是远端来源；`register_source(..., source=dynamic_source, capability="external_research")` 中的 `source` 才表示 MCP 等实际来源。`capability` 必须是 GraphRunner 与 Agent 约定的稳定标识。动态 Source 已提供真实 MCP connector：`StreamableHttpMCPClient` 通过 MCP Streamable HTTP 协议发现并调用远端工具（内置演示服务 `app/demo/docs_mcp_server.py` 暴露 `search_docs`/`get_doc`，URL 由 `PROJECTOS_DOCS_MCP_URL` 环境变量配置）；批准接口只会激活已注册 source，不会凭空创建 connector。
 
@@ -57,6 +57,10 @@ ToolGateway
 ToolDef JSON Schema -> Pydantic args_schema -> CrewAI BaseTool.run()
                                               -> ToolSource.execute()
 ```
+
+`completion_policy="final"` 只用于保存产物、提交候选等节点终态工具。适配器会将它映射为
+CrewAI 的 `result_as_answer=True`，工具成功后直接结束当前 Agent 调用，避免保存成功后再次
+发起无意义的模型请求；读写文件等迭代工具保持默认 `continue`。
 
 `context` 只能由 GraphRunner 创建和绑定，不属于 JSON Schema。普通 `ToolSetSource` 忽略它；`ExecutionToolSetSource` 拒绝缺少它的调用，用于 Sandbox evidence 等必须追溯到 Trace 和 WorkItem 的动作。
 

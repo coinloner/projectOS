@@ -24,9 +24,11 @@ GraphRunner -> AgentRegistry -> BaseAgent -> ToolGateway -> CrewAI Agent + Task
 |---|---|---|---|
 | `RequirementAgent` | requirement | `requirement.md` | 需求文档读写 |
 | `ArchitectureAgent` | architecture | `architecture.md` | 读取 requirement，写架构文档 |
+| `ArchitectureContractAgent` | architecture_contract | `.projectos/architecture/project-contract.json` | 读取已发布架构，生成唯一项目合同（分层、接口、Wave 和文件实现单元） |
 | `TaskAgent` | task | `tasks.md` | 读取授权 ArtifactRef，写任务暂存并创建候选；不能直接发布 |
 | `BootstrapAgent` | bootstrap | `environment.md`、runtime 声明 | 只能声明 profile/依赖，不能安装或运行 Docker |
 | `CodeAgent` | code | `workspace/`、`implementation.md` | 读前置 artifact，受限读写 workspace；不能执行命令 |
+| `CodeIntegrationAgent` | code_integration | `implementation` 合并摘要 | LLM 只审核已有 ChangeSet；Git 服务负责确定性合并；不能写业务代码 |
 | `TestAgent` | test | `workspace/tests/`、`tests.md`、SandboxEvidence | 写测试，只能请求固定 sandbox check；原始结果由系统记录 |
 | `ReviewAgent` | review | `review.md` | 受限只读项目、runtime 摘要和当前 Trace sandbox evidence，并调用确定性质量策略 |
 
@@ -38,3 +40,11 @@ Agent 的最终输出被解析为两种正常状态：
 - `needs_capability`：严格 JSON 的外部能力请求。Agent 不会连接 MCP；Runner 只查候选 source 并返回等待/阻塞状态。
 
 CrewAI 执行异常由 GraphRunner 转为失败节点。Docker 测试结果已成为结构化 `SandboxEvidence`；setup failure 会继续进入 Review 形成阻塞结论，真实测试失败仍按失败策略进入有限重试或 PlanPatch。
+
+`CodeIntegrationAgent` 的 LLM 输出只能是结构化 Integration Review：`approve`、`reject` 或
+`needs_adapter`。适配请求只有在对应适配文件已经存在于授权 ChangeSet 时才可继续；否则必须
+重新生成实现单元。IntegrationAgent 没有写文件工具，也不会生成补丁或业务逻辑。
+其中 `findings` 必须携带 `severity`（`blocker/error/warning/info`）；只有显式 `blocker` 才能
+表达集成阶段的模型阻断意见，最终合并仍由确定性 Git Policy 决定。
+代码集成审核发生在测试和最终 Review 之前，只负责审查已有 ChangeSet 的边界、冲突和可合并性；
+不得把后续节点负责的 environment.md、tests.md、review.md 或运行证据当作当前合并前置条件。

@@ -29,9 +29,6 @@ class CodeToolSet:
     def inspect_runtime(self) -> str:
         return self._service.inspect_runtime()
 
-    def load_layer_contract(self) -> str:
-        return self._service.load_layer_contract()
-
 
 def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
     """代码节点可读取设计产物，且仅能在 workspace 内写入允许的文本文件。"""
@@ -44,7 +41,7 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                 (
                     ToolDef(
                         name="load_artifact",
-                        description="读取前置产物。可读取: requirement、architecture、tasks、environment。",
+                        description="读取前置产物。可读取: requirement、architecture、architecture_contract、tasks、environment。",
                         parameters={
                             "type": "object",
                             "properties": {"artifact": {"type": "string", "description": "前置产物标识"}},
@@ -64,6 +61,7 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                             "required": ["content"],
                         },
                         execution_modes=("exclusive",),
+                        completion_policy="final",
                     ),
                     tools.save_implementation,
                 ),
@@ -134,7 +132,7 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                 (
                     ToolDef(
                         name="load_code_input",
-                        description="读取当前代码分区已授权的需求、架构、任务或环境引用。",
+                        description="读取当前代码分区已授权的需求、架构、任务、环境或前置实现 ChangeSet 引用。",
                         parameters={
                             "type": "object",
                             "properties": {
@@ -161,6 +159,10 @@ def register_code_tools(gateway: ToolGateway, project_path: str) -> None:
                             "additionalProperties": False,
                         },
                         execution_modes=("partitioned",),
+                        # A successful file commit is the terminal answer for
+                        # a partitioned CodeAgent.  Reading inputs must remain
+                        # iterative so the agent can read, then write.
+                        completion_policy="final",
                     ),
                     staging.write_staged_file,
                 ),

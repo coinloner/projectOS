@@ -50,6 +50,24 @@ class ApplicationCatalog:
     """
 
     _PROFILES = {
+        "python-backend": ApplicationProfile(
+            id="python-backend",
+            services=(
+                ApplicationService(
+                    id="backend",
+                    workspace_dir="backend",
+                    container_port=8000,
+                    host_port=0,
+                    command=("python", "main.py"),
+                    image="python:3.12-slim",
+                    readiness=(
+                        "python",
+                        "-c",
+                        "import socket; socket.create_connection(('127.0.0.1', 8000), timeout=2).close()",
+                    ),
+                ),
+            ),
+        ),
         "todo-web": ApplicationProfile(
             id="todo-web",
             services=(
@@ -278,6 +296,8 @@ class ApplicationCatalog:
                     if (workspace / "frontend").is_dir()
                     else "fastapi-postgres"
                 )
+        if (backend / "http_adapter.py").is_file():
+            return "python-backend"
         if (workspace / "backend").is_dir() and (workspace / "frontend").is_dir():
             return "todo-web"
         if (workspace / "index.html").is_file():

@@ -3,6 +3,7 @@
 from app.domain.test.service import TestService
 from app.execution_context import ExecutionContext
 from app.orchestration.trace import TraceStore
+from app.orchestration.evidence import RuntimeEvidence
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import ExecutionToolSetSource, ToolDef, ToolSetSource
 
@@ -15,9 +16,6 @@ class TestToolSet:
 
     def load_artifact(self, artifact: str) -> str:
         return self._service.load_artifact(artifact)
-
-    def load_layer_contract(self) -> str:
-        return self._service.load_layer_contract()
 
     def save_tests(self, content: str) -> str:
         return self._service.save_tests(content)
@@ -40,10 +38,22 @@ class SandboxEvidenceToolSet:
         self._traces = traces
 
     def run_sandbox_check(
-        self, context: ExecutionContext, check_id: str = "unit"
+        self, context: ExecutionContext, check_id: str | None = None
     ) -> str:
+        check_id = check_id or "unit"
         result = self._service.run_sandbox_check(check_id)
         evidence = self._traces.record_sandbox_evidence(context, result)
+        self._traces.record_runtime_evidence(RuntimeEvidence.create(
+            trace_id=context.trace_id,
+            phase="behavior_test" if check_id in {"unit", "web-unit"} else check_id,
+            status=evidence.status.value,
+            work_item_id=context.work_item_id,
+            exit_code=evidence.exit_code,
+            duration_ms=evidence.duration_ms,
+            stdout=evidence.stdout,
+            stderr=evidence.stderr,
+            message=evidence.message,
+        ))
         return evidence.as_agent_text()
 
 
@@ -85,6 +95,7 @@ def register_test_tools(
                             "properties": {"content": {"type": "string", "description": "完整 Markdown 内容"}},
                             "required": ["content"],
                         },
+                        completion_policy="final",
                     ),
                     tools.save_tests,
                 ),

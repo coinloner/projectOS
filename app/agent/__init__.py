@@ -13,6 +13,7 @@ __all__ = [
     "AgentRunner",
     "AgentStatus",
     "ArchitectureAgent",
+    "ArchitectureContractAgent",
     "BaseAgent",
     "BootstrapAgent",
     "CapabilityRequest",
@@ -39,6 +40,10 @@ def __getattr__(name: str):
         from app.agent.architecture_agent import ArchitectureAgent
 
         return ArchitectureAgent
+    if name == "ArchitectureContractAgent":
+        from app.agent.architecture_contract_agent import ArchitectureContractAgent
+
+        return ArchitectureContractAgent
     if name == "CodeAgent":
         from app.agent.code_agent import CodeAgent
 
