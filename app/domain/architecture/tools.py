@@ -147,6 +147,30 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
         ),
     )
 
+    layered_contract_workflow = ArchitectureArtifactWorkflow(project_path)
+    gateway.register_toolset(
+        domain="architecture_contract",
+        name="structured_design_compiler",
+        toolset=ExecutionToolSetSource(
+            [
+                (
+                    ToolDef(
+                        name="compile_project_contract_from_designs",
+                        description="读取已通过架构质量门的三层设计对象，确定性编译唯一 Project Contract。",
+                        parameters={
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": False,
+                        },
+                        execution_modes=("integration",),
+                        completion_policy="final",
+                    ),
+                    layered_contract_workflow.compile_project_contract_from_designs,
+                )
+            ]
+        ),
+    )
+
 
     workflow = ArchitectureArtifactWorkflow(project_path)
     gateway.register_toolset(

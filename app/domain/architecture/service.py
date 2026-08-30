@@ -183,21 +183,34 @@ class ArchitectureArtifactWorkflow:
         """
         if context.execution_mode is not ExecutionMode.INTEGRATION:
             raise PermissionError("只有集成节点可以整合架构设计对象")
+        bundle = self._load_design_bundle(context)
+        designs = [*([bundle.blueprint]), *bundle.modules, *bundle.implementations]
+        content = _render_design_bundle(bundle)
+        candidate = self.create_candidate(context, content)
+        return candidate + f"；structured_designs={len(designs)}"
+
+    def compile_project_contract_from_designs(self, context: ExecutionContext) -> str:
+        """将已通过架构质量门的对象直接编译为唯一 ProjectContract。"""
+        if context.execution_mode is not ExecutionMode.INTEGRATION:
+            raise PermissionError("只有集成节点可以编译 Project Contract")
+        bundle = self._load_design_bundle(context)
+        return ArchitectureService(self._project_path).save_implementation_contract(
+            bundle.to_project_contract()
+        )
+
+    def _load_design_bundle(self, context: ExecutionContext) -> ArchitectureDesignBundle:
         designs = [parse_design(self._repository.load_ref(ref)) for ref in context.input_refs]
         blueprint = next((item for item in designs if isinstance(item, ArchitectureBlueprint)), None)
         modules = [item for item in designs if isinstance(item, ModuleDesign)]
         implementations = [item for item in designs if isinstance(item, ImplementationDesign)]
         if blueprint is None:
             raise ValueError("架构设计集成缺少 depth=0 的总体蓝图")
-        bundle = ArchitectureDesignBundle(
+        return ArchitectureDesignBundle(
             schema_version=1,
             blueprint=blueprint,
             modules=modules,
             implementations=implementations,
         )
-        content = _render_design_bundle(bundle)
-        candidate = self.create_candidate(context, content)
-        return candidate + f"；structured_designs={len(designs)}"
 
     def create_candidate(self, context: ExecutionContext, content: str) -> str:
         if context.execution_mode is not ExecutionMode.INTEGRATION:

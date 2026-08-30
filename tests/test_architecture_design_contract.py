@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from pathlib import Path
 
 from app.artifact.repository import ArtifactRef, ArtifactRepository
 from app.domain.architecture.design_contract import (
@@ -122,17 +123,24 @@ class ArchitectureDesignContractTest(unittest.TestCase):
             goal="设计订单系统",
             plan_id="plan-layered",
             trace=trace,
-            agent_output_keys={"architecture_agent": "architecture"},
+            agent_output_keys={
+                "architecture_agent": "architecture",
+                "architecture_contract_agent": "architecture_contract",
+            },
         )
-        self.assertEqual(len(plan.work_items), 9)
+        self.assertEqual(len(plan.work_items), 10)
         self.assertEqual(plan.work_items[0].output_slot, "blueprint")
         self.assertEqual(
             {item.output_slot for item in plan.work_items[1:4]},
             {"module-domain", "module-api", "module-runtime"},
         )
-        integration = plan.work_items[-2]
+        integration = plan.work_items[-3]
         self.assertEqual(integration.execution_mode, ExecutionMode.INTEGRATION)
         self.assertEqual(len(integration.input_refs), 7)
+        contract = plan.work_items[-1]
+        self.assertEqual(contract.agent_id, "architecture_contract_agent")
+        self.assertEqual(contract.execution_mode, ExecutionMode.INTEGRATION)
+        self.assertEqual(len(contract.input_refs), 7)
 
     def test_workflow_writes_and_integrates_structured_objects(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
@@ -186,6 +194,11 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                 work_item_id="wi-integration",
             )
             self.assertIn("# Architecture", candidate.content)
+            contract_result = workflow.compile_project_contract_from_designs(integration_context)
+            self.assertIn('"ok": true', contract_result)
+            self.assertTrue(
+                (Path(project_path) / ".projectos" / "architecture" / "project-contract.json").is_file()
+            )
 
 
 if __name__ == "__main__":

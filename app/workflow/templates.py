@@ -307,6 +307,21 @@ def architecture_layered_template() -> WorkflowTemplate:
                 publish_target="architecture",
                 candidate_from="architecture-layered-integration",
             ),
+            TaskBlueprint(
+                id="architecture-layered-contract",
+                agent_id="architecture_contract_agent",
+                objective="将已通过质量门的三层架构对象确定性编译为唯一 Project Contract。",
+                output_key="architecture_contract",
+                artifact_key="architecture_contract",
+                depends_on=("architecture-layered-quality-gate",),
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture_contract",
+                input_from=integration_inputs,
+                acceptance_criteria=(
+                    "只能调用 compile_project_contract_from_designs。",
+                    "不得重新解析 Markdown，不得新增架构对象或实现文件。",
+                ),
+            ),
         ]
     )
     return WorkflowTemplate(

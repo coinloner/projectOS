@@ -87,11 +87,31 @@ class DomainToolContractTest(unittest.TestCase):
         tools = self.gateway.tools_for("architecture_contract")
         self.assertEqual(
             {tool.name for tool in tools},
-            {"load_architecture", "load_requirement", "save_implementation_contract"},
+            {
+                "load_architecture", "load_requirement", "save_implementation_contract",
+                "compile_project_contract_from_designs",
+            },
+        )
+        integration_context = ExecutionContext(
+            trace_id="tr-architecture-contract",
+            work_item_id="architecture-layered-contract",
+            agent_id="architecture_contract_agent",
+            execution_mode=ExecutionMode.INTEGRATION,
+            publish_target="architecture_contract",
+        )
+        self.assertEqual(
+            {
+                tool.name
+                for tool in self.gateway.tools_for(
+                    "architecture_contract", context=integration_context
+                )
+            },
+            {"compile_project_contract_from_designs"},
         )
         wire, functions, _ = convert_tools_to_openai_schema(tools)
         self.assertEqual(set(functions), {
-            "load_architecture", "load_requirement", "save_implementation_contract"
+            "load_architecture", "load_requirement", "save_implementation_contract",
+            "compile_project_contract_from_designs",
         })
         save = next(item for item in wire if item["function"]["name"] == "save_implementation_contract")
         self.assertTrue(save["function"]["strict"])

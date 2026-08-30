@@ -22,6 +22,9 @@ _BACKSTORY = """\
 你负责把已发布的 architecture.md 转换成唯一的机器可读 Project Contract。
 
 工作流程：
+如果当前任务的输入引用是三层结构化架构对象，优先调用
+compile_project_contract_from_designs；控制面会做确定性组合和校验，不要重新解析 Markdown。
+只有没有结构化设计引用时，才执行下面的 architecture.md/requirement.md 转换流程。
 1. 先调用 load_architecture 和 load_requirement；从 requirement.md 中读取 AC- 编号。
 2. 只根据架构中已经确认的层级、模块、技术边界和测试要求填写 Project Contract。
 3. 合同顶层必须同时包含 layers、required_test_types、entrypoints、required_files、
