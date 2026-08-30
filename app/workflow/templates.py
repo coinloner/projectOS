@@ -214,6 +214,109 @@ def architecture_parallel_template() -> WorkflowTemplate:
     )
 
 
+def architecture_layered_template() -> WorkflowTemplate:
+    """三层结构化架构流程。
+
+    L0 只生成总体蓝图；L1 按模块并行；L2 将模块决策细化为可实现边界，
+    最后由 Integration 统一校验并生成架构候选。深度由模板固定为 0/1/2。
+    """
+    module_nodes = (
+        ("domain", "领域模块", "module-domain"),
+        ("api", "接口模块", "module-api"),
+        ("runtime", "运行模块", "module-runtime"),
+    )
+    nodes: list[TaskBlueprint] = [
+        TaskBlueprint(
+            id="architecture-blueprint",
+            agent_id="architecture_agent",
+            objective="根据需求产出 depth=0 的总体架构蓝图对象。",
+            output_key="architecture_blueprint",
+            artifact_key="architecture",
+            execution_mode=ExecutionMode.PARTITIONED,
+            output_slot="blueprint",
+            input_artifacts=("requirement",),
+            acceptance_criteria=(
+                "只能调用 write_architecture_blueprint 保存结构化对象。",
+                "depth 必须为 0，包含系统边界、层级、模块清单和全局约束。",
+            ),
+        )
+    ]
+    for module_id, label, slot in module_nodes:
+        nodes.append(
+            TaskBlueprint(
+                id=f"architecture-{slot}",
+                agent_id="architecture_agent",
+                objective=f"根据总体蓝图细化{label}，产出 depth=1 的 ModuleDesign 对象。",
+                output_key=f"architecture_{slot}",
+                artifact_key="architecture",
+                depends_on=("architecture-blueprint",),
+                execution_mode=ExecutionMode.PARTITIONED,
+                output_slot=slot,
+                input_from=("architecture-blueprint",),
+                acceptance_criteria=(
+                    "只能调用 write_module_design 保存一个结构化模块对象。",
+                    f"module_id 必须为 {module_id}，depth 必须为 1，并引用总体蓝图 design_id。",
+                ),
+            )
+        )
+    for module_id, label, slot in module_nodes:
+        nodes.append(
+            TaskBlueprint(
+                id=f"architecture-implementation-{slot}",
+                agent_id="architecture_agent",
+                objective=f"将{label}细化为 depth=2 的实现准备对象。",
+                output_key=f"architecture_implementation_{slot}",
+                artifact_key="architecture",
+                depends_on=(f"architecture-{slot}",),
+                execution_mode=ExecutionMode.PARTITIONED,
+                output_slot=f"implementation-{slot}",
+                input_from=(f"architecture-{slot}",),
+                acceptance_criteria=(
+                    "只能调用 write_implementation_design 保存结构化对象。",
+                    f"module_id 必须为 {module_id}，实现单元必须声明具体 owned_files。",
+                ),
+            )
+        )
+    integration_inputs = tuple(node.id for node in nodes)
+    integration_dependencies = integration_inputs
+    nodes.extend(
+        [
+            TaskBlueprint(
+                id="architecture-layered-integration",
+                agent_id="architecture_agent",
+                objective="整合 depth=0/1/2 架构对象，校验层级语义并生成架构候选。",
+                output_key="architecture_layered_candidate",
+                artifact_key="architecture",
+                depends_on=integration_dependencies,
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture",
+                input_from=integration_inputs,
+                acceptance_criteria=(
+                    "只能调用 integrate_architecture_designs。",
+                    "不得重新设计模块；冲突必须通过结构化校验暴露。",
+                ),
+            ),
+            TaskBlueprint(
+                id="architecture-layered-quality-gate",
+                agent_id="architecture_agent",
+                objective="检查结构化架构候选并发布架构文档。",
+                output_key="architecture_layered_published",
+                artifact_key="architecture",
+                depends_on=("architecture-layered-integration",),
+                execution_mode=ExecutionMode.QUALITY_GATE,
+                publish_target="architecture",
+                candidate_from="architecture-layered-integration",
+            ),
+        ]
+    )
+    return WorkflowTemplate(
+        id="architecture_layered",
+        name="三层结构化架构设计",
+        description="总体蓝图、模块设计、实现准备三层架构对象并行与集成。",
+        nodes=tuple(nodes),
+    )
+
+
 def architecture_compact_template() -> WorkflowTemplate:
     """简单需求的低成本架构流程：一个设计包、一轮规范化整合和质量门。"""
     return WorkflowTemplate(

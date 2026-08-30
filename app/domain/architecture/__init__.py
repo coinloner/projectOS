@@ -18,6 +18,16 @@ from app.domain.architecture.contract_input import (
     ContractLayerInput,
     ProjectContractInput,
 )
+from app.domain.architecture.design_contract import (
+    ArchitectureBlueprint,
+    ArchitectureDesignBundle,
+    ImplementationDesign,
+    InterfaceRef,
+    LayerDecision,
+    ModuleDesign,
+    ModuleRef,
+    parse_design,
+)
 
 __all__ = [
     "ArchitectureService",
@@ -34,4 +44,12 @@ __all__ = [
     "ContractInterfaceInput",
     "ContractLayerInput",
     "ProjectContractInput",
+    "ArchitectureBlueprint",
+    "ArchitectureDesignBundle",
+    "ImplementationDesign",
+    "InterfaceRef",
+    "LayerDecision",
+    "ModuleDesign",
+    "ModuleRef",
+    "parse_design",
 ]

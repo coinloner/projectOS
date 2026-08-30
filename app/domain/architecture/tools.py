@@ -9,6 +9,11 @@ from pydantic import ValidationError
 
 from app.domain.architecture.service import ArchitectureArtifactWorkflow, ArchitectureService
 from app.domain.architecture.contract_input import ProjectContractInput
+from app.domain.architecture.design_contract import (
+    ArchitectureBlueprint,
+    ImplementationDesign,
+    ModuleDesign,
+)
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import ExecutionToolSetSource, ToolDef, ToolSetSource
 
@@ -149,6 +154,67 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
         name="artifact_workflow",
         toolset=ExecutionToolSetSource(
             [
+                (
+                    ToolDef(
+                        name="write_architecture_blueprint",
+                        description="写入 depth=0 的总体架构蓝图对象；只能描述系统边界、层级和模块清单。",
+                        parameters={
+                            "type": "object",
+                            "properties": {"design": ArchitectureBlueprint.model_json_schema()},
+                            "required": ["design"],
+                            "additionalProperties": False,
+                        },
+                        execution_modes=("partitioned",),
+                        completion_policy="final",
+                    ),
+                    lambda context, design: workflow.write_staged_design(
+                        context, design
+                    ),
+                ),
+                (
+                    ToolDef(
+                        name="write_module_design",
+                        description="写入 depth=1 的单模块架构设计对象；必须引用总体蓝图 design_id。",
+                        parameters={
+                            "type": "object",
+                            "properties": {"design": ModuleDesign.model_json_schema()},
+                            "required": ["design"],
+                            "additionalProperties": False,
+                        },
+                        execution_modes=("partitioned",),
+                        completion_policy="final",
+                    ),
+                    lambda context, design: workflow.write_staged_design(
+                        context, design
+                    ),
+                ),
+                (
+                    ToolDef(
+                        name="write_implementation_design",
+                        description="写入 depth=2 的模块实现准备对象；必须包含完整文件 ownership 和实现单元。",
+                        parameters={
+                            "type": "object",
+                            "properties": {"design": ImplementationDesign.model_json_schema()},
+                            "required": ["design"],
+                            "additionalProperties": False,
+                        },
+                        execution_modes=("partitioned",),
+                        completion_policy="final",
+                    ),
+                    lambda context, design: workflow.write_staged_design(
+                        context, design
+                    ),
+                ),
+                (
+                    ToolDef(
+                        name="integrate_architecture_designs",
+                        description="读取当前工作项授权的分层架构对象，做确定性校验并创建架构候选。",
+                        parameters={"type": "object", "properties": {}, "additionalProperties": False},
+                        execution_modes=("integration",),
+                        completion_policy="final",
+                    ),
+                    workflow.integrate_structured_designs,
+                ),
                 (
                     ToolDef(
                         name="load_architecture_input",

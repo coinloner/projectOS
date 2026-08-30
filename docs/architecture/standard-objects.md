@@ -16,6 +16,10 @@ ProjectOS 的对象按边界分层，禁止用同一个 `status` 或 `content` �
 | 运行监控 | `WorkerProgress` | Worker 存活、LLM call 状态、工具状态、时间戳 | “有 heartbeat 就代表模型有进度” |
 | 项目合同 | `ProjectContract` | 分层规则、接口、入口、Wave、文件 owner、测试类型和依赖方向 | 被多个 JSON 合同分别覆盖 |
 | 代码交付 | `WorkItem` | ProjectContract 的单文件只读投影 | 用目录 glob 代表完成、跨文件共享写入 |
+| 架构 L0 | `ArchitectureBlueprint` | 系统边界、层级、模块清单和全局约束 | 模块内部文件、具体函数实现 |
+| 架构 L1 | `ModuleDesign` | 单模块职责、依赖、实体和协作接口 | 修改总体模块清单、设计其他模块内部 |
+| 架构 L2 | `ImplementationDesign` | 接口实现准备、完整文件 ownership、测试边界 | 新增第四层、跨模块重写职责 |
+| 架构集成 | `ArchitectureDesignBundle` | 三层对象的 parent、module、interface 和 ownership 一致性 | 重新发明业务需求或直接写代码 |
 
 ## 字段语义
 
@@ -26,6 +30,8 @@ ProjectOS 的对象按边界分层，禁止用同一个 `status` 或 `content` �
 - 代码路径按四层边界解释：目录是授权边界（`allowed_paths`），文件是交付边界（`owned_files`），
   符号是协作边界（`provided_symbols`/`required_symbols`），Wave 是依赖边界；这些字段不能互相替代。
 - `CapabilityRequest.capability` 必须是单一 canonical id。多项工具名会在 Agent 边界规范化为能力集合语义（例如 `environment_preparation`），不能拼成待审批来源名。
+- 架构对象的 `depth` 只允许 `0/1/2`。`ArchitectureBlueprint.design_id` 是 L0 的根；`ModuleDesign.parent_design_id` 必须指向该根；`ImplementationDesign.parent_design_id` 必须指向对应模块设计。`module_id`、`interface_id`、`requirement_ids` 在层间传递时保持同名同义。
+- `ArchitectureDesignBundle` 是 Integration 的唯一输入组合。Integration 通过后才生成 Markdown 候选；后续 `ProjectContract` 和 `TaskInputPackage` 只能从组合后的事实编译，不读取某个模块的自然语言猜测。
 
 ## LLM 终态协议
 

@@ -41,6 +41,8 @@ class DomainToolContractTest(unittest.TestCase):
             "architecture": {
                 "load_artifact", "save_architecture", "load_architecture_input",
                 "write_staged_architecture", "create_architecture_candidate",
+                "write_architecture_blueprint", "write_module_design",
+                "write_implementation_design", "integrate_architecture_designs",
             },
             "task": {"load_task_input", "write_staged_tasks", "create_tasks_candidate"},
             "bootstrap": {"configure_runtime", "inspect_runtime", "prepare_environment", "load_artifact", "save_environment"},
@@ -209,11 +211,18 @@ class DomainToolContractTest(unittest.TestCase):
 
         self.assertEqual(
             {tool.name for tool in self.gateway.tools_for("architecture", context=scope_context)},
-            {"load_architecture_input", "write_staged_architecture"},
+            {
+                "load_architecture_input", "write_staged_architecture",
+                "write_architecture_blueprint", "write_module_design",
+                "write_implementation_design",
+            },
         )
         self.assertEqual(
             {tool.name for tool in self.gateway.tools_for("architecture", context=integration_context)},
-            {"load_architecture_input", "create_architecture_candidate"},
+            {
+                "load_architecture_input", "create_architecture_candidate",
+                "integrate_architecture_designs",
+            },
         )
 
 

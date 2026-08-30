@@ -26,6 +26,12 @@ WorkflowTemplate
 完整展开 baseline、API、data、frontend、integration 和 quality gate；模板字段中的执行模式、
 slot、输入来源和发布目标不接受 Planner 覆盖。
 
+`architecture_layered_template()` 提供三层结构化架构试点：depth=0 的
+`ArchitectureBlueprint`、按模块并行的 depth=1 `ModuleDesign`，以及按模块并行的 depth=2
+`ImplementationDesign`。每层通过 Pydantic DTO 和 staged `ArtifactRef` 传递，Integration
+将它们组合为 `ArchitectureDesignBundle` 后才生成架构候选。深度由模板固定为三层以内，
+对象中的 `design_id`、`parent_design_id`、`module_id` 和 `requirement_ids` 不允许改名。
+
 `architecture_compact_template()` 面向范围明确的小需求。它使用一个短架构决策包、一个
 规范化 integration 和 quality gate，避免为了简单任务支付多个平行 scope 的模型成本。
 调用方通过 `workflow_id` 显式选择；自动复杂度分类尚未实现。

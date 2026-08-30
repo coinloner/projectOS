@@ -55,6 +55,11 @@ class ApiTest(unittest.TestCase):
                     "description": "先冻结基线，再并行设计架构分区，最后整合并通过质量门发布。",
                 },
                 {
+                    "id": "architecture_layered",
+                    "name": "三层结构化架构设计",
+                    "description": "总体蓝图、模块设计、实现准备三层架构对象并行与集成。",
+                },
+                {
                     "id": "project_delivery",
                     "name": "项目交付草案",
                     "description": "生成需求、架构合同、实施任务、并行代码分区、测试证据和审查报告。",

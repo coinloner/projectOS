@@ -56,6 +56,7 @@ uvicorn app.api.asgi:app --reload
 
 - `architecture_compact`：小需求的低成本路径，两个 LLM 节点。
 - `architecture_parallel`：复杂需求的多分区路径，baseline 后可并行运行多个 scope。
+- `architecture_layered`：三层结构化架构路径，按总体蓝图、模块设计和实现准备对象分阶段并行。
 - `project_delivery_minimal`：从已有需求和架构继续跑任务、环境、并行代码、测试和 Review。
 
 连续对话接口不要求调用方先选择 Workflow。系统运行路径只有两类：调用方明确选择的受控 Workflow，

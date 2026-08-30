@@ -22,6 +22,7 @@ from app.domain.test.module import install as install_test
 from app.policy.module import install as install_policy
 from app.skill.module import install as install_skill
 from app.workflow.templates import (
+    architecture_layered_template,
     architecture_compact_template,
     architecture_parallel_template,
     project_delivery_template,
@@ -47,6 +48,7 @@ def install_modules(container: "ProjectOSContainer") -> None:
         install(container)
     container.templates.register(architecture_compact_template())
     container.templates.register(architecture_parallel_template())
+    container.templates.register(architecture_layered_template())
     container.templates.register(project_delivery_template())
     container.templates.register(project_delivery_minimal_template())
     _install_external_sources(container)

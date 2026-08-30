@@ -613,3 +613,27 @@ ProjectOS 的控制面、Planner、合同、checkpoint 和能力审批边界对�
 `provider_stalled` 和 `worker_timed_out`，checkpoint 可恢复；但恢复需要再次向外部 Provider
 发送项目上下文，必须经过明确的外部出站授权。后续可考虑为合同节点增加结构化草稿分段、局部
 合同校验重试和按节点复杂度配置硬上限，降低一次超长调用耗尽整条链路的风险。
+
+## 29. 2026-08-30：分层架构对象协议
+
+### 设计动机
+
+此前架构分区之间主要传递 Markdown，下一层需要从正文重新推断模块、接口和约束；一处字段
+命名或语义漂移就可能在合同节点才暴露，并把整个 Code 阶段挡住。架构设计现在增加固定三层
+对象协议：`ArchitectureBlueprint`（depth=0）、`ModuleDesign`（depth=1）和
+`ImplementationDesign`（depth=2）。
+
+### 实现
+
+- 每层使用 Pydantic closed DTO，统一 `design_id`、`parent_design_id`、`module_id`、
+  `requirement_ids` 和接口引用语义；depth 只能是 0、1、2。
+- 新增 `architecture_layered` 受控流程：L0 单节点生成总体蓝图，L1 三个模块并行细化，
+  L2 对应模块并行生成完整文件 ownership 和测试边界，随后由
+  `ArchitectureDesignBundle` 做父子关系、模块覆盖、接口唯一性和单文件 ownership 校验。
+- Architecture Integration 只组合已授权 staged JSON 对象，并生成稳定 Markdown 候选；不重新
+  设计业务、不写代码。现有 ArtifactRef、WorkItem、候选和质量门机制保持不变。
+- 默认 `project_delivery` 暂不切换，避免影响已有 Python 闭环；新模板可先用于评测和逐步替换。
+
+### 验证
+
+新增结构化对象、三层深度、单文件 ownership、模板屏障和真实 staged 集成测试；编译检查通过。

@@ -30,6 +30,7 @@ class BootstrapRuntimeTest(unittest.TestCase):
             self.assertIsNotNone(container.templates.get("project_delivery"))
             self.assertIsNotNone(container.templates.get("architecture_compact"))
             self.assertIsNotNone(container.templates.get("architecture_parallel"))
+            self.assertIsNotNone(container.templates.get("architecture_layered"))
             self.assertIsNotNone(container.templates.get("project_delivery_minimal"))
             self.assertEqual(
                 {tool.name for tool in container.gateway.tools_for("architecture")},
@@ -39,6 +40,10 @@ class BootstrapRuntimeTest(unittest.TestCase):
                     "load_architecture_input",
                     "write_staged_architecture",
                     "create_architecture_candidate",
+                    "write_architecture_blueprint",
+                    "write_module_design",
+                    "write_implementation_design",
+                    "integrate_architecture_designs",
                 },
             )
             self.assertEqual(

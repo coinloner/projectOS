@@ -9,6 +9,13 @@ from app.artifact.repository import ArtifactRepository
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.domain.architecture.implementation_contract import ImplementationContractStore
 from app.domain.architecture.contract_input import ProjectContractInput
+from app.domain.architecture.design_contract import (
+    ArchitectureBlueprint,
+    ArchitectureDesignBundle,
+    ImplementationDesign,
+    ModuleDesign,
+    parse_design,
+)
 
 
 class ArchitectureService:
@@ -133,6 +140,65 @@ class ArchitectureArtifactWorkflow:
         )
         return f"已写入架构暂存输出: {staged.ref.ref_id}"
 
+    def write_staged_design(self, context: ExecutionContext, design: dict[str, Any]) -> str:
+        """校验并暂存一份分层架构设计对象。
+
+        设计对象仍使用现有 ArtifactRepository 的 staged 引用传输，
+        但内容只能来自 Pydantic DTO，避免 Markdown 在层间承担隐式协议。
+        """
+        if context.execution_mode is not ExecutionMode.PARTITIONED:
+            raise PermissionError("只有分区执行节点可以写入架构设计暂存对象")
+        parsed = parse_design(design)
+        slot = context.output_slot or ""
+        expected_depth = (
+            0
+            if slot == "blueprint"
+            else 1
+            if slot == "module" or slot.startswith("module-")
+            else 2
+            if slot == "implementation" or slot.startswith("implementation-")
+            else None
+        )
+        if expected_depth is not None and parsed.depth != expected_depth:
+            raise ValueError(
+                f"架构设计 slot={context.output_slot} 要求 depth={expected_depth}，实际为 {parsed.depth}"
+            )
+        import json
+
+        content = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2)
+        self._validate_size(content, _DESIGN_CHAR_LIMITS.get(context.output_slot or "", 8000))
+        staged = self._repository.write_staged(
+            trace_id=context.trace_id,
+            work_item_id=context.work_item_id,
+            artifact_key="architecture",
+            slot=context.output_slot or "",
+            content=content,
+        )
+        return f"已写入架构设计对象: {staged.ref.ref_id}; depth={parsed.depth}"
+
+    def integrate_structured_designs(self, context: ExecutionContext) -> str:
+        """读取已授权的 staged 设计对象并生成架构候选 Markdown。
+
+        Integration 只组合对象和做确定性校验，不重新设计模块，也不写入代码。
+        """
+        if context.execution_mode is not ExecutionMode.INTEGRATION:
+            raise PermissionError("只有集成节点可以整合架构设计对象")
+        designs = [parse_design(self._repository.load_ref(ref)) for ref in context.input_refs]
+        blueprint = next((item for item in designs if isinstance(item, ArchitectureBlueprint)), None)
+        modules = [item for item in designs if isinstance(item, ModuleDesign)]
+        implementations = [item for item in designs if isinstance(item, ImplementationDesign)]
+        if blueprint is None:
+            raise ValueError("架构设计集成缺少 depth=0 的总体蓝图")
+        bundle = ArchitectureDesignBundle(
+            schema_version=1,
+            blueprint=blueprint,
+            modules=modules,
+            implementations=implementations,
+        )
+        content = _render_design_bundle(bundle)
+        candidate = self.create_candidate(context, content)
+        return candidate + f"；structured_designs={len(designs)}"
+
     def create_candidate(self, context: ExecutionContext, content: str) -> str:
         if context.execution_mode is not ExecutionMode.INTEGRATION:
             raise PermissionError("只有集成节点可以创建候选版本")
@@ -166,6 +232,57 @@ _STAGED_CHAR_LIMITS = {
     "frontend": 4200,
     "design": 6000,
 }
+
+_DESIGN_CHAR_LIMITS = {
+    "blueprint": 7000,
+    "module": 6000,
+    "implementation": 9000,
+}
+
+
+def _render_design_bundle(bundle: ArchitectureDesignBundle) -> str:
+    """生成稳定的人类可读架构投影，正文不再作为层间协议。"""
+    lines = [
+        "# Architecture",
+        "",
+        "## System Boundary",
+        bundle.blueprint.system_boundary,
+        "",
+        "## Layers",
+    ]
+    for layer in bundle.blueprint.layers:
+        dependencies = ", ".join(layer.allowed_dependencies) or "无"
+        lines.append(f"- {layer.name}: 允许依赖 {dependencies}")
+    lines.extend(["", "## Modules"])
+    for module in bundle.blueprint.modules:
+        lines.append(f"- {module.module_id}: {module.responsibility}")
+    lines.extend(["", "## Module Decisions"])
+    for design in bundle.modules:
+        lines.append(f"### {design.module_id}")
+        lines.append("职责：" + "；".join(design.responsibilities))
+        if design.entities:
+            lines.append("实体：" + "；".join(design.entities))
+        if design.dependencies:
+            lines.append("依赖：" + "；".join(design.dependencies))
+    lines.extend(["", "## Interfaces"])
+    for design in bundle.implementations:
+        for interface in design.interfaces:
+            lines.append(f"- {interface.interface_id}: {interface.name} ({interface.kind})")
+    if bundle.blueprint.entrypoints.backend_file or bundle.blueprint.entrypoints.frontend_file:
+        lines.extend(["", "## Entrypoints"])
+        if bundle.blueprint.entrypoints.backend_file:
+            lines.append(f"- backend: {bundle.blueprint.entrypoints.backend_file}")
+        if bundle.blueprint.entrypoints.frontend_file:
+            lines.append(f"- frontend: {bundle.blueprint.entrypoints.frontend_file}")
+    lines.extend(["", "## Implementation Scope"])
+    for design in bundle.implementations:
+        for unit in design.implementation_units:
+            owned = ", ".join(unit.owned_files) or "未声明"
+            lines.append(f"- {unit.unit_id}: {owned}")
+    lines.extend(["", "## Constraints"])
+    for constraint in bundle.blueprint.global_constraints:
+        lines.append(f"- {constraint}")
+    return "\n".join(lines)
 
 
 def _default_layer_contract() -> dict[str, object]:

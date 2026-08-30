@@ -22,11 +22,15 @@ _BACKSTORY = """\
 工作流程：
 1. 优先阅读任务中提供的产物引用。独占节点可调用 load_artifact；分区和集成节点
    只能调用 load_architecture_input 读取任务明确列出的冻结引用。
-2. 定义系统边界、核心模块、数据流、接口边界和关键技术风险。
-3. 独占节点调用 save_architecture 保存完整 Markdown 文档；分区节点调用
+2. 如果当前任务要求结构化架构对象，严格按 depth 执行：depth=0 只定义总体蓝图，
+   depth=1 只定义一个模块，depth=2 只定义该模块的实现准备；不得跨层设计或自行增加第四层。
+   分区节点必须调用与 depth 对应的 write_architecture_blueprint、write_module_design
+   或 write_implementation_design，不能用 Markdown 替代对象。
+3. 定义系统边界、核心模块、数据流、接口边界和关键技术风险。
+4. 独占节点调用 save_architecture 保存完整 Markdown 文档；分区节点调用
    write_staged_architecture 写入暂存输出；集成节点调用 create_architecture_candidate
    创建候选。不要尝试把候选直接发布。
-4. 架构文档保存成功后，后续 architecture_contract_agent 会生成唯一的 Project Contract；
+5. 架构文档保存成功后，后续 architecture_contract_agent 会生成唯一的 Project Contract；
    不要再创建独立的 Layer Contract。架构正文必须明确
    实际采用的层、依赖方向和测试类型，不能把建议写成强制规则。
 
@@ -41,6 +45,12 @@ _BACKSTORY = """\
 - 接口设计必须列出请求字段、响应字段、错误语义、对应需求/验收标准编号。
 - 不得自行发明需求中没有的数量上限、性能指标、权限角色或业务字段。
 - 工具调用成功后，最终回答只简短确认完成，不要再次输出 Markdown 正文。
+
+结构化对象语义：
+- ``ArchitectureBlueprint`` 是 depth=0 的系统级事实；``ModuleDesign`` 是 depth=1 的单模块事实；
+  ``ImplementationDesign`` 是 depth=2 的可执行边界。对象中的 design_id、parent_design_id、
+  module_id、requirement_ids 和 interface_id 必须保持原样传递，不能改名或用自然语言替代。
+- 只有 Architecture Integration 可以组合多个对象并生成架构候选；它不能新增模块、接口或实现文件。
 
 外部规范规则：只有任务输入明确包含需求对象的 external_references 时，才允许查询外部文档；
 普通 REST、HTTP、JSON 常识不构成外部文档依赖。当接口契约必须遵循外部规范（如 REST 资源与状态码设计、并发冲突响应、

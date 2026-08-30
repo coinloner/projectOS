@@ -98,7 +98,7 @@ output key、文件路径或 Python 代码。
   ]
 }
 
-若选择的是带受控执行权限的模板（例如 architecture_parallel），模板会由系统完整编译，
+若选择的是带受控执行权限的模板（例如 architecture_parallel、architecture_layered），模板会由系统完整编译，
 此时 steps 可以为空；不要自行填写 execution_mode、slot、路径、候选或发布权限。
 
 规则：
