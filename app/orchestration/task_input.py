@@ -75,6 +75,7 @@ class OutputContract:
     output_slot: str | None
     publish_target: str | None
     expected_paths: tuple[str, ...] = ()
+    output_kind: str = "exclusive_artifact"
 
     @property
     def slot(self) -> str | None:
@@ -87,6 +88,7 @@ class OutputContract:
             "slot": self.slot,
             "publish_target": self.publish_target,
             "expected_paths": list(self.expected_paths),
+            "output_kind": self.output_kind,
         }
 
 
@@ -138,6 +140,8 @@ class TaskInputPackage:
     skill_refs: tuple[str, ...] = ()
     skill_guidance: str = ""
     policy_guidance: str = ""
+    contract_digest: str | None = None
+    schema_version: int = 1
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -154,7 +158,10 @@ class TaskInputPackage:
             "acceptance_criteria": list(self.acceptance_criteria),
             "constraints": list(self.constraints),
             "non_goals": list(self.non_goals),
+            "schema_version": self.schema_version,
         }
+        if self.contract_digest is not None:
+            payload["contract_digest"] = self.contract_digest
         if self.failure_package is not None:
             payload["failure_package"] = self.failure_package
         if self.implementation is not None:
@@ -343,6 +350,7 @@ def build_task_input(
             output_slot=item.slot,
             publish_target=item.publish_target,
             expected_paths=item.required_paths or item.owned_files or allowed_paths,
+            output_kind=item.output_kind or "exclusive_artifact",
         ),
         acceptance_criteria=item.acceptance_criteria,
         constraints=tuple(dict.fromkeys(constraints)),
@@ -370,6 +378,7 @@ def build_task_input(
         skill_refs=resolved_skill_refs or item.skill_refs,
         skill_guidance=skill_guidance,
         policy_guidance=policy_guidance,
+        contract_digest=item.contract_digest,
     )
 
 

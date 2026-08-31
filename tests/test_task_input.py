@@ -59,6 +59,9 @@ class TaskInputPackageTest(unittest.TestCase):
 
         self.assertEqual(data["work_item_id"], "backend")
         self.assertEqual(data["goal"], "交付 Todo 项目")
+        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(data["contract_digest"], backend.contract_digest)
+        self.assertEqual(data["output"]["output_kind"], backend.output_kind)
         self.assertNotIn("project_goal", data)
         self.assertNotIn("failure_context", data)
         self.assertEqual(data["scope"]["allowed_paths"], ["workspace/backend/**"])

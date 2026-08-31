@@ -36,6 +36,9 @@
   `DependencySummary` 只是 Prompt 展示视图。
 - `NodeStatus`、`AgentStatus`、`GraphRunStatus`、`ToolResultStatus` 和
   `SandboxStatus` 分属不同层，不能合并成一个全局状态枚举。
+- `TaskInputPackage.contract_digest`、`OutputContract.output_kind` 和
+  `TaskInputPackage.schema_version` 是 Agent 输入合同的审计字段；Agent 不得自行修改，
+  Runner 以 WorkItem 的同名合同为准。
 
 ## 持久化规则
 
