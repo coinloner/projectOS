@@ -95,7 +95,9 @@ class TraceStore:
                             }
                             for ref in item.input_refs
                         ],
-                        "output_slot": item.output_slot,
+                        # Canonical persisted name; load_plan accepts legacy
+                        # ``output_slot`` from historical traces.
+                        "slot": item.slot,
                         "publish_target": item.publish_target,
                         "candidate_from_work_item_id": item.candidate_from_work_item_id,
                         "implementation_unit_id": item.implementation_unit_id,
@@ -423,7 +425,9 @@ class TraceStore:
                         ref_from_dict(value) for value in raw.get("input_refs", [])
                     ),
                     output_slot=(
-                        str(raw["output_slot"]) if raw.get("output_slot") else None
+                        str(raw.get("slot", raw.get("output_slot")))
+                        if raw.get("slot", raw.get("output_slot"))
+                        else None
                     ),
                     publish_target=(
                         str(raw["publish_target"])
