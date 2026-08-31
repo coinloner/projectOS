@@ -44,6 +44,10 @@
 - Checkpoint 持久化已完成 WorkItem、状态和 Artifact 引用；产物 digest 由 ArtifactRepository 管理，不应把产物正文作为第二事实来源。
 - ArtifactRepository 持久化正文和可审计交付物。
 - FailurePackage 只能描述失败证据，不能修改 `WorkItem` 的权限、输出类型或所有权。
+- 每个 WorkItem 都持有 `contract_digest`。该指纹覆盖 Agent、执行模式、输入引用、DAG 依赖、
+  输出类型、允许/禁止路径、必需路径、文件所有权、验收条件和策略/技能引用；恢复或补丁应用前必须重新计算并匹配。
+- `allowed_paths` 只能在受控修复中收窄，`forbidden_paths` 只能增加限制；`owned_files`、依赖、
+  `output_kind` 和执行模式不可变。局部补丁不能通过修改依赖来绕过原有 DAG。
 
 ## 迁移约束
 

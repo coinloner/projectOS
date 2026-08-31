@@ -377,7 +377,15 @@ class PlannerService:
                 owner_files=item.owned_files or item.required_paths,
             )
             if definition.domain == "code" and repair_paths:
-                item = replace(item, allowed_paths=tuple(repair_paths), forbidden_paths=tuple(forbidden_rework))
+                item = replace(
+                    item,
+                    allowed_paths=tuple(repair_paths),
+                    forbidden_paths=tuple(forbidden_rework),
+                    # Path scope is deterministically narrowed/expanded by
+                    # the control plane from FailurePackage evidence. Seal a
+                    # fresh digest for this repaired contract.
+                    contract_digest=None,
+                )
             work_items.append(replace(item, failure_package=scoped))
         return replace(plan, work_items=work_items)
 

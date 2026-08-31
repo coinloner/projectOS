@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import fnmatch
+import hashlib
+import json
 
 from app.artifact.repository import ArtifactRef
 from app.execution_context import ExecutionMode
@@ -62,6 +64,12 @@ class WorkItem:
     wave: int = 0
     owned_files: tuple[str, ...] = ()
     delivery_contract: dict[str, object] | None = None
+    # Stable identity of the execution contract.  This is populated when a
+    # plan is compiled and carried across retries/restores; failure diagnostics
+    # are deliberately excluded so a repair can attach new evidence without
+    # changing the authorization envelope.
+    output_kind: str | None = None
+    contract_digest: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("id", "agent_id", "objective", "output_key"):
@@ -120,6 +128,10 @@ class WorkItem:
                 )
         if self.delivery_contract is not None and not isinstance(self.delivery_contract, dict):
             raise ValueError("WorkItem.delivery_contract 必须是对象")
+        if self.output_kind is None:
+            object.__setattr__(self, "output_kind", _default_output_kind(self.execution_mode))
+        elif not self.output_kind.strip():
+            raise ValueError("WorkItem.output_kind 不能是空字符串")
         dependency_ids = self.dependency_ids
         if len(set(dependency_ids)) != len(dependency_ids):
             raise ValueError(f"WorkItem '{self.id}' 包含重复依赖")
@@ -132,6 +144,11 @@ class WorkItem:
         if any(not non_goal.strip() for non_goal in self.non_goals):
             raise ValueError("WorkItem.non_goals 不能包含空字符串")
         self._validate_execution_grant()
+        computed_digest = self._compute_contract_digest()
+        if self.contract_digest is None:
+            object.__setattr__(self, "contract_digest", computed_digest)
+        elif self.contract_digest != computed_digest:
+            raise ValueError("WorkItem.contract_digest 与执行合同不匹配")
 
     @property
     def dependency_ids(self) -> tuple[str, ...]:
@@ -141,6 +158,66 @@ class WorkItem:
     def slot(self) -> str | None:
         """Canonical partition slot; serialized legacy plans may still use output_slot."""
         return self.output_slot
+
+    def _compute_contract_digest(self) -> str:
+        """Return the digest of fields that define execution authorization.
+
+        Objective/failure evidence are mutable diagnostics and are not part of
+        this identity.  Controlled repair that narrows paths or adds denies
+        must explicitly clear ``contract_digest`` so the new contract is
+        re-sealed after deterministic boundary checks.
+        """
+        payload = {
+            "agent_id": self.agent_id,
+            "execution_mode": self.execution_mode.value,
+            "input_refs": [ref.ref_id for ref in self.input_refs],
+            "dependencies": [
+                {
+                    "work_item_id": dep.work_item_id,
+                    "source": dep.source.value,
+                    "rule_id": dep.rule_id,
+                }
+                for dep in self.dependencies
+            ],
+            "output_key": self.output_key,
+            "artifact_key": self.artifact_key,
+            "output_slot": self.output_slot,
+            "publish_target": self.publish_target,
+            "candidate_from_work_item_id": self.candidate_from_work_item_id,
+            "implementation_unit_id": self.implementation_unit_id,
+            "required_paths": list(self.required_paths),
+            "owned_files": list(self.owned_files),
+            "allowed_paths": list(self.allowed_paths),
+            "forbidden_paths": list(self.forbidden_paths),
+            "acceptance_criteria": list(self.acceptance_criteria),
+            "constraints": list(self.constraints),
+            "non_goals": list(self.non_goals),
+            "policy_id": self.policy_id,
+            "policy_refs": list(self.policy_refs),
+            "skill_refs": list(self.skill_refs),
+            "requirement_ids": list(self.requirement_ids),
+            "delivery_contract": self.delivery_contract,
+            "output_kind": self.output_kind,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    @property
+    def contract(self) -> dict[str, object]:
+        """Read-only contract projection used by retry and audit validators."""
+        return {
+            "contract_digest": self.contract_digest,
+            "agent_id": self.agent_id,
+            "execution_mode": self.execution_mode.value,
+            "output_kind": self.output_kind,
+            "input_refs": [ref.ref_id for ref in self.input_refs],
+            "dependencies": list(self.dependency_ids),
+            "allowed_paths": list(self.allowed_paths),
+            "forbidden_paths": list(self.forbidden_paths),
+            "required_paths": list(self.required_paths),
+            "owned_files": list(self.owned_files),
+        }
 
     def _validate_execution_grant(self) -> None:
         if self.execution_mode is ExecutionMode.PARTITIONED:
@@ -165,3 +242,12 @@ class WorkItem:
             return
         if any(value is not None for value in (self.output_slot, self.publish_target, self.candidate_from_work_item_id)):
             raise ValueError("EXCLUSIVE WorkItem 不能携带分区、集成或发布授权")
+
+
+def _default_output_kind(execution_mode: ExecutionMode) -> str:
+    return {
+        ExecutionMode.PARTITIONED: "partition_artifact",
+        ExecutionMode.INTEGRATION: "integrated_artifact",
+        ExecutionMode.QUALITY_GATE: "quality_report",
+        ExecutionMode.EXCLUSIVE: "exclusive_artifact",
+    }[execution_mode]

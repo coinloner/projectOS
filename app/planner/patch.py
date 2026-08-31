@@ -36,6 +36,10 @@ class PlanPatch(BaseModel):
     rationale: str = Field(min_length=1, max_length=1_000)
     base_plan_id: str = Field(min_length=1, max_length=128)
     operations: list[PatchOperation] = Field(min_length=1, max_length=5)
+    # Optional audit metadata emitted by repair-aware callers.  The actual
+    # scope is still checked against the plan graph; this field is never an
+    # authority grant by itself.
+    repair_scope: list[str] = Field(default_factory=list, max_length=10)
 
     @classmethod
     def parse(cls, content: str) -> "PlanPatch":
@@ -61,6 +65,7 @@ class PlanBaseline:
     revision: int
     work_item_ids: tuple[str, ...]
     context_fingerprint: str
+    contract_digests: dict[str, str]
 
     @classmethod
     def from_plan(cls, plan: ExecutionPlan, *, revision: int = 1) -> "PlanBaseline":
@@ -73,6 +78,7 @@ class PlanBaseline:
                     "agent_id": item.agent_id,
                     "objective": item.objective,
                     "dependencies": list(item.dependency_ids),
+                    "contract_digest": item.contract_digest,
                 }
                 for item in plan.work_items
             ],
@@ -87,6 +93,7 @@ class PlanBaseline:
             revision=revision,
             work_item_ids=tuple(item.id for item in plan.work_items),
             context_fingerprint=fingerprint,
+            contract_digests={item.id: item.contract_digest or "" for item in plan.work_items},
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -97,6 +104,7 @@ class PlanBaseline:
             "revision": self.revision,
             "work_item_ids": list(self.work_item_ids),
             "context_fingerprint": self.context_fingerprint,
+            "contract_digests": dict(self.contract_digests),
         }
 
 
@@ -126,8 +134,45 @@ def apply_patch(
     if any(item.execution_mode is not ExecutionMode.EXCLUSIVE for item in plan.work_items):
         raise PlanPatchError("受控 Workflow 不能直接应用局部补丁，请创建新的受控运行")
 
+    # A persisted plan may have been tampered with between attempts.  Rebuild
+    # validation in WorkItem.__post_init__ catches malformed digests; this
+    # explicit check keeps the failure at the patch boundary with a useful
+    # control-plane error instead of letting a Worker start with a different
+    # authorization envelope.
+    for item in plan.work_items:
+        if item.contract_digest != item._compute_contract_digest():
+            raise PlanPatchError(f"WorkItem 合同指纹无效: {item.id}")
+
     by_id = {item.id: item for item in plan.work_items}
     operations = patch.operations
+    if patch.repair_scope:
+        scope = set(patch.repair_scope)
+        unknown_scope = scope - set(by_id)
+        if unknown_scope:
+            raise PlanPatchError(
+                "repair_scope 引用了不存在的 WorkItem: " + ", ".join(sorted(unknown_scope))
+            )
+        out_of_scope = {
+            op.work_item_id
+            for op in operations
+            if op.work_item_id and op.work_item_id not in scope
+        }
+        if out_of_scope:
+            raise PlanPatchError(
+                "PlanPatch 超出 repair_scope: " + ", ".join(sorted(out_of_scope))
+            )
+        out_of_scope_dependencies = {
+            dependency
+            for op in operations
+            if op.depends_on
+            for dependency in op.depends_on
+            if dependency not in scope
+        }
+        if out_of_scope_dependencies:
+            raise PlanPatchError(
+                "PlanPatch 依赖超出 repair_scope: "
+                + ", ".join(sorted(out_of_scope_dependencies))
+            )
     modified = [op for op in operations if op.operation == "modify"]
     added = [op for op in operations if op.operation == "add"]
     removed = [op for op in operations if op.operation == "remove"]
@@ -135,6 +180,8 @@ def apply_patch(
         op.depends_on != [] and op.work_item_id in by_id and tuple(op.depends_on) != by_id[op.work_item_id].dependency_ids
         for op in modified
     )
+    if dependency_changes:
+        raise PlanPatchError("WorkItem 合同已冻结，局部补丁不能修改 dependencies")
     if len(modified) > budget.max_modified:
         raise PlanPatchError("局部修改超过修改节点数量预算")
     if len(added) > budget.max_added:
@@ -216,6 +263,9 @@ def apply_patch(
                 policy_refs=item.policy_refs,
                 skill_refs=item.skill_refs,
                 requirement_ids=item.requirement_ids,
+                delivery_contract=item.delivery_contract,
+                output_kind=item.output_kind,
+                contract_digest=item.contract_digest,
             )
         )
         invalidated.add(item.id)

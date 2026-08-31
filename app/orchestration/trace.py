@@ -105,6 +105,8 @@ class TraceStore:
                         "wave": item.wave,
                         "owned_files": list(item.owned_files),
                         "delivery_contract": item.delivery_contract,
+                        "output_kind": item.output_kind,
+                        "contract_digest": item.contract_digest,
                         "policy_refs": list(item.policy_refs),
                         "skill_refs": list(item.skill_refs),
                         "requirement_ids": list(item.requirement_ids),
@@ -446,6 +448,16 @@ class TraceStore:
                     delivery_contract=(
                         dict(raw["delivery_contract"])
                         if isinstance(raw.get("delivery_contract"), dict)
+                        else None
+                    ),
+                    output_kind=(
+                        str(raw["output_kind"])
+                        if raw.get("output_kind")
+                        else None
+                    ),
+                    contract_digest=(
+                        str(raw["contract_digest"])
+                        if raw.get("contract_digest")
                         else None
                     ),
                     policy_refs=tuple(str(value) for value in raw.get("policy_refs", [])),

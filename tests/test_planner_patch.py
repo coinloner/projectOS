@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from app.agent.registry import AgentDefinition, AgentRegistry
 from app.orchestration.plan import ExecutionPlan
@@ -44,6 +45,51 @@ def plan() -> ExecutionPlan:
 
 
 class PlannerPatchTest(unittest.TestCase):
+    def test_work_item_contract_digest_is_stable_for_objective_diagnostics(self) -> None:
+        item = plan().work_item("wi-api")
+        assert item is not None
+        revised = replace(item, objective="修复后的 API 设计")
+        self.assertEqual(revised.contract_digest, item.contract_digest)
+
+    def test_work_item_rejects_tampered_contract_digest(self) -> None:
+        item = plan().work_item("wi-api")
+        assert item is not None
+        with self.assertRaisesRegex(ValueError, "contract_digest"):
+            replace(item, contract_digest="tampered")
+
+    def test_work_item_rejects_permission_change_with_old_digest(self) -> None:
+        item = plan().work_item("wi-api")
+        assert item is not None
+        with self.assertRaisesRegex(ValueError, "contract_digest"):
+            replace(item, allowed_paths=("workspace/**",))
+
+    def test_dependency_changes_are_rejected_by_frozen_contract(self) -> None:
+        patch = PlanPatch.model_validate(
+            {
+                "rationale": "改变依赖",
+                "base_plan_id": "plan-patch",
+                "operations": [
+                    {"operation": "modify", "work_item_id": "wi-test", "depends_on": ["wi-api", "wi-extra"]}
+                ],
+            }
+        )
+        with self.assertRaisesRegex(PlanPatchError, "合同已冻结"):
+            apply_patch(plan(), patch, agents=agents())
+
+    def test_repair_scope_rejects_out_of_scope_operations(self) -> None:
+        patch = PlanPatch.model_validate(
+            {
+                "rationale": "局部修复",
+                "base_plan_id": "plan-patch",
+                "repair_scope": ["wi-test"],
+                "operations": [
+                    {"operation": "modify", "work_item_id": "wi-api", "objective": "越界"}
+                ],
+            }
+        )
+        with self.assertRaisesRegex(PlanPatchError, "超出 repair_scope"):
+            apply_patch(plan(), patch, agents=agents())
+
     def test_modify_invalidates_changed_node_and_descendants(self) -> None:
         result = apply_patch(
             plan(),

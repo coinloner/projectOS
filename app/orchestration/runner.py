@@ -739,6 +739,10 @@ class GraphRunner:
             replace(
                 item,
                 dependencies=item.dependencies + base_dependencies,
+                # Dependencies are part of the compiled contract.  This is a
+                # new WorkItem expansion (not a retry), so recompute its
+                # digest after wiring the integration prerequisites.
+                contract_digest=None,
             )
             for item in compiled.work_items
         )
@@ -762,6 +766,7 @@ class GraphRunner:
                 for item in code_items
             ),
             input_refs=refs,
+            contract_digest=None,
         )
         remaining = tuple(
             item for item in plan.work_items if item.id != integration.id

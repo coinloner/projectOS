@@ -891,7 +891,12 @@ def _refresh_repair_plan(plan, traces: TraceStore):
                 "tests/**", ".projectos/**", "project.yaml", "runtime.yaml",
             )))
             if paths and (item.allowed_paths != tuple(paths) or item.forbidden_paths != forbidden):
-                next_item = replace(item, allowed_paths=tuple(paths), forbidden_paths=forbidden)
+                next_item = replace(
+                    item,
+                    allowed_paths=tuple(paths),
+                    forbidden_paths=forbidden,
+                    contract_digest=None,
+                )
                 changed = True
         if next_item.failure_package != enriched:
             next_item = replace(next_item, failure_package=enriched)
