@@ -215,6 +215,18 @@ class TraceStoreTest(unittest.TestCase):
             restored_state = RunState.from_checkpoint(restored_plan, checkpoint)
             self.assertEqual(restored_state.node_results, {})
 
+            # A completed checkpoint with a changed contract must not be
+            # accepted during restore.
+            checkpoint["artifact_refs"] = {
+                "requirement": {
+                    "artifact_key": "requirement",
+                    "work_item_id": "wi-resume",
+                    "contract_digest": "tampered",
+                }
+            }
+            with self.assertRaisesRegex(ValueError, "合同指纹"):
+                RunState.from_checkpoint(restored_plan, checkpoint)
+
             succeeding = AgentRegistry()
             succeeding.register(
                 AgentDefinition(

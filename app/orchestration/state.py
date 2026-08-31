@@ -26,6 +26,7 @@ class RunState:
             plan_item.output_key: {
                 "artifact_key": plan_item.artifact_key or plan_item.output_key,
                 "work_item_id": plan_item.id,
+                "contract_digest": plan_item.contract_digest,
             }
             for plan_item in self.plan.work_items
             if plan_item.id in completed
@@ -95,6 +96,23 @@ class RunState:
         raw_refs = checkpoint.get("artifact_refs", {})
         if raw_refs and not isinstance(raw_refs, dict):
             raise ValueError("checkpoint.artifact_refs 格式无效")
+        if isinstance(raw_refs, dict):
+            for output_key, raw_ref in raw_refs.items():
+                if not isinstance(raw_ref, dict):
+                    raise ValueError("checkpoint.artifact_refs 包含无效引用")
+                work_item_id = raw_ref.get("work_item_id")
+                item = plan.work_item(str(work_item_id)) if work_item_id else None
+                if item is None:
+                    raise ValueError("checkpoint.artifact_refs 包含不属于当前计划的 WorkItem")
+                if str(output_key) != item.output_key:
+                    raise ValueError("checkpoint.artifact_refs 的 output_key 与 WorkItem 不匹配")
+                digest = raw_ref.get("contract_digest")
+                # Historical checkpoints predate contract_digest.  They remain
+                # readable, while every new checkpoint is checked strictly.
+                if digest is not None and str(digest) != item.contract_digest:
+                    raise ValueError(
+                        f"checkpoint WorkItem 合同指纹不匹配: {item.id}"
+                    )
         completed_output_keys = {
             plan.work_item(item_id).output_key
             for item_id, result in results.items()
