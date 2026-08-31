@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Protocol
+import json
+import re
 
 from app.execution_context import ExecutionContext
 
@@ -26,10 +28,154 @@ class ToolDef:
     completion_policy: str = "continue"
 
     def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.name):
+            raise ValueError(f"工具名称必须是合法标识符: {self.name!r}")
+        if not isinstance(self.description, str):
+            raise ValueError(f"工具 '{self.name}' 的 description 必须是字符串")
+        if not isinstance(self.parameters, dict):
+            raise ValueError(f"工具 '{self.name}' 的 parameters 必须是 object")
+        schema_type = self.parameters.get("type", "object")
+        if schema_type != "object":
+            raise ValueError(f"工具 '{self.name}' 的 parameters 根类型必须是 object")
+        properties = self.parameters.get("properties", {})
+        if not isinstance(properties, dict):
+            raise ValueError(f"工具 '{self.name}' 的 properties 必须是 object")
+        required = self.parameters.get("required", [])
+        if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+            raise ValueError(f"工具 '{self.name}' 的 required 必须是字符串数组")
+        unknown_required = set(required) - set(properties)
+        if unknown_required:
+            raise ValueError(
+                f"工具 '{self.name}' 的 required 引用了未知字段: {', '.join(sorted(unknown_required))}"
+            )
+        if self.execution_modes is not None:
+            allowed_modes = {"exclusive", "partitioned", "integration", "quality_gate"}
+            if not self.execution_modes or any(mode not in allowed_modes for mode in self.execution_modes):
+                raise ValueError(f"工具 '{self.name}' 的 execution_modes 包含未知执行模式")
         if self.completion_policy not in {"continue", "final"}:
             raise ValueError(
                 f"工具 '{self.name}' 的 completion_policy 必须是 'continue' 或 'final'"
             )
+
+
+class ToolResultStatus(str, Enum):
+    """工具调用的控制面状态；与 Agent/Node 状态保持正交。"""
+
+    COMPLETED = "completed"
+    FAILED = "failed"
+    RETRYABLE = "retryable"
+    BLOCKED = "blocked"
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    """统一工具结果信封。
+
+    领域服务仍可返回字符串；ToolSource 在边界将其解释为该信封。
+    ``ok=false`` 的领域响应不会被当作终态成功。
+    """
+
+    tool_name: str
+    status: ToolResultStatus
+    message: str = ""
+    data: Any = None
+    error_type: str | None = None
+    retryable: bool = False
+    expected_tool: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == ToolResultStatus.COMPLETED
+
+    @classmethod
+    def from_value(cls, tool_name: str, value: Any) -> "ToolResult":
+        if isinstance(value, ToolResult):
+            return value
+        if isinstance(value, dict) and "ok" in value and not isinstance(value.get("ok"), bool):
+            return cls(
+                tool_name=tool_name,
+                status=ToolResultStatus.FAILED,
+                message="工具结果 ok 字段必须是 boolean",
+                data=value,
+                error_type="tool_result_invalid",
+            )
+        if isinstance(value, dict) and value.get("ok") is False:
+            detail = value.get("errors") or value.get("details")
+            message = str(value.get("message") or value.get("error") or "工具返回失败")
+            if detail:
+                message = f"{message}: {json.dumps(detail, ensure_ascii=False)}"
+            raw_status = value.get("status")
+            status = (
+                ToolResultStatus.BLOCKED
+                if raw_status == ToolResultStatus.BLOCKED.value
+                else ToolResultStatus.RETRYABLE
+                if value.get("retryable") or raw_status == ToolResultStatus.RETRYABLE.value
+                else ToolResultStatus.FAILED
+            )
+            return cls(
+                tool_name=tool_name,
+                status=status,
+                message=message,
+                data=value,
+                error_type=str(value.get("error_type") or "tool_result_invalid"),
+                retryable=bool(value.get("retryable")) or status is ToolResultStatus.RETRYABLE,
+                expected_tool=(str(value["expected_tool"]) if value.get("expected_tool") else None),
+            )
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict) and parsed.get("ok") is False:
+                return cls.from_value(tool_name, parsed)
+        return cls(tool_name=tool_name, status=ToolResultStatus.COMPLETED, message=str(value), data=value)
+
+    @classmethod
+    def failure(
+        cls, tool_name: str, error: BaseException, *, error_type: str | None = None
+    ) -> "ToolResult":
+        kind = error_type or classify_tool_error(error)
+        retryable = kind in {"tool_validation", "input_missing", "tool_transport", "tool_protocol"}
+        return cls(
+            tool_name=tool_name,
+            status=ToolResultStatus.RETRYABLE if retryable else ToolResultStatus.FAILED,
+            message=str(error),
+            error_type=kind,
+            retryable=retryable,
+        )
+
+
+class ToolExecutionError(RuntimeError, ValueError):
+    """工具执行失败，明确区别于动态能力缺失。"""
+
+    def __init__(self, result: ToolResult, *, cause: BaseException | None = None) -> None:
+        self.result = result
+        self.cause = cause
+        status = getattr(result.status, "value", str(result.status))
+        super().__init__(
+            f"工具 '{result.tool_name}' 执行失败 [{result.error_type or status}]: {result.message}"
+        )
+
+
+class ToolDiscoveryError(RuntimeError):
+    """动态来源声明不可用；与工具执行和能力审批保持不同语义。"""
+
+    def __init__(self, source_name: str, cause: BaseException) -> None:
+        self.source_name = source_name
+        self.cause = cause
+        super().__init__(f"工具来源 '{source_name}' 发现失败: {cause}")
+
+
+def classify_tool_error(error: BaseException) -> str:
+    if isinstance(error, PermissionError):
+        return "tool_authorization"
+    if isinstance(error, (FileNotFoundError, LookupError)):
+        return "input_missing"
+    if isinstance(error, (TypeError, ValueError)):
+        return "tool_validation"
+    if isinstance(error, (TimeoutError, ConnectionError, OSError)):
+        return "tool_transport"
+    return "tool_execution"
 
 
 class ToolExposure(str, Enum):
@@ -77,6 +223,21 @@ class ToolSource(ABC):
         """
         ...
 
+    def execute_safe(
+        self,
+        name: str,
+        arguments: dict,
+        *,
+        context: ExecutionContext | None = None,
+    ) -> ToolResult:
+        """统一调用边界；动态能力请求不得由工具异常隐式产生。"""
+        try:
+            return ToolResult.from_value(name, self.execute(name, arguments, context=context))
+        except ToolExecutionError as error:
+            return error.result
+        except Exception as error:
+            return ToolResult.failure(name, error)
+
 
 # ── 来源实现 ─────────────────────────────────
 
@@ -114,13 +275,15 @@ class ToolSetSource(ToolSource):
         *,
         context: ExecutionContext | None = None,
     ) -> str:
-        fn = self._fns[name]
         try:
+            fn = self._fns[name]
             result = str(fn(**arguments))
         except Exception as error:
-            _record_memory_tool_result(context, name, f"工具执行失败: {error}")
-            raise
-        _record_memory_tool_result(context, name, result)
+            failure = ToolResult.failure(name, error)
+            _record_memory_tool_result(context, name, str(failure.message), tool_result=failure)
+            raise ToolExecutionError(failure, cause=error) from error
+        parsed = ToolResult.from_value(name, result)
+        _record_memory_tool_result(context, name, result, tool_result=parsed)
         return result
 
 
@@ -152,18 +315,27 @@ class ExecutionToolSetSource(ToolSource):
         context: ExecutionContext | None = None,
     ) -> str:
         if context is None:
-            raise RuntimeError(f"工具 '{name}' 必须由 GraphRunner 在 Trace 中执行")
+            error = RuntimeError(f"工具 '{name}' 必须由 GraphRunner 在 Trace 中执行")
+            failure = ToolResult.failure(name, error)
+            raise ToolExecutionError(failure, cause=error) from error
         try:
-            result = str(self._fns[name](context, **arguments))
+            fn = self._fns[name]
+            result = str(fn(context, **arguments))
         except Exception as error:
-            _record_memory_tool_result(context, name, f"工具执行失败: {error}")
-            raise
-        _record_memory_tool_result(context, name, result)
+            failure = ToolResult.failure(name, error)
+            _record_memory_tool_result(context, name, str(error), tool_result=failure)
+            raise ToolExecutionError(failure, cause=error) from error
+        parsed = ToolResult.from_value(name, result)
+        _record_memory_tool_result(context, name, result, tool_result=parsed)
         return result
 
 
 def _record_memory_tool_result(
-    context: ExecutionContext | None, tool_name: str, result: str
+    context: ExecutionContext | None,
+    tool_name: str,
+    content: str,
+    *,
+    tool_result: ToolResult | None = None,
 ) -> None:
     if context is None or context.memory is None:
         return
@@ -171,11 +343,17 @@ def _record_memory_tool_result(
         trace_id=context.trace_id,
         role="tool",
         event_type="tool_result",
-        content=result,
+        content=content,
         work_item_id=context.work_item_id,
         agent_id=context.agent_id,
         tool_name=tool_name,
-        metadata={"execution_mode": context.execution_mode.value},
+        metadata={
+            "execution_mode": context.execution_mode.value,
+            "ok": tool_result.ok if tool_result is not None else True,
+            "status": tool_result.status.value if tool_result is not None else ToolResultStatus.COMPLETED.value,
+            "error_type": tool_result.error_type if tool_result is not None else None,
+            "retryable": tool_result.retryable if tool_result is not None else False,
+        },
     )
 
 
@@ -228,19 +406,28 @@ class MCPToolSource(ToolSource):
         context: ExecutionContext | None = None,
     ) -> str:
         if self._client is None:
-            raise RuntimeError("MCP client 尚未配置")
+            error = RuntimeError("MCP client 尚未配置")
+            failure = ToolResult.failure(name, error, error_type="tool_transport")
+            raise ToolExecutionError(failure, cause=error) from error
         try:
             result = str(self._client.call_tool(name, arguments))
         except Exception as error:
-            _record_memory_tool_result(context, name, f"工具执行失败: {error}")
-            raise
-        _record_memory_tool_result(context, name, result)
+            failure = ToolResult.failure(name, error, error_type="tool_transport")
+            _record_memory_tool_result(context, name, str(error), tool_result=failure)
+            raise ToolExecutionError(failure, cause=error) from error
+        parsed = ToolResult.from_value(name, result)
+        _record_memory_tool_result(context, name, result, tool_result=parsed)
         return result
 
     @staticmethod
     def _to_tool_def(tool: dict[str, Any]) -> ToolDef:
+        if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+            raise ValueError("MCP 工具声明缺少合法 name")
+        schema = tool.get("inputSchema", tool.get("parameters", {"type": "object", "properties": {}}))
+        if not isinstance(schema, dict):
+            raise ValueError(f"MCP 工具 '{tool['name']}' 的 inputSchema 必须是 object")
         return ToolDef(
             name=tool["name"],
             description=tool.get("description", ""),
-            parameters=tool.get("inputSchema", tool.get("parameters", {})),
+            parameters=schema,
         )

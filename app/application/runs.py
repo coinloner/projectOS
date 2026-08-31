@@ -19,6 +19,7 @@ from app.agent.result import normalize_capability
 from app.orchestration.runner import GraphRunResult, GraphRunStatus
 from app.orchestration.state import RunState
 from app.orchestration.node_result import NodeResult
+from app.artifact.repository import ArtifactRef
 from app.orchestration.trace import TraceStore
 from app.planner.service import PlannerFailure
 from app.orchestration.progress import (
@@ -128,21 +129,87 @@ def _load_delivery_resume(
         plan = _refresh_repair_plan(container.traces.load_delivery_plan(trace_id), container.traces)
     except (FileNotFoundError, ValueError):
         plan = _refresh_repair_plan(container.traces.load_plan(trace_id), container.traces)
-    try:
-        checkpoint = container.traces.load_delivery_checkpoint(trace_id)
-        state = RunState.from_checkpoint(plan, checkpoint)
-    except FileNotFoundError:
+    # ``delivery-checkpoint.json`` is a pre-repair baseline and may contain an
+    # empty state by design. For a normal delivery run, the latest
+    # ``checkpoint.json`` is authoritative because GraphRunner updates it
+    # after every completed WorkItem. Prefer it to avoid replaying completed
+    # nodes after a Provider stall.
+    checkpoint_loaders = (
+        (container.traces.load_checkpoint, container.traces.load_delivery_checkpoint)
+        if "-repair-" not in plan.id
+        else (container.traces.load_delivery_checkpoint, container.traces.load_checkpoint)
+    )
+    state = None
+    for load_checkpoint in checkpoint_loaders:
         try:
-            checkpoint = container.traces.load_checkpoint(trace_id)
-            if checkpoint.get("plan_id") == plan.id:
+            checkpoint = load_checkpoint(trace_id)
+            if checkpoint.get("plan_id") in {None, plan.id}:
                 state = RunState.from_checkpoint(plan, checkpoint)
-            else:
-                state = _rebuild_delivery_state(container, plan, trace_id)
+                # A hard Worker stop can leave a syntactically valid but empty
+                # checkpoint. The event log is append-only and already records
+                # completed WorkItems, so rebuild from those facts instead of
+                # replaying the whole delivery DAG.
+                if not state.node_results:
+                    rebuilt = _rebuild_delivery_state(container, plan, trace_id)
+                    if rebuilt.node_results:
+                        state = rebuilt
+                break
         except (FileNotFoundError, ValueError):
-            state = _rebuild_delivery_state(container, plan, trace_id)
-    except ValueError:
+            continue
+    if state is None:
         state = _rebuild_delivery_state(container, plan, trace_id)
-    return plan, state
+    return plan, _sanitize_resume_state(container, state)
+
+
+def _sanitize_resume_state(container: ProjectOSContainer, state: RunState) -> RunState:
+    """Revalidate persisted architecture hand-offs before resuming downstream work."""
+    valid: dict[str, NodeResult] = {}
+    for item in state.plan.work_items:
+        result = state.node_results.get(item.id)
+        if result is None:
+            continue
+        if any(dep not in valid for dep in item.dependency_ids):
+            continue
+        if item.agent_id == "architecture_agent" and item.execution_mode.value == "partitioned":
+            ref = ArtifactRef.staged(
+                artifact_key="architecture",
+                trace_id=state.plan.trace.trace_id,
+                work_item_id=item.id,
+                slot=item.output_slot or "",
+            )
+            try:
+                container.artifact_repository.load_ref(ref)
+            except (FileNotFoundError, RuntimeError, ValueError):
+                continue
+        # Compiled ids carry a numeric ``wi-XX-`` prefix; use the semantic
+        # integration role rather than relying on one historical index.
+        if (
+            item.agent_id == "architecture_agent"
+            and item.execution_mode.value == "integration"
+            and item.publish_target == "architecture"
+            and item.id.endswith("architecture-layered-integration")
+        ):
+            try:
+                container.artifact_repository.candidate_for_work_item(
+                    trace_id=state.plan.trace.trace_id,
+                    artifact_key="architecture",
+                    work_item_id=item.id,
+                )
+            except (FileNotFoundError, RuntimeError, ValueError):
+                continue
+        valid[item.id] = result
+    artifacts: dict[str, str] = {}
+    for item_id, result in valid.items():
+        if result.content is not None:
+            artifacts[item_id] = result.content
+    state.node_results = valid
+    state.artifacts = {
+        item.output_key: content
+        for item in state.plan.work_items
+        for content in [artifacts.get(item.id)]
+        if content is not None
+    }
+    return state
 
 
 def _repair_execution_pending(traces: TraceStore, trace_id: str) -> bool:

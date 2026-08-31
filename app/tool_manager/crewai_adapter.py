@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import json
 from typing import Any, Literal, Union
 
 from crewai.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, create_model
 
 from app.tool_manager.catalog import ToolRegistration
-from app.tool_manager.source import ToolDef
+from app.tool_manager.source import ToolDef, ToolExecutionError, ToolResult
 from app.execution_context import ExecutionContext
 
 
@@ -60,8 +59,9 @@ class ProjectOSTool(BaseTool):
                     tool_name, arguments, context=self._context
                 )
             )
-            if tool_name == "save_implementation_contract":
-                _raise_for_contract_failure(result)
+            tool_result = ToolResult.from_value(tool_name, result)
+            if not tool_result.ok:
+                raise ToolExecutionError(tool_result)
         except Exception:
             if progress is not None:
                 progress.tool_completed(tool_name, success=False)
@@ -277,21 +277,6 @@ def _allows_null(schema: dict[str, Any]) -> bool:
     return isinstance(variants, list) and any(
         isinstance(item, dict) and item.get("type") == "null" for item in variants
     )
-
-
-def _raise_for_contract_failure(result: str) -> None:
-    """Make a machine-readable validation response non-terminal for CrewAI."""
-
-    try:
-        payload = json.loads(result)
-    except (TypeError, ValueError):
-        return
-    if isinstance(payload, dict) and payload.get("ok") is False:
-        # Preserve the complete machine-readable envelope (error_type, paths,
-        # codes and messages) in the exception text that CrewAI feeds back to
-        # the Agent for a bounded correction turn.
-        detail = json.dumps(payload, ensure_ascii=False)
-        raise ValueError(f"Project Contract 校验失败: {detail}")
 
 
 def _ensure_allowed_keys(

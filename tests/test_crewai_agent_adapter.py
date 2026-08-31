@@ -8,6 +8,7 @@ from app.agent.result import AgentStatus
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import ToolDef, ToolSetSource
+from app.tool_manager.source import ToolExecutionError
 
 
 class FakeCrewAgent:
@@ -118,6 +119,42 @@ class CrewAIAgentAdapterTest(unittest.TestCase):
                 ),
                 "app = 1\n",
             )
+
+    def test_local_tool_capability_claim_is_typed_protocol_failure(self) -> None:
+        gateway = ToolGateway()
+        gateway.register_toolset(
+            "requirement",
+            "local",
+            ToolSetSource(
+                [
+                    (
+                        ToolDef(
+                            name="save_requirement",
+                            description="save",
+                            parameters={"type": "object", "properties": {}},
+                        ),
+                        lambda: "saved",
+                    )
+                ]
+            ),
+        )
+
+        class MisreportingAgent(FakeCrewAgent):
+            def execute_task(self, task: object) -> str:
+                return '{"type":"capability_request","capability":"save_requirement","reason":"工具不可用"}'
+
+        with patch("app.agent.base_agent.Agent", side_effect=MisreportingAgent), patch(
+            "app.agent.base_agent.Task", side_effect=lambda **kwargs: kwargs
+        ), patch("app.agent.base_agent.build_llm", return_value=object()):
+            agent = BaseAgent(
+                gateway=gateway,
+                domain="requirement",
+                role="需求分析师",
+                goal="生成需求文档",
+                backstory="整理用户需求",
+            )
+            with self.assertRaisesRegex(ToolExecutionError, "save_requirement"):
+                agent.run("生成需求")
 
 
 if __name__ == "__main__":

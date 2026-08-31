@@ -39,16 +39,14 @@ ToolGateway.register_source(
 ## 3. Source 授权
 
 ```python
-ToolGateway.activate_source(domain: str, name: str) -> None
-ToolGateway.deactivate_source(domain: str, name: str) -> None
+ToolGateway.activate_grant(grant: CapabilityGrant) -> int
+ToolGateway.deactivate_grant(grant_id: str) -> None
 ```
 
 | 方法 | 说明 |
 |---|---|
-| `activate_source()` | 授权指定 source，并允许动态来源 discover |
-| `deactivate_source()` | 撤销指定 source 的会话授权 |
-
-旧版 `enable_external()`、`activate_external()`、`deactivate_external()` 暂时保留为兼容入口；新的 GraphRunner 上层必须使用按 source 授权的 API。
+| `activate_grant()` | 按 capability/source 与 node/trace/project scope 激活已持久化授权，并允许动态来源 discover |
+| `deactivate_grant()` | 撤销指定 grant；已创建的工具对象在实际执行时也会重新检查授权 |
 
 ## 4. 获取 CrewAI 工具
 
@@ -61,7 +59,7 @@ ToolGateway.tools_for(domain: str) -> list[BaseTool]
 1. `always` 的本地 ToolSet
 2. 已激活 source 中、策略允许的动态工具
 
-CrewAI 负责调用工具、参数验证和调用循环。每个 `BaseTool` 会把验证后的参数委托给注册时对应的 `ToolSource.execute()`。
+CrewAI 负责调用工具、参数验证和调用循环。每个 `BaseTool` 会把验证后的参数委托给注册时对应的 `ToolSource.execute()`；工具结果统一解释为 `ToolResult`，失败不会被当作终态。
 
 ## 5. 按能力查找来源
 
@@ -81,4 +79,4 @@ ToolGateway.find_sources_for_capability(
 3. Agent 不控制 source 授权。
 4. 本地工具不动态扫描。
 5. 未激活的动态来源不会 discover。
-6. 新 Source 只需实现 `discover()` 和 `execute()`。
+6. 新 Source 只需实现 `discover()` 和 `execute()`；可直接使用 `execute_safe()` 获取统一结果信封。

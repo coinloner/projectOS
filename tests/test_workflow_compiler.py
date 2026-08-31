@@ -11,10 +11,24 @@ from app.planner.validator import PlanValidator
 from app.agent.registry import AgentDefinition, AgentRegistry
 from app.workflow.compiler import TemplateCompiler
 from app.workflow.template import TaskBlueprint, WorkflowTemplate, WorkflowTemplateRegistry
-from app.workflow.templates import architecture_compact_template, architecture_parallel_template
+from app.workflow.templates import (
+    architecture_compact_template,
+    architecture_parallel_template,
+    project_delivery_layered_template,
+)
 
 
 class WorkflowCompilerTest(unittest.TestCase):
+    def test_layered_delivery_template_contains_architecture_barrier(self) -> None:
+        template = project_delivery_layered_template()
+        self.assertEqual(template.nodes[0].id, "requirement")
+        self.assertEqual(template.nodes[1].id, "architecture-blueprint")
+        contract = next(node for node in template.nodes if node.id == "architecture-layered-contract")
+        tasks = next(node for node in template.nodes if node.id == "tasks-plan")
+        self.assertIn("architecture-layered-quality-gate", tasks.depends_on)
+        self.assertIn("architecture-layered-contract", tasks.depends_on)
+        self.assertEqual(contract.execution_mode, ExecutionMode.INTEGRATION)
+
     def test_compiles_controlled_template_into_scopes_integration_and_gate(self) -> None:
         template = architecture_parallel_template()
         trace = TraceContext(requirement_id="req-architecture", trace_id="tr-architecture")

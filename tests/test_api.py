@@ -65,6 +65,11 @@ class ApiTest(unittest.TestCase):
                     "description": "生成需求、架构合同、实施任务、并行代码分区、测试证据和审查报告。",
                 },
                 {
+                    "id": "project_delivery_layered",
+                    "name": "分层项目交付",
+                    "description": "复杂项目使用三层结构化架构合同，再进入任务、代码、测试和审查闭环。",
+                },
+                {
                     "id": "project_delivery_minimal",
                     "name": "最小项目交付",
                     "description": "使用已有需求和架构，生成任务、环境、并行代码、测试和审查结果。",

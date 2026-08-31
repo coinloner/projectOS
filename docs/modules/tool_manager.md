@@ -34,11 +34,13 @@ ToolGateway
 | `ToolDef` | 描述工具：name / description / parameters，及可选 `execution_modes` 与 `completion_policy` |
 | `ToolSetSource` | 承载本地 ToolSet，保存 `ToolDef -> Callable` 映射 |
 | `ExecutionToolSetSource` | 承载需要可信执行身份的本地工具，系统注入 `ExecutionContext` |
-| 动态 `ToolSource` | 未来通过可注入的 MCP client 发现和调用远端工具 |
+| 动态 `ToolSource` | 通过可注入的 MCP client 按授权发现和调用远端工具 |
 | `ToolCatalog` | 保存工具声明与其注册上下文 |
 | `ToolAccessPolicy` | 判断工具是否可以向 Agent 暴露 |
 | `ProjectOSTool` | 持有注册记录，执行时委托对应 `ToolSource` |
 | `ToolGateway` | 选择并产出当前 domain 的 CrewAI 工具 |
+| `ToolResult` | 工具调用统一结果信封：状态、错误类型、可重试性和结构化数据 |
+| `ToolExecutionError` | 工具执行失败的显式异常，不等价于 `capability_request` |
 
 ## 生命周期
 
@@ -64,6 +66,16 @@ CrewAI 的 `result_as_answer=True`，工具成功后直接结束当前 Agent 调
 
 `context` 只能由 GraphRunner 创建和绑定，不属于 JSON Schema。普通 `ToolSetSource` 忽略它；`ExecutionToolSetSource` 拒绝缺少它的调用，用于 Sandbox evidence 等必须追溯到 Trace 和 WorkItem 的动作。
 
+所有来源在边界都提供 `execute_safe()`。成功文本包装为 `ToolResult(status=completed)`；领域
+返回的 `ok=false` 保留 `error_type/errors/retryable` 并阻止终态；异常则按
+`tool_validation`、`input_missing`、`tool_transport`、`tool_authorization` 或
+`tool_execution` 或 `tool_protocol` 分类为 `ToolExecutionError`。只有显式的 Agent `capability_request` 才会进入
+能力授权，工具参数错误、远端断开和来源发现失败走工具/Provider 重试路径。
+
+`ToolDef` 注册时校验合法工具名、对象根 schema、required 字段和执行模式；MCP 动态声明在
+Catalog 刷新时校验，失败会以 `ToolDiscoveryError` 暴露给 Runner。工具结果同时写入 Memory 的
+`tool_result` 事件，并带有 `ok/status/error_type/retryable` 元数据，便于断点恢复和审查追溯。
+
 当 `ToolDef.execution_modes` 有值时，Gateway 还会把它与可信的
 `ExecutionContext.execution_mode` 比对后才生成 `BaseTool`。这不是访问策略的替代品：
 `ToolAccessPolicy` 仍控制来源授权；执行模式只把同一 domain 内不同 WorkItem 的最小工具集
@@ -75,6 +87,6 @@ CrewAI 的 `result_as_answer=True`，工具成功后直接结束当前 Agent 调
 
 - 本地工具不扫描，以 ToolSet 为单位注册。
 - Agent 不参与 MCP 授权。
-- MCP 默认锁住，GraphRunner 的上层需要时按 source 调用 `activate_source()`。
+- MCP 默认锁住，GraphRunner 的上层需要时按持久化 `CapabilityGrant` 调用 `activate_grant()`。
 - `ToolDef` 不包含 `fn`，执行逻辑归 `ToolSource.execute()`。
 - `find_sources_for_capability()` 只查注册元数据，不会因查询能力缺口而连接 MCP。

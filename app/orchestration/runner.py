@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import fnmatch
 import ast
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -16,6 +17,7 @@ from app.artifact.store import ArtifactStore
 from app.memory.context import MemoryContextAssembler
 from app.memory.store import MemoryStore
 from app.tool_manager.gateway import ToolGateway
+from app.tool_manager.source import ToolDiscoveryError, ToolExecutionError
 from app.orchestration.node_result import NodeResult, NodeStatus
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.state import RunState
@@ -43,6 +45,137 @@ from app.orchestration.evidence import RuntimeEvidence
 
 def _agent_result_text(result) -> str:
     return str(result)
+
+
+def _provider_failure_kind(error: BaseException) -> FailureKind | None:
+    """Classify transport/terminal failures separately from agent logic errors."""
+    text = str(error).lower()
+    transport_markers = (
+        "peer closed connection",
+        "incomplete chunked read",
+        "connection reset",
+        "connection aborted",
+        "remote end closed",
+        "read timeout",
+        "timed out",
+    )
+    if any(marker in text for marker in transport_markers):
+        return FailureKind.PROVIDER_TRANSPORT
+    terminal_markers = (
+        "finish reason",
+        "terminal signal",
+        "incomplete response",
+        "stream ended without",
+    )
+    if any(marker in text for marker in terminal_markers):
+        return FailureKind.PROVIDER_TERMINAL_MISSING
+    return None
+
+
+def _architecture_tool_allowlist(item: WorkItem) -> tuple[str, ...]:
+    """Return the minimal local tool set for a structured architecture item.
+
+    Legacy Markdown architecture workflows retain their historical tool set;
+    only the new layered slots are narrowed here.
+    """
+    if item.agent_id != "architecture_agent":
+        return ()
+    if item.execution_mode is ExecutionMode.QUALITY_GATE:
+        return ()
+    if item.execution_mode is ExecutionMode.PARTITIONED:
+        slot = item.output_slot or ""
+        writer = (
+            "write_architecture_blueprint"
+            if slot == "blueprint"
+            else "write_module_design"
+            if slot.startswith("module-")
+            else "write_implementation_design"
+            if slot.startswith("implementation-")
+            else None
+        )
+        if writer is not None:
+            return ("load_architecture_input", writer)
+    # Compiled plans prefix blueprint ids (for example ``wi-09-``).  Match
+    # the semantic suffix instead of the template id so the integration
+    # contract is enforced for both compiled and hand-built plans.
+    if (
+        item.execution_mode is ExecutionMode.INTEGRATION
+        and item.id.endswith("architecture-layered-integration")
+    ):
+        return ("load_architecture_input", "integrate_architecture_designs")
+    return ()
+
+
+def _expected_architecture_tool(item: WorkItem) -> str | None:
+    """Return the single structured writer expected by a layered item."""
+    if item.agent_id != "architecture_agent":
+        return None
+    slot = item.output_slot or ""
+    if item.execution_mode is ExecutionMode.PARTITIONED:
+        if slot == "blueprint":
+            return "write_architecture_blueprint"
+        if slot.startswith("module-"):
+            return "write_module_design"
+        if slot.startswith("implementation-"):
+            return "write_implementation_design"
+    if (
+        item.execution_mode is ExecutionMode.INTEGRATION
+        and item.id.endswith("architecture-layered-integration")
+    ):
+        return "integrate_architecture_designs"
+    return None
+
+
+def _validate_layered_blueprint_modules(plan: ExecutionPlan, content: str) -> str | None:
+    """Ensure the depth-0 module list has a corresponding planned L1 task.
+
+    The layered template has a fixed set of module partitions.  A model may
+    otherwise add an unplanned ``quality``/``verification`` module, which can
+    never receive a ModuleDesign and only fails much later at integration.
+    Qualified names (``todo-api``) are accepted when their suffix maps
+    uniquely to a planned module.
+    """
+    try:
+        payload = json.loads(content)
+        actual = [str(item.get("module_id", "")) for item in payload.get("modules", [])]
+    except (TypeError, ValueError, AttributeError):
+        return "总体蓝图不是合法 JSON 对象"
+    expected = {
+        (item.output_slot or "").removeprefix("module-")
+        for item in plan.work_items
+        if item.agent_id == "architecture_agent"
+        and item.execution_mode is ExecutionMode.PARTITIONED
+        and (item.output_slot or "").startswith("module-")
+    }
+    if not expected:
+        return None
+    canonical = {value.rsplit("-", 1)[-1] for value in actual}
+    if canonical != expected or len(actual) != len(expected):
+        return (
+            "总体蓝图模块清单必须与已分配的架构模块任务一致；"
+            f"期望 {sorted(expected)}，实际 {sorted(canonical)}"
+        )
+    return None
+
+
+def _tool_allowlist_for_attempt(
+    item: WorkItem,
+    *,
+    attempt: int,
+    prior_delivery_failure: bool,
+    prior_worker_abort: bool,
+) -> tuple[str, ...]:
+    """Combine stable WorkItem narrowing with retry-specific code narrowing."""
+    architecture_tools = _architecture_tool_allowlist(item)
+    if architecture_tools:
+        return architecture_tools
+    if (
+        (attempt > 2 or prior_delivery_failure or prior_worker_abort)
+        and item.agent_id == "code_agent"
+        and item.execution_mode is ExecutionMode.PARTITIONED
+    ):
+        return ("write_staged_code_file",)
+    return ()
 
 
 def _evidence_diagnosis(evidence: object) -> str:
@@ -374,6 +507,21 @@ class GraphRunner:
                     return graph_result
                 if result.status is NodeStatus.NEEDS_CAPABILITY:
                     graph_result = self._handle_capability_request(state, result)
+                    # Some local control-plane capability requests (for
+                    # example bootstrap asking to save an already prepared
+                    # environment) are deterministically satisfied by the
+                    # Runner.  That completes only the current WorkItem; it
+                    # must not terminate the entire DAG before downstream
+                    # tasks/code/tests/review are scheduled.
+                    if (
+                        graph_result.status is GraphRunStatus.COMPLETED
+                        and graph_result.node_result is not None
+                        and graph_result.node_result.status is NodeStatus.COMPLETED
+                    ):
+                        state.record(item, graph_result.node_result)
+                        self._record_result(plan, item, graph_result.node_result)
+                        self._record_checkpoint(state)
+                        continue
                     self._finish_trace(plan, graph_result)
                     return graph_result
                 if result.status is NodeStatus.NEEDS_REPLAN:
@@ -454,13 +602,23 @@ class GraphRunner:
                 if refreshed != current:
                     self._artifacts.save_artifact("review", refreshed)
         if graph_result.status is GraphRunStatus.COMPLETED and self._traces is not None:
-            incomplete = DeliveryStore(self._traces.project_path).load_matrix().incomplete()
-            if incomplete:
-                graph_result = GraphRunResult(
-                    status=GraphRunStatus.BLOCKED,
-                    state=state,
-                    error="需求追踪矩阵仍有未闭环需求: " + ", ".join(incomplete),
-                )
+            # Architecture-only workflows may intentionally stop after publishing
+            # the Project Contract.  Requirement traceability is a delivery
+            # concern and cannot block an intermediate architecture milestone;
+            # enforce it only when the plan actually contains implementation,
+            # test, or review work.
+            delivery_nodes = {"code_agent", "test_agent", "review_agent"}
+            requires_delivery_matrix = any(
+                item.agent_id in delivery_nodes for item in state.plan.work_items
+            )
+            if requires_delivery_matrix:
+                incomplete = DeliveryStore(self._traces.project_path).load_matrix().incomplete()
+                if incomplete:
+                    graph_result = GraphRunResult(
+                        status=GraphRunStatus.BLOCKED,
+                        state=state,
+                        error="需求追踪矩阵仍有未闭环需求: " + ", ".join(incomplete),
+                    )
         self._finish_trace(plan, graph_result)
         return graph_result
 
@@ -536,7 +694,7 @@ class GraphRunner:
         重启或断点恢复时直接沿用同一组 WorkItem。
         """
         plan = state.plan
-        if plan.template_id != "project_delivery":
+        if plan.template_id not in {"project_delivery", "project_delivery_layered"}:
             return
         if any(item.agent_id == "code_agent" for item in plan.work_items):
             return
@@ -903,14 +1061,11 @@ class GraphRunner:
                     else None
                 ),
                 llm_selection=self._llm_overrides.get(item.agent_id, self._llm_selection),
-                tool_allowlist=(
-                    ("write_staged_code_file",)
-                    if (
-                        (attempt > 2 or prior_delivery_failure or prior_worker_abort)
-                        and item.agent_id == "code_agent"
-                        and item.execution_mode is ExecutionMode.PARTITIONED
-                    )
-                    else ()
+                tool_allowlist=_tool_allowlist_for_attempt(
+                    item,
+                    attempt=attempt,
+                    prior_delivery_failure=prior_delivery_failure,
+                    prior_worker_abort=prior_worker_abort,
                 ),
             )
             skill_guidance, resolved_skill_refs = self._skills.render_for(
@@ -958,6 +1113,13 @@ class GraphRunner:
                 )
             else:
                 prompt = task_input.as_prompt(memory_context=memory_context)
+            expected_architecture_tool = _expected_architecture_tool(item)
+            if expected_architecture_tool is not None:
+                prompt += (
+                    f"\n\n【控制面工具合同】当前 WorkItem 只允许使用本地工具 "
+                    f"{expected_architecture_tool} 完成最终写入；"
+                    "不要选择其他架构写入工具，不要返回 capability_request。"
+                )
             if retry_context:
                 prompt += "\n\n【控制面重试诊断】上一轮未通过控制面校验，必须优先处理：" + retry_context
                 if (
@@ -979,6 +1141,21 @@ class GraphRunner:
                         "\n本轮仍然只处理结构化 Project Contract 对象。请根据上面的校验错误中的"
                         "JSON path 和 message 修正 contract 后，再次调用 save_implementation_contract；"
                         "不要把对象序列化到 content 字段，不要调用代码写入工具，也不要返回 capability_request。"
+                    )
+                elif definition.domain == "architecture":
+                    slot = item.output_slot or ""
+                    required_tool = (
+                        "write_architecture_blueprint"
+                        if slot == "blueprint"
+                        else "write_module_design"
+                        if slot.startswith("module-")
+                        else "write_implementation_design"
+                        if slot.startswith("implementation-")
+                        else "integrate_architecture_designs"
+                    )
+                    prompt += (
+                        f"\n本轮必须调用当前已注册的本地工具 {required_tool} 完成对象落盘；"
+                        "这不是外部能力，不得返回 capability_request。"
                     )
             if (
                 retry_context
@@ -1264,6 +1441,38 @@ class GraphRunner:
                     content=str(error),
                     attempt=attempt,
                 )
+            if isinstance(error, ToolExecutionError):
+                tool_result = error.result
+                return NodeResult.needs_replan(
+                    node_id=item.id,
+                    agent_id=item.agent_id,
+                    content=str(error),
+                    signal=FailureSignal(
+                        FailureKind.TOOL_EXECUTION,
+                        f"工具 {tool_result.tool_name} 未完成（{tool_result.error_type or 'tool_execution'}）：{tool_result.message}",
+                    ),
+                )
+            if isinstance(error, ToolDiscoveryError):
+                return NodeResult.needs_replan(
+                    node_id=item.id,
+                    agent_id=item.agent_id,
+                    content=str(error),
+                    signal=FailureSignal(
+                        FailureKind.TOOL_EXECUTION,
+                        f"工具来源 {error.source_name} 无法发现工具：{error.cause}",
+                    ),
+                )
+            provider_kind = _provider_failure_kind(error)
+            if provider_kind is not None:
+                return NodeResult.needs_replan(
+                    node_id=item.id,
+                    agent_id=item.agent_id,
+                    content=str(error),
+                    signal=FailureSignal(
+                        provider_kind,
+                        f"Provider 请求异常（{provider_kind.value}）：{error}",
+                    ),
+                )
             return NodeResult.failed(
                 node_id=item.id,
                 agent_id=item.agent_id,
@@ -1275,6 +1484,108 @@ class GraphRunner:
             agent_id=item.agent_id,
             result=agent_result,
         )
+        # A layered architecture item is not complete merely because the
+        # model returned natural-language text.  Its staged object is the
+        # hand-off contract for every dependent module; verify that exact
+        # manifest/output before allowing the DAG to advance.
+        expected_architecture_tool = _expected_architecture_tool(item)
+        if (
+            node_result.status is NodeStatus.COMPLETED
+            and expected_architecture_tool is not None
+            and item.execution_mode is ExecutionMode.PARTITIONED
+            and self._artifacts is not None
+        ):
+            staged_ref = ArtifactRef.staged(
+                artifact_key="architecture",
+                trace_id=state.plan.trace.trace_id,
+                work_item_id=item.id,
+                slot=item.output_slot or "",
+            )
+            try:
+                staged_content = self._artifacts.load_ref(staged_ref)
+                if item.output_slot == "blueprint":
+                    blueprint_error = _validate_layered_blueprint_modules(
+                        state.plan, staged_content
+                    )
+                    if blueprint_error:
+                        raise ValueError(blueprint_error)
+            except (FileNotFoundError, RuntimeError, ValueError) as error:
+                return NodeResult.needs_replan(
+                    node_id=item.id,
+                    agent_id=item.agent_id,
+                    content=node_result.content,
+                    signal=FailureSignal(
+                        FailureKind.ARCHITECTURE_CONTRACT_MISSING,
+                        f"架构节点未形成必需的 staged 设计对象（{expected_architecture_tool}）：{error}",
+                    ),
+                )
+        if (
+            node_result.status is NodeStatus.COMPLETED
+            and expected_architecture_tool == "integrate_architecture_designs"
+            and item.execution_mode is ExecutionMode.INTEGRATION
+            and self._artifacts is not None
+        ):
+            try:
+                self._artifacts.candidate_for_work_item(
+                    trace_id=state.plan.trace.trace_id,
+                    artifact_key="architecture",
+                    work_item_id=item.id,
+                )
+            except (FileNotFoundError, RuntimeError, ValueError) as error:
+                return NodeResult.needs_replan(
+                    node_id=item.id,
+                    agent_id=item.agent_id,
+                    content=node_result.content,
+                    signal=FailureSignal(
+                        FailureKind.ARCHITECTURE_CONTRACT_MISSING,
+                        f"架构集成节点未形成唯一候选（{expected_architecture_tool}）：{error}",
+                    ),
+                )
+        if (
+            node_result.status is NodeStatus.NEEDS_CAPABILITY
+            and item.agent_id == "architecture_agent"
+            and agent_result.capability_request is not None
+        ):
+            # Architecture write tools are local, always-registered tools.
+            # Models may still describe a missing ``write_*`` tool as a
+            # capability request after loading an input artifact.  Treat that
+            # as a bounded delivery retry; routing it to capability approval
+            # creates an impossible grant because no dynamic source exists.
+            request = agent_result.capability_request
+            capability_text = request.capability.strip().lower()
+            reason_text = request.reason.strip().lower()
+            local_architecture_markers = (
+                "write_architecture_blueprint",
+                "write_module_design",
+                "write_implementation_design",
+                "architecture_write_",
+                "架构设计对象",
+                "架构写入",
+                "结构化对象",
+            )
+            if (
+                capability_text in {
+                    "write_architecture_blueprint",
+                    "write_module_design",
+                    "write_implementation_design",
+                    "architecture_write_blueprint",
+                    "architecture_write_module_design",
+                    "architecture_write_implementation_design",
+                }
+                or any(marker in capability_text or marker in reason_text for marker in local_architecture_markers)
+            ):
+                return NodeResult.needs_replan(
+                    node_id=item.id,
+                    agent_id=item.agent_id,
+                    content=request.reason,
+                    signal=FailureSignal(
+                        FailureKind.ARCHITECTURE_CONTRACT_MISSING,
+                        "ArchitectureAgent 将本地结构化写入工具误报为能力缺失；"
+                        "请根据当前 depth 调用对应 write_architecture_blueprint、"
+                        "write_module_design 或 write_implementation_design 完成对象落盘："
+                        + request.reason,
+                    ),
+                )
         # Architecture Contract completion is meaningful only when the
         # machine-readable contract was persisted.  Do not let a model's
         # natural-language "done" advance the implementation compiler.

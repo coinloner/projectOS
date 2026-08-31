@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.tool_manager.source import ToolDef, ToolExposure, ToolSource
+from app.tool_manager.source import ToolDef, ToolDiscoveryError, ToolExposure, ToolSource
 
 
 @dataclass(frozen=True)
@@ -118,10 +118,14 @@ class ToolCatalog:
             ):
                 continue
 
-            self._remove_source_tools(self._dynamic_tools, record)
-            self._register_discovered(
-                record, record.source.discover(), self._dynamic_tools
-            )
+            try:
+                definitions = record.source.discover()
+                self._remove_source_tools(self._dynamic_tools, record)
+                self._register_discovered(record, definitions, self._dynamic_tools)
+            except ToolDiscoveryError:
+                raise
+            except Exception as error:
+                raise ToolDiscoveryError(record.source_name, error) from error
 
     def _register_discovered(
         self,

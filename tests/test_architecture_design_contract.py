@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -199,6 +200,117 @@ class ArchitectureDesignContractTest(unittest.TestCase):
             self.assertTrue(
                 (Path(project_path) / ".projectos" / "architecture" / "project-contract.json").is_file()
             )
+
+    def test_integration_normalizes_qualified_blueprint_module_ids(self) -> None:
+        """Layer workers may use ``api`` while blueprints use ``todo-api``."""
+        with tempfile.TemporaryDirectory() as project_path:
+            workflow = ArchitectureArtifactWorkflow(project_path)
+            trace_id = "tr-qualified-modules"
+            blueprint = _blueprint().model_copy(update={
+                "modules": [
+                    ModuleRef(module_id="todo-domain", responsibility="订单规则"),
+                    ModuleRef(module_id="todo-api", responsibility="HTTP 接口"),
+                ]
+            })
+            designs = (
+                ("blueprint", blueprint.model_dump(mode="json")),
+                ("module-domain", _module("domain").model_dump(mode="json")),
+                ("module-api", _module("api").model_dump(mode="json")),
+                ("implementation-domain", _implementation("domain").model_dump(mode="json")),
+                ("implementation-api", _implementation("api").model_dump(mode="json")),
+            )
+            for slot, design in designs:
+                workflow.write_staged_design(
+                    ExecutionContext(
+                        trace_id=trace_id,
+                        work_item_id=f"wi-{slot}",
+                        agent_id="architecture_agent",
+                        execution_mode=ExecutionMode.PARTITIONED,
+                        output_slot=slot,
+                    ),
+                    design,
+                )
+            refs = tuple(
+                ArtifactRef.staged(
+                    artifact_key="architecture",
+                    trace_id=trace_id,
+                    work_item_id=f"wi-{slot}",
+                    slot=slot,
+                )
+                for slot, _ in designs
+            )
+            result = workflow.integrate_structured_designs(
+                ExecutionContext(
+                    trace_id=trace_id,
+                    work_item_id="wi-integration",
+                    agent_id="architecture_agent",
+                    execution_mode=ExecutionMode.INTEGRATION,
+                    input_refs=refs,
+                    publish_target="architecture",
+                )
+            )
+            self.assertIn("structured_designs=5", result)
+
+    def test_workflow_normalizes_multi_file_implementation_unit(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            workflow = ArchitectureArtifactWorkflow(project_path)
+            context = ExecutionContext(
+                trace_id="tr-normalize",
+                work_item_id="wi-implementation-domain",
+                agent_id="architecture_agent",
+                execution_mode=ExecutionMode.PARTITIONED,
+                output_slot="implementation-domain",
+            )
+            design = _implementation("domain").model_dump(mode="json")
+            design["implementation_units"][0]["owned_files"] = [
+                "backend/app/domain/models.py",
+                "backend/app/domain/services.py",
+            ]
+            workflow.write_staged_design(context, design)
+            stored = json.loads(
+                (Path(project_path) / ".projectos" / "runs" / "tr-normalize"
+                 / "work-items" / "wi-implementation-domain" / "output"
+                 / "implementation-domain.md").read_text()
+            )
+            self.assertEqual(
+                [unit["owned_files"] for unit in stored["implementation_units"]],
+                [["backend/app/domain/models.py"], ["backend/app/domain/services.py"]],
+            )
+
+    def test_design_validation_error_is_structured(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            workflow = ArchitectureArtifactWorkflow(project_path)
+            context = ExecutionContext(
+                trace_id="tr-invalid-design",
+                work_item_id="wi-implementation-domain",
+                agent_id="architecture_agent",
+                execution_mode=ExecutionMode.PARTITIONED,
+                output_slot="implementation-domain",
+            )
+            design = _implementation("domain").model_dump(mode="json")
+            unit = design["implementation_units"][0]
+            unit["required_files"] = ["backend/app/domain/other.py"]
+            unit["required_paths"] = ["backend/app/domain/main.py"]
+            with self.assertRaises(ValueError) as raised:
+                workflow.write_staged_design(context, design)
+            payload = json.loads(str(raised.exception))
+            self.assertEqual(payload["error_type"], "design_validation")
+            self.assertTrue(payload["retryable"])
+
+    def test_prefixed_implementation_slot_uses_implementation_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            workflow = ArchitectureArtifactWorkflow(project_path)
+            context = ExecutionContext(
+                trace_id="tr-large-design",
+                work_item_id="wi-implementation-api",
+                agent_id="architecture_agent",
+                execution_mode=ExecutionMode.PARTITIONED,
+                output_slot="implementation-api",
+            )
+            design = _implementation("api").model_dump(mode="json")
+            design["required_test_types"] = ["x" * 1000 for _ in range(7)]
+            result = workflow.write_staged_design(context, design)
+            self.assertIn("depth=2", result)
 
 
 if __name__ == "__main__":

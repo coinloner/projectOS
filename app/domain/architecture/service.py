@@ -3,6 +3,8 @@
 import json
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.artifact.toolset import ArtifactToolSet
 from app.artifact.store import ArtifactStore
 from app.artifact.repository import ArtifactRepository
@@ -148,7 +150,24 @@ class ArchitectureArtifactWorkflow:
         """
         if context.execution_mode is not ExecutionMode.PARTITIONED:
             raise PermissionError("只有分区执行节点可以写入架构设计暂存对象")
-        parsed = parse_design(design)
+        # LLMs occasionally group several files under one implementation unit.
+        # The downstream Code contract is file-granular, so normalize that
+        # harmless shorthand at the architecture boundary instead of sending
+        # the whole run into an avoidable retry/block. Interfaces remain owned
+        # by the first split unit unless they explicitly target a split id.
+        design = _normalize_file_granular_units(design)
+        # ``health_path`` has a control-plane default. Treat an explicit empty
+        # value like an omitted optional field so a model cannot block the
+        # entire architecture hand-off over an unspecified probe route.
+        if isinstance(design, dict) and isinstance(design.get("entrypoints"), dict):
+            entrypoints = dict(design["entrypoints"])
+            if entrypoints.get("health_path") == "":
+                entrypoints["health_path"] = "/health"
+                design = {**design, "entrypoints": entrypoints}
+        try:
+            parsed = parse_design(design)
+        except (ValidationError, TypeError, ValueError) as error:
+            raise ValueError(_structured_design_error(error)) from error
         slot = context.output_slot or ""
         expected_depth = (
             0
@@ -161,12 +180,42 @@ class ArchitectureArtifactWorkflow:
         )
         if expected_depth is not None and parsed.depth != expected_depth:
             raise ValueError(
-                f"架构设计 slot={context.output_slot} 要求 depth={expected_depth}，实际为 {parsed.depth}"
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error_type": "depth_mismatch",
+                        "retryable": True,
+                        "expected_tool": _expected_design_tool(slot),
+                        "expected_depth": expected_depth,
+                        "actual_depth": parsed.depth,
+                        "message": (
+                            f"架构设计 slot={context.output_slot} 要求 depth={expected_depth}，"
+                            f"实际为 {parsed.depth}"
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
             )
         import json
 
         content = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2)
-        self._validate_size(content, _DESIGN_CHAR_LIMITS.get(context.output_slot or "", 8000))
+        limit = _design_limit_for_slot(context.output_slot or "")
+        try:
+            self._validate_size(content, limit)
+        except ValueError as error:
+            raise ValueError(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error_type": "artifact_size",
+                        "retryable": True,
+                        "expected_tool": _expected_design_tool(context.output_slot or ""),
+                        "limit": limit,
+                        "message": str(error),
+                    },
+                    ensure_ascii=False,
+                )
+            ) from error
         staged = self._repository.write_staged(
             trace_id=context.trace_id,
             work_item_id=context.work_item_id,
@@ -205,6 +254,29 @@ class ArchitectureArtifactWorkflow:
         implementations = [item for item in designs if isinstance(item, ImplementationDesign)]
         if blueprint is None:
             raise ValueError("架构设计集成缺少 depth=0 的总体蓝图")
+        # Layered workers receive a semantic module id (``api``, ``domain``,
+        # ``runtime``), while a blueprint may use a product-qualified id such
+        # as ``todo-api``.  Normalize only a unique exact suffix match; any
+        # ambiguous or unrelated id remains a hard contract error.
+        module_ids = {item.module_id for item in blueprint.modules}
+        aliases: dict[str, str] = {}
+        for module_id in module_ids:
+            tail = module_id.rsplit("-", 1)[-1]
+            if tail != module_id and tail not in aliases:
+                aliases[tail] = module_id
+        def canonical(module_id: str) -> str:
+            if module_id in module_ids:
+                return module_id
+            target = aliases.get(module_id)
+            if target is None:
+                return module_id
+            # Do not silently choose between two qualified modules sharing a
+            # suffix (for example ``admin-api`` and ``public-api``).
+            matches = [candidate for candidate in module_ids
+                       if candidate.rsplit("-", 1)[-1] == module_id]
+            return target if len(matches) == 1 else module_id
+        modules = [item.model_copy(update={"module_id": canonical(item.module_id)}) for item in modules]
+        implementations = [item.model_copy(update={"module_id": canonical(item.module_id)}) for item in implementations]
         return ArchitectureDesignBundle(
             schema_version=1,
             blueprint=blueprint,
@@ -251,6 +323,94 @@ _DESIGN_CHAR_LIMITS = {
     "module": 6000,
     "implementation": 9000,
 }
+
+
+def _design_limit_for_slot(slot: str) -> int:
+    """Resolve exact slots and prefixed layered slots to their depth limit."""
+    if slot in _DESIGN_CHAR_LIMITS:
+        return _DESIGN_CHAR_LIMITS[slot]
+    if slot.startswith("implementation-"):
+        return _DESIGN_CHAR_LIMITS["implementation"]
+    if slot.startswith("module-"):
+        return _DESIGN_CHAR_LIMITS["module"]
+    return 8000
+
+
+def _expected_design_tool(slot: str) -> str | None:
+    if slot == "blueprint":
+        return "write_architecture_blueprint"
+    if slot.startswith("module-"):
+        return "write_module_design"
+    if slot.startswith("implementation-"):
+        return "write_implementation_design"
+    return None
+
+
+def _structured_design_error(error: BaseException) -> str:
+    """Expose machine-readable validation facts to the model and Runner."""
+    errors: list[dict[str, object]] = []
+    if isinstance(error, ValidationError):
+        for item in error.errors():
+            errors.append(
+                {
+                    "path": ".".join(str(part) for part in item.get("loc", ())) or "$",
+                    "code": str(item.get("type", "invalid")),
+                    "message": str(item.get("msg", "输入不合法")),
+                }
+            )
+    else:
+        errors.append({"path": "$", "code": "invalid", "message": str(error)})
+    return json.dumps(
+        {
+            "ok": False,
+            "error_type": "design_validation",
+            "retryable": True,
+            "errors": errors,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _normalize_file_granular_units(design: dict[str, Any]) -> dict[str, Any]:
+    """Split multi-file implementation units into one unit per owned file."""
+    if not isinstance(design, dict) or design.get("depth") != 2:
+        return design
+    units = design.get("implementation_units")
+    if not isinstance(units, list):
+        return design
+    normalized: list[dict[str, Any]] = []
+    owner_map: dict[str, str] = {}
+    for raw in units:
+        if not isinstance(raw, dict):
+            normalized.append(raw)
+            continue
+        files = raw.get("owned_files")
+        if not isinstance(files, list) or len(files) <= 1:
+            normalized.append(raw)
+            if isinstance(raw.get("unit_id"), str):
+                owner_map[raw["unit_id"]] = raw["unit_id"]
+            continue
+        base_id = str(raw.get("unit_id") or "unit")
+        for index, file_path in enumerate(files, start=1):
+            split = dict(raw)
+            split["unit_id"] = f"{base_id}-{index}"
+            split["owned_files"] = [file_path]
+            normalized.append(split)
+        owner_map[base_id] = f"{base_id}-1"
+    result = dict(design)
+    result["implementation_units"] = normalized
+    interfaces = result.get("interfaces")
+    if isinstance(interfaces, list):
+        result["interfaces"] = [
+            {
+                **interface,
+                "owner_unit": owner_map.get(interface.get("owner_unit"), interface.get("owner_unit")),
+            }
+            if isinstance(interface, dict)
+            else interface
+            for interface in interfaces
+        ]
+    return result
 
 
 def _render_design_bundle(bundle: ArchitectureDesignBundle) -> str:

@@ -637,3 +637,130 @@ ProjectOS 的控制面、Planner、合同、checkpoint 和能力审批边界对�
 ### 验证
 
 新增结构化对象、三层深度、单文件 ownership、模板屏障和真实 staged 集成测试；编译检查通过。
+
+## 2026-08-30：复杂交付统一走结构化架构合同
+
+### 问题
+
+复杂项目原先可能由 Planner 选择旧的 `project_delivery`，再由
+`architecture_contract_agent` 从 Markdown 重新生成 Project Contract。接口类型、路径或
+owner 字段一旦被模型改写，合同校验失败后会重复生成大对象；Provider 传输中断还会被归为
+普通 Agent Runtime 错误，最终拖到 Worker 硬截止。
+
+### 解决
+
+- 新增 `project_delivery_layered`，把 L0/L1/L2 结构化架构对象接入完整的任务、环境、代码、
+  测试和审查 DAG。
+- Planner 选择旧 `project_delivery` 且目标同时出现前后端、数据库、异步、并发或交互等
+  复杂度信号时，控制面稳定升级到 `project_delivery_layered`。
+- Contract 节点优先使用 `ArchitectureDesignBundle` 确定性编译合同，避免 Markdown 反向猜测。
+- 为常见模型词汇增加边界归一化（例如 `repository`→`service`、`router`→`api`），未知值仍
+  由合同校验拒绝。
+- 新增 `provider_transport` 和 `provider_terminal_missing` 失败类型，Provider 连接断开或
+  缺少终态时执行独立、有界重试。
+
+### 验证
+
+复杂度升级、Provider 传输归因和分层交付模板测试通过；全量测试共 328 项通过。
+
+## 31. 2026-08-30：架构工具误报与文件粒度收敛
+
+### 真实复现
+
+FHL 的分层交付 Trace `tr-e4902cf31bba` 在流式架构蓝图节点未收到可确认的 Provider 终态，
+最终触发 900 秒 Worker 截止。关闭流式后，Trace `tr-a8c13bd14624` 能完成需求、蓝图和模块
+设计，但 `architecture_agent` 将本地 `write_implementation_design` 工具误报为缺失能力；
+控制面找不到动态来源，错误进入能力审批死路。
+
+### 修复与边界
+
+- Runner 将架构本地写入工具的误报转换为有界结构化重试，并在重试提示中明确当前 depth 对应
+  的工具；外部文档等真实动态能力仍按审批流程处理。
+- `ArchitectureArtifactWorkflow` 在 DTO 边界把多文件实现单元拆成“一单元一 owned_file”，
+  避免 Code 合同因文件粒度不一致而拒绝整个架构输出。
+- BaseAgent 的文本化工具回放白名单补齐架构结构化工具，兼容不保留原生 tool-call 的网关。
+
+### 验证结论
+
+控制面测试为 329 passed、3 skipped；`scripts/validate_layered_instance.py` 的确定性分层架构
+最小闭环通过。真实 FHL 流程仍未进入 Code/Test/Review：剩余风险是 Provider 模型未稳定选择
+已注册的架构工具，不能把该次运行标记为完整交付。
+
+## 32. 2026-08-30：架构工具最小暴露与结构化诊断
+
+### 问题
+
+分层 ArchitectureAgent 原先在 `partitioned` 模式可以同时看到三个结构化写入工具、读取工具
+和旧 Markdown 暂存工具。工具执行失败返回自然语言后，模型容易把参数校验错误误报为能力缺失，
+让一个本地 DTO 错误进入外部能力审批路径。
+
+### 设计调整
+
+- 控制面按 WorkItem slot 设置最小工具白名单：blueprint 只允许
+  `write_architecture_blueprint`，module-* 只允许 `write_module_design`，implementation-* 只允许
+  `write_implementation_design`，分层 integration 只允许 `integrate_architecture_designs`；每条
+  路线仍保留必要的 `load_architecture_input`。
+- 旧 `architecture_parallel`、`architecture_compact` 等 Markdown 路线不受新白名单影响，避免改变
+  既有兼容流程。
+- 架构 DTO 校验错误统一返回 `error_type`、`retryable`、`expected_tool` 和字段路径；模型和 Runner
+  可以区分 schema 错误、depth 错误与真正的动态能力请求。
+- `implementation-*` 和 `module-*` slot 按前缀解析字符限制，避免回退到错误的默认上限。
+
+### 验证
+
+新增工具白名单、结构化错误和前缀限制测试；架构、Runner 与合同测试通过。该设计将工具选择从
+模型决策收回控制面，模型只负责生成当前对象的参数，降低架构阶段进入错误审批路径的概率。
+
+## 33. 2026-08-31：工具层协议语义对齐
+
+### 真实问题
+
+工具来源此前统一声明 `execute() -> str`，但成功文本、`{"ok": false}` 的领域校验响应和异常
+没有统一语义。于是带 `completion_policy=final` 的工具可能把失败 JSON 当作终态；文本化工具
+调用在写入失败后仍可能因尾部“已完成”被 Agent 判为成功；MCP schema 或本地参数错误也可能
+被模型改写成 `capability_request`，进入不存在动态来源的审批死路。
+
+### 修复
+
+- 在 `ToolSource` 边界增加 `ToolResult` 和 `ToolResultStatus`（completed/failed/retryable/
+  blocked），保留领域服务原有字符串接口，由工具层统一解释结果。
+- 增加 `ToolExecutionError`，并按 `tool_validation`、`input_missing`、`tool_transport`、
+  `tool_authorization`、`tool_execution` 分类；本地工具错误不再隐式等价于外部能力缺失。
+- 所有本地、受信执行和 MCP 来源统一写入 `ok/status/error_type/retryable` 记忆元数据；
+  `execute_safe()` 提供不抛异常的控制面调用入口。
+- CrewAI 适配器在任何工具返回 `ok=false` 时抛出结构化工具错误，`final` 仅对成功调用生效。
+  文本化本地工具回放若执行失败则向 Runner 传播，不再被自然语言尾句掩盖。
+- BaseAgent 会把模型声称缺失、但当前已暴露的本地工具转换为 `tool_protocol` 重试信号；
+  Runner 不再需要把这类文本猜测当作动态能力请求。
+- `ToolDef` 注册时校验名称、参数根 schema、required 字段和执行模式；MCP 动态声明缺失或
+  非法 schema 会在发现边界直接拒绝。
+
+### 验证
+
+新增工具定义语义校验、机器可读失败结果、`execute_safe` 分类和终态阻断测试；控制面测试
+`339 passed, 3 skipped`。这次改动不改变领域服务或 DAG 结构，只收紧工具协议边界。
+
+## 34. 2026-08-31：分层架构交付状态与合同引用修复
+
+### 真实问题
+
+真实 FHL 全流程暴露了四个运行时边界：编译后的 `wi-XX-` 节点 ID 未被集成完成门识别；
+蓝图模块使用 `todo-api` 而分区对象使用 `api`；模型偶尔声明未分配的
+`verification/quality` 模块；合同接口 `kind` 使用 `provided/consumed` 等方向或同义词；
+实现合同把完整 `staged:` 引用误当作 artifact key；环境已由控制面准备后，bootstrap 的
+重复能力请求会错误结束整条 DAG。
+
+### 修复
+
+- 集成节点和恢复校验按语义后缀识别编译 ID，并强制唯一架构候选后才允许完成。
+- 架构集成对唯一的模块 ID 后缀做确定性归一化；蓝图阶段校验模块集合必须与已分配分区一致。
+- 合同 `InterfaceContract.kind` 归一化常见方向词和同义词，未知值仍拒绝。
+- 实现计划编译器解析 `published:`、`staged:` 引用，避免受限 ID 错误。
+- 控制面自动满足本地 bootstrap 能力请求时只完成当前节点并继续调度下游节点。
+
+### 验证
+
+控制面测试 `340 passed, 3 skipped`。真实 trace `tr-430a6d4b8b78` 已完整通过需求、三层架构并行、
+架构集成/质量门、Project Contract、任务集成/质量门和环境准备，并展开 6 个并行代码单元；
+随后因 `runtime-server-composition` 连续两次在 Provider 宽限期内无流式进度而停止，checkpoint
+恢复保持正确，代码/测试/review 尚未形成最终交付。该剩余问题属于 Provider/模型停滞边界，不是工具协议或状态语义误判。

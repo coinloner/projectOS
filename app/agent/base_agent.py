@@ -5,6 +5,7 @@ from app.agent.result import AgentResult, from_llm_content
 from app.llm.factory import build_llm
 from app.execution_context import ExecutionContext
 from app.tool_manager.gateway import ToolGateway
+from app.tool_manager.source import ToolExecutionError, ToolResult, ToolResultStatus
 import json
 import re
 
@@ -24,6 +25,13 @@ _LOCAL_FALLBACK_TOOLS = frozenset(
         "write_staged_code_file",
         "load_code_input",
         "inspect_runtime",
+        # Architecture structured-design tools may be rendered as plain text
+        # by OpenAI-compatible relays; replay only these known local tools.
+        "write_architecture_blueprint",
+        "write_module_design",
+        "write_implementation_design",
+        "integrate_architecture_designs",
+        "compile_project_contract_from_designs",
     }
 )
 
@@ -90,6 +98,8 @@ class BaseAgent:
         if getattr(crewai_event_bus, "_shutting_down", False) or executor_shutdown:
             crewai_event_bus._initialize()
 
+        available_tools = self._gateway.tools_for(self._domain, context=context)
+        visible_tool_names = {str(tool.name) for tool in available_tools}
         crew_agent = Agent(
             role=self._role,
             goal=self._goal,
@@ -98,7 +108,7 @@ class BaseAgent:
             # here breaks providers whose CrewAI adapter cannot parse streamed
             # responses from some OpenAI-compatible gateways.
             llm=build_llm(selection=getattr(context, "llm_selection", None)),
-            tools=self._gateway.tools_for(self._domain, context=context),
+            tools=available_tools,
             max_iter=self._max_iterations,
             verbose=False,
             allow_delegation=False,
@@ -135,7 +145,25 @@ class BaseAgent:
         # Execute only the known local tools that are currently exposed by the
         # Gateway; unauthorized or external tools are never inferred from text.
         _execute_serialized_local_tools(output_text, self._gateway, self._domain, context)
-        return from_llm_content(output_text)
+        result = from_llm_content(output_text)
+        if (
+            result.capability_request is not None
+            and result.capability_request.capability in visible_tool_names
+        ):
+            request = result.capability_request
+            protocol_result = ToolResult(
+                tool_name=request.capability,
+                status=ToolResultStatus.RETRYABLE,
+                message=(
+                    f"模型将当前已暴露的本地工具 '{request.capability}' 误报为能力缺失："
+                    f"{request.reason}"
+                ),
+                error_type="tool_protocol",
+                retryable=True,
+                expected_tool=request.capability,
+            )
+            raise ToolExecutionError(protocol_result)
+        return result
 
 
 def _execute_serialized_local_tools(
@@ -181,11 +209,15 @@ def _execute_serialized_local_tools(
             continue
         try:
             tool.run(**arguments)
-        except Exception:
-            # The normal CrewAI loop would expose the tool error to the model;
-            # a textual fallback cannot continue the conversation, so leave
-            # the control-plane delivery gate to classify the missing write.
-            continue
+        except ToolExecutionError:
+            # A textual fallback cannot provide a correction turn. Propagate a
+            # typed local-tool failure so the runner schedules a bounded retry
+            # instead of treating the trailing natural-language text as done.
+            raise
+        except Exception as error:
+            raise ToolExecutionError(
+                ToolResult.failure(name, error), cause=error
+            ) from error
         executed.append(name)
     return tuple(executed)
 

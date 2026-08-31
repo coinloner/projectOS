@@ -16,6 +16,8 @@ from app.orchestration.plan import ExecutionPlan
 from app.orchestration.runner import (
     GraphRunner,
     GraphRunStatus,
+    _architecture_tool_allowlist,
+    _expected_architecture_tool,
     _partitioned_code_retry_prompt,
     _refresh_review_quality_section,
     _summarize_sandbox_evidence,
@@ -93,6 +95,23 @@ class ReviewQualityRefreshTest(unittest.TestCase):
         self.assertIn("evidence_id=new", summary)
         self.assertNotIn("evidence_id=old", summary)
 
+    def test_provider_transport_failure_is_classified_for_bounded_retry(self) -> None:
+        agents = AgentRegistry()
+        agents.register(
+            AgentDefinition("requirement_agent", "requirement", "需求", "requirement"),
+            lambda: FakeAgent(RuntimeError("peer closed connection without sending complete message body")),
+        )
+        result = GraphRunner(agents, ToolGateway()).run(
+            ExecutionPlan(
+                id="provider-failure",
+                goal="测试 Provider",
+                trace=TraceContext.ephemeral(),
+                work_items=(make_node("provider", agent_id="requirement_agent"),),
+            )
+        )
+        self.assertEqual(result.status, GraphRunStatus.FAILED)
+        self.assertIn("provider_transport", result.error or "")
+
 
 def make_node(
     node_id: str,
@@ -138,6 +157,44 @@ def plan_from_template(template: WorkflowTemplate) -> ExecutionPlan:
             for blueprint in template.nodes
         ),
     )
+
+
+class ArchitectureToolNarrowingTest(unittest.TestCase):
+    def test_layered_slots_have_one_expected_writer(self) -> None:
+        cases = (
+            ("architecture-blueprint", "blueprint", "write_architecture_blueprint"),
+            ("architecture-module-api", "module-api", "write_module_design"),
+            (
+                "architecture-implementation-api",
+                "implementation-api",
+                "write_implementation_design",
+            ),
+        )
+        for item_id, slot, expected in cases:
+            item = WorkItem(
+                id=item_id,
+                agent_id="architecture_agent",
+                objective="架构设计",
+                output_key="architecture",
+                execution_mode=ExecutionMode.PARTITIONED,
+                output_slot=slot,
+            )
+            self.assertEqual(
+                _architecture_tool_allowlist(item),
+                ("load_architecture_input", expected),
+            )
+            self.assertEqual(_expected_architecture_tool(item), expected)
+
+    def test_legacy_architecture_slots_keep_legacy_tools(self) -> None:
+        item = WorkItem(
+            id="architecture-api",
+            agent_id="architecture_agent",
+            objective="架构 API 决策包",
+            output_key="architecture_api",
+            execution_mode=ExecutionMode.PARTITIONED,
+            output_slot="api",
+        )
+        self.assertEqual(_architecture_tool_allowlist(item), ())
 
 
 class GraphRunnerTest(unittest.TestCase):

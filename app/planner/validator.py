@@ -46,15 +46,16 @@ class PlanValidator:
 
         # 空项目的实现/验证/审查不能绕过需求、架构和任务基线。
         # 这些节点包含受控产物发布权限，必须通过完整交付模板编译。
+        effective_template_id = self._effective_template_id(draft, context)
         if self._requires_full_delivery(draft, context):
-            if draft.template_hint_id != "project_delivery":
+            if effective_template_id not in {"project_delivery", "project_delivery_layered"}:
                 raise PlanValidationError(
-                    "空项目的完整交付必须选择受控模板 'project_delivery'；"
+                    "空项目的完整交付必须选择受控模板 'project_delivery' 或 'project_delivery_layered'；"
                     "该模板会生成 requirement、architecture、tasks、environment、"
                     "implementation、tests 和 review 全链路产物"
                 )
 
-        template = context.template_source(draft.template_hint_id)
+        template = context.template_source(effective_template_id)
         if "task_agent" in selected_ids and (
             template is None or not template.has_controlled_execution
         ):
@@ -134,7 +135,7 @@ class PlanValidator:
                 id=plan_id,
                 goal=context.goal,
                 work_items=work_items,
-                template_id=draft.template_hint_id,
+                template_id=effective_template_id,
                 trace=trace or TraceContext.ephemeral(),
             )
         except ValueError as error:
@@ -160,8 +161,33 @@ class PlanValidator:
             context.workspace.implementation_file_count == 0
             and asks_for_verification
             and bool(missing_baseline)
-            and context.template_source("project_delivery") is not None
+            and (
+                context.template_source("project_delivery") is not None
+                or context.template_source("project_delivery_layered") is not None
+            )
         )
+
+    @staticmethod
+    def _effective_template_id(
+        draft: PlanDraft, context: PlanningContext
+    ) -> str | None:
+        """Upgrade complex full-delivery goals to the structured architecture route.
+
+        The Planner remains free to choose a template.  This deterministic safety
+        rule only applies when it selected the legacy full-delivery route for a
+        clearly multi-module goal, preventing Markdown-to-contract regeneration.
+        """
+        selected = draft.template_hint_id
+        if selected != "project_delivery":
+            return selected
+        if context.template_source("project_delivery_layered") is None:
+            return selected
+        goal = context.goal.lower()
+        markers = (
+            "前后端", "数据库", "异步", "并发", "交互", "生产级",
+            "frontend", "backend", "database", "async", "concurrent",
+        )
+        return "project_delivery_layered" if sum(marker in goal for marker in markers) >= 2 else selected
 
     @staticmethod
     def _result_key(index: int, base_key: str, is_repeated: bool) -> str:

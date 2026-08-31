@@ -32,6 +32,10 @@ slot、输入来源和发布目标不接受 Planner 覆盖。
 将它们组合为 `ArchitectureDesignBundle` 后才生成架构候选。深度由模板固定为三层以内，
 对象中的 `design_id`、`parent_design_id`、`module_id` 和 `requirement_ids` 不允许改名。
 
+`project_delivery_layered_template()` 将上述三层架构接入完整交付链路。复杂目标（例如同时
+包含前后端、数据库、异步或并发要求）即使 Planner 选择了旧的 `project_delivery`，控制面也
+会稳定升级到该模板，避免 Markdown 重新生成 Project Contract。
+
 `architecture_compact_template()` 面向范围明确的小需求。它使用一个短架构决策包、一个
 规范化 integration 和 quality gate，避免为了简单任务支付多个平行 scope 的模型成本。
 调用方通过 `workflow_id` 显式选择；自动复杂度分类尚未实现。

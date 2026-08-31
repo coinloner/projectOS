@@ -10,6 +10,8 @@ from app.sandbox.result import SandboxStatus
 
 class FailureKind(str, Enum):
     AGENT_RUNTIME = "agent_runtime"
+    PROVIDER_TRANSPORT = "provider_transport"
+    PROVIDER_TERMINAL_MISSING = "provider_terminal_missing"
     TEST_FAILURE = "test_failure"
     SANDBOX_TIMEOUT = "sandbox_timeout"
     SANDBOX_SETUP = "sandbox_setup"
@@ -19,6 +21,7 @@ class FailureKind(str, Enum):
     CODE_DELIVERY_INCOMPLETE = "code_delivery_incomplete"
     RUNTIME_PREFLIGHT = "runtime_preflight"
     ARCHITECTURE_CONTRACT_MISSING = "architecture_contract_missing"
+    TOOL_EXECUTION = "tool_execution"
 
 
 class RecoveryAction(str, Enum):
@@ -152,6 +155,8 @@ class RetryLimits:
     max_retries_per_work_item: int = 2
     max_retries_by_kind: tuple[tuple[FailureKind, int], ...] = (
         (FailureKind.AGENT_RUNTIME, 1),
+        (FailureKind.PROVIDER_TRANSPORT, 1),
+        (FailureKind.PROVIDER_TERMINAL_MISSING, 1),
         (FailureKind.SANDBOX_TIMEOUT, 1),
         (FailureKind.TEST_FAILURE, 0),
         (FailureKind.SANDBOX_SETUP, 0),
@@ -163,6 +168,7 @@ class RetryLimits:
         # A missing ChangeSet is a delivery protocol failure, not a semantic
         # test failure. Give the single-file agent dedicated retries.
         (FailureKind.CODE_DELIVERY_INCOMPLETE, 2),
+        (FailureKind.TOOL_EXECUTION, 1),
     )
 
     def max_retries_for(self, kind: FailureKind) -> int:
@@ -202,6 +208,11 @@ class RetryPolicy:
         if signal.kind is FailureKind.REPAIR_NO_FILE_CHANGE:
             return RecoveryAction.RETRY_ITEM
         if signal.kind is FailureKind.AGENT_RUNTIME:
+            return RecoveryAction.RETRY_ITEM
+        if signal.kind in {
+            FailureKind.PROVIDER_TRANSPORT,
+            FailureKind.PROVIDER_TERMINAL_MISSING,
+        }:
             return RecoveryAction.RETRY_ITEM
         if signal.kind is FailureKind.ARCHITECTURE_CONTRACT_MISSING:
             return RecoveryAction.RETRY_ITEM

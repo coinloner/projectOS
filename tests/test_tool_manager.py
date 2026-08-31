@@ -1,7 +1,14 @@
 import unittest
 
 from app.tool_manager.gateway import ToolGateway
-from app.tool_manager.source import MCPToolSource, ToolDef, ToolSetSource
+from app.tool_manager.source import (
+    MCPToolSource,
+    ToolDef,
+    ToolDiscoveryError,
+    ToolExecutionError,
+    ToolResultStatus,
+    ToolSetSource,
+)
 from app.tool_manager.grants import CapabilityGrant
 from app.execution_context import ExecutionContext
 from app.tool_manager.crewai_adapter import args_schema_for
@@ -97,6 +104,65 @@ class ToolGatewayTest(unittest.TestCase):
                 parameters={"type": "object", "properties": {}},
                 completion_policy="stop",
             )
+
+    def test_tool_definition_rejects_schema_semantic_mismatch(self) -> None:
+        with self.assertRaisesRegex(ValueError, "根类型"):
+            ToolDef(
+                name="broken_schema",
+                description="broken",
+                parameters={"type": "array", "items": {"type": "string"}},
+            )
+        with self.assertRaisesRegex(ValueError, "未知字段"):
+            ToolDef(
+                name="broken_required",
+                description="broken",
+                parameters={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["missing"],
+                },
+            )
+
+    def test_failed_machine_result_is_not_a_terminal_success(self) -> None:
+        self.gateway.register_toolset(
+            "contract",
+            "local",
+            toolset=ToolSetSource(
+                [
+                    (
+                        ToolDef(
+                            name="save_contract",
+                            description="Save contract",
+                            parameters={"type": "object", "properties": {}},
+                            completion_policy="final",
+                        ),
+                        lambda: '{"ok": false, "error_type": "contract_validation", "errors": [{"path": "layers[0]"}]}',
+                    )
+                ]
+            ),
+        )
+        tool = self.gateway.tools_for("contract")[0]
+        with self.assertRaisesRegex(ToolExecutionError, r"layers\[0\]"):
+            tool.run()
+        self.assertTrue(tool.result_as_answer)
+
+    def test_execute_safe_distinguishes_local_failure_from_capability(self) -> None:
+        source = ToolSetSource(
+            [
+                (
+                    ToolDef(
+                        name="broken",
+                        description="broken",
+                        parameters={"type": "object", "properties": {}},
+                    ),
+                    lambda: (_ for _ in ()).throw(ValueError("bad input")),
+                )
+            ]
+        )
+        result = source.execute_safe("broken", {})
+        self.assertEqual(result.status, ToolResultStatus.RETRYABLE)
+        self.assertEqual(result.error_type, "tool_validation")
+        self.assertTrue(result.retryable)
 
     def test_mcp_source_requires_explicit_activation(self) -> None:
         client = FakeMCPClient()
@@ -194,6 +260,25 @@ class ToolGatewayTest(unittest.TestCase):
             [tool.name for tool in self.gateway.tools_for("requirement")],
             ["save_requirement"],
         )
+
+    def test_dynamic_schema_or_transport_failure_is_discovery_error(self) -> None:
+        class BrokenClient:
+            def list_tools(self) -> list[dict]:
+                raise ConnectionError("mcp offline")
+
+            def call_tool(self, name: str, arguments: dict) -> str:
+                raise AssertionError("not called")
+
+        self.gateway.register_source(
+            "requirement", "broken-mcp", MCPToolSource(BrokenClient()), capability="external_research"
+        )
+        self.gateway.activate_grant(CapabilityGrant(
+            grant_id="grant-broken", trace_id="trace-test", work_item_id="wi-test",
+            capability="external_research", source_name="broken-mcp", scope="trace",
+        ))
+        context = ExecutionContext(trace_id="trace-test", work_item_id="wi-test", agent_id="agent")
+        with self.assertRaisesRegex(ToolDiscoveryError, "broken-mcp"):
+            self.gateway.tools_for("requirement", context=context)
 
     def test_scoped_grants_limit_dynamic_tools_to_node_trace_or_project(self) -> None:
         for domain in ("architecture", "code"):

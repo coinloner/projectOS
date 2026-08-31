@@ -103,6 +103,19 @@ def build_templates() -> WorkflowTemplateRegistry:
 
 
 class PlanningContextTest(unittest.TestCase):
+    def test_complex_delivery_upgrades_legacy_template_to_layered_route(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            runtime = FakePlannerRuntime([
+                '{"rationale":"完整交付","template_hint_id":"project_delivery","steps":[]}'
+            ])
+            container = build_container(project_path, planner_runtime=runtime)
+            result = container.planner.plan(
+                goal="生产级前后端系统，包含数据库、异步任务和并发交互页面",
+                plan_id="complex-delivery",
+            )
+            self.assertEqual(result.plan.template_id, "project_delivery_layered")
+            self.assertEqual(result.plan.work_items[1].id, "wi-02-architecture-blueprint")
+
     def test_context_exposes_artifact_existence_not_contents(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
             artifacts = ArtifactStore(project_path)

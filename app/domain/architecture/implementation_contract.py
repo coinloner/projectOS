@@ -96,6 +96,25 @@ class InterfaceContract:
             "schema": "data",
             "message": "event",
             "topic": "event",
+            "repository": "service",
+            "repo": "service",
+            "router": "api",
+            "route_handler": "api",
+            "controller": "api",
+            "dto": "data",
+            "model_schema": "data",
+            "queue": "event",
+            # Architecture workers sometimes use ``provided``/``consumed``
+            # as a direction label in the contract's ``kind`` field.  The
+            # contract model has no separate direction field; retain the
+            # interface as a service boundary instead of rejecting a
+            # semantically valid hand-off.
+            "provided": "service",
+            "consumed": "service",
+            "exception": "symbol",
+            "entrypoint": "api",
+            "lifecycle": "service",
+            "dependency": "service",
         }
         normalized_kind = aliases.get(self.kind.strip().lower(), self.kind.strip().lower())
         object.__setattr__(self, "kind", normalized_kind)

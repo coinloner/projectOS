@@ -245,6 +245,26 @@ class DomainToolContractTest(unittest.TestCase):
             },
         )
 
+    def test_layered_architecture_exposes_only_expected_writer(self) -> None:
+        cases = (
+            ("blueprint", "write_architecture_blueprint"),
+            ("module-domain", "write_module_design"),
+            ("implementation-domain", "write_implementation_design"),
+        )
+        for slot, expected in cases:
+            context = ExecutionContext(
+                trace_id="tr-layered-tools",
+                work_item_id=f"architecture-{slot}",
+                agent_id="architecture_agent",
+                execution_mode=ExecutionMode.PARTITIONED,
+                output_slot=slot,
+                tool_allowlist=("load_architecture_input", expected),
+            )
+            self.assertEqual(
+                {tool.name for tool in self.gateway.tools_for("architecture", context=context)},
+                {"load_architecture_input", expected},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

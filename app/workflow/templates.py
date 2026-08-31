@@ -110,6 +110,89 @@ def project_delivery_template() -> WorkflowTemplate:
     )
 
 
+def project_delivery_layered_template() -> WorkflowTemplate:
+    """复杂项目的完整交付流程，使用三层结构化架构作为前置屏障。
+
+    需求、架构和合同仍是同一条交付 DAG；与 ``project_delivery`` 的差别仅在
+    架构阶段改为 L0/L1/L2 对象协议，Contract 节点由控制面确定性编译。
+    """
+    layered = architecture_layered_template()
+    base = project_delivery_template()
+    requirement_node = next(node for node in base.nodes if node.id == "requirement")
+    layered_nodes = list(layered.nodes)
+    blueprint = layered_nodes[0]
+    layered_nodes[0] = TaskBlueprint(
+        id=blueprint.id,
+        agent_id=blueprint.agent_id,
+        objective=blueprint.objective,
+        output_key=blueprint.output_key,
+        artifact_key=blueprint.artifact_key,
+        depends_on=("requirement",),
+        execution_mode=blueprint.execution_mode,
+        input_artifacts=blueprint.input_artifacts,
+        output_slot=blueprint.output_slot,
+        publish_target=blueprint.publish_target,
+        input_from=blueprint.input_from,
+        acceptance_criteria=blueprint.acceptance_criteria,
+        constraints=blueprint.constraints,
+        non_goals=blueprint.non_goals,
+        policy_id=blueprint.policy_id,
+        policy_refs=blueprint.policy_refs,
+        skill_refs=blueprint.skill_refs,
+    )
+    replacement = {
+        "architecture": "architecture-layered-quality-gate",
+        "architecture-contract": "architecture-layered-contract",
+    }
+    downstream: list[TaskBlueprint] = []
+    for node in base.nodes:
+        if node.id in {"requirement", "architecture", "architecture-contract"}:
+            continue
+        depends_on = tuple(
+            replacement.get(dep, dep) for dep in node.depends_on
+        )
+        input_from = tuple(
+            replacement.get(ref, ref) for ref in node.input_from
+        )
+        input_artifacts = node.input_artifacts
+        if node.id == "tasks-plan":
+            depends_on = ("requirement", "architecture-layered-quality-gate", "architecture-layered-contract")
+        elif node.id == "environment":
+            depends_on = ("requirement", "architecture-layered-quality-gate", "architecture-layered-contract", "tasks-quality-gate")
+        elif node.id == "code-integration":
+            depends_on = ("architecture-layered-contract", "tasks-quality-gate", "environment")
+        elif node.id == "review":
+            depends_on = ("requirement", "architecture-layered-quality-gate", "architecture-layered-contract", "tasks-quality-gate", "environment", "code-integration", "tests")
+        downstream.append(
+            TaskBlueprint(
+                id=node.id,
+                agent_id=node.agent_id,
+                objective=node.objective,
+                output_key=node.output_key,
+                artifact_key=node.artifact_key,
+                depends_on=depends_on,
+                execution_mode=node.execution_mode,
+                input_artifacts=input_artifacts,
+                output_slot=node.output_slot,
+                publish_target=node.publish_target,
+                candidate_from=(replacement.get(node.candidate_from, node.candidate_from) if node.candidate_from else None),
+                input_from=input_from,
+                acceptance_criteria=node.acceptance_criteria,
+                constraints=node.constraints,
+                non_goals=node.non_goals,
+                policy_id=node.policy_id,
+                policy_refs=node.policy_refs,
+                skill_refs=node.skill_refs,
+            )
+        )
+    return WorkflowTemplate(
+        id="project_delivery_layered",
+        name="分层项目交付",
+        description="复杂项目使用三层结构化架构合同，再进入任务、代码、测试和审查闭环。",
+        nodes=(requirement_node,) + tuple(layered_nodes) + tuple(downstream),
+    )
+
+
 def architecture_parallel_template() -> WorkflowTemplate:
     """架构 Markdown 的受控并行试点模板。
 
@@ -238,6 +321,7 @@ def architecture_layered_template() -> WorkflowTemplate:
             acceptance_criteria=(
                 "只能调用 write_architecture_blueprint 保存结构化对象。",
                 "depth 必须为 0，包含系统边界、层级、模块清单和全局约束。",
+                "本模板的模块清单只能使用 module_id=domain、api、runtime；不得新增 verification、文档或其他未分配模块。",
             ),
         )
     ]

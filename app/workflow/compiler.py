@@ -182,6 +182,27 @@ class ImplementationContractCompiler:
         inferred_waves: dict[str, int] = {}
         units_by_id = {unit.unit_id: unit for unit in units}
         interfaces_by_id = {interface.interface_id: interface for interface in contract.interfaces}
+
+        def artifact_ref(value: str) -> ArtifactRef:
+            """Parse canonical ref ids while accepting bare artifact keys.
+
+            Architecture agents often carry a frozen ``staged:trace:work:slot``
+            reference into the implementation contract.  Treating that whole
+            string as an artifact key caused a late ``受限 ID`` failure during
+            plan expansion; preserve the reference layer instead.
+            """
+            text = value.strip()
+            parts = text.split(":")
+            if len(parts) == 4 and parts[0] == "staged":
+                return ArtifactRef.staged(
+                    artifact_key="architecture",
+                    trace_id=parts[1],
+                    work_item_id=parts[2],
+                    slot=parts[3],
+                )
+            if len(parts) == 3 and parts[0] == "published":
+                return ArtifactRef.published(parts[1], revision_id=None if parts[2] == "current" else parts[2])
+            return ArtifactRef.published(text)
         original_children: dict[str, tuple[str, ...]] = {}
         for original in contract.units:
             matching = tuple(
@@ -331,7 +352,7 @@ class ImplementationContractCompiler:
                     constraints=unit.constraints,
                     non_goals=unit.non_goals,
                     execution_mode=ExecutionMode.PARTITIONED,
-                    input_refs=tuple(ArtifactRef.published(ref) for ref in unit.input_refs) + dependency_refs,
+                    input_refs=tuple(artifact_ref(ref) for ref in unit.input_refs) + dependency_refs,
                     output_slot=slot,
                     implementation_unit_id=unit.unit_id,
                     allowed_paths=allowed_paths,
