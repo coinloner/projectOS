@@ -76,7 +76,7 @@ class ContractImplementationUnitInput(_ContractModel):
     skill_refs: list[str] = Field(default_factory=list, max_length=32)
     parallel_group: str | None = Field(default=None, max_length=128)
     output_key: str | None = Field(default=None, max_length=128)
-    output_slot: str | None = Field(default=None, max_length=64)
+    slot: str | None = Field(default=None, max_length=64)
     requirement_ids: list[str] = Field(default_factory=list, max_length=64)
     wave: int | None = Field(default=None, ge=0, le=1000)
     owned_files: list[str] = Field(default_factory=list, max_length=64)

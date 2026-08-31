@@ -48,10 +48,9 @@ class WorkItem:
     acceptance_criteria: tuple[str, ...] = ()
     constraints: tuple[str, ...] = ()
     non_goals: tuple[str, ...] = ()
-    policy_id: str | None = None
     execution_mode: ExecutionMode = ExecutionMode.EXCLUSIVE
     input_refs: tuple[ArtifactRef, ...] = ()
-    output_slot: str | None = None
+    slot: str | None = None
     publish_target: str | None = None
     candidate_from_work_item_id: str | None = None
     implementation_unit_id: str | None = None
@@ -80,8 +79,6 @@ class WorkItem:
             object.__setattr__(self, "artifact_key", self.output_key)
         elif not self.artifact_key.strip():
             raise ValueError("WorkItem.artifact_key 不能为空")
-        if self.policy_id is not None and not self.policy_id.strip():
-            raise ValueError("WorkItem.policy_id 不能是空字符串")
         for field_name in ("implementation_unit_id",):
             value = getattr(self, field_name)
             if value is not None and not value.strip():
@@ -96,6 +93,11 @@ class WorkItem:
         # generated content and attempted to persist it.
         if self.allowed_paths and any(path in {"*", "**"} for path in self.forbidden_paths):
             raise ValueError("WorkItem.forbidden_paths 不能使用全局通配符")
+        for allowed in self.allowed_paths:
+            if any(_path_patterns_overlap(allowed, forbidden) for forbidden in self.forbidden_paths):
+                raise ValueError(
+                    f"WorkItem.allowed_paths 与 forbidden_paths 重叠: {allowed}"
+                )
         for owned in self.owned_files:
             normalized = owned.replace("\\", "/").lstrip("/")
             if any(
@@ -154,11 +156,6 @@ class WorkItem:
     def dependency_ids(self) -> tuple[str, ...]:
         return tuple(dependency.work_item_id for dependency in self.dependencies)
 
-    @property
-    def slot(self) -> str | None:
-        """Canonical partition slot; serialized legacy plans may still use output_slot."""
-        return self.output_slot
-
     def _compute_contract_digest(self) -> str:
         """Return the digest of fields that define execution authorization.
 
@@ -181,7 +178,7 @@ class WorkItem:
             ],
             "output_key": self.output_key,
             "artifact_key": self.artifact_key,
-            "output_slot": self.output_slot,
+            "slot": self.slot,
             "publish_target": self.publish_target,
             "candidate_from_work_item_id": self.candidate_from_work_item_id,
             "implementation_unit_id": self.implementation_unit_id,
@@ -192,7 +189,6 @@ class WorkItem:
             "acceptance_criteria": list(self.acceptance_criteria),
             "constraints": list(self.constraints),
             "non_goals": list(self.non_goals),
-            "policy_id": self.policy_id,
             "policy_refs": list(self.policy_refs),
             "skill_refs": list(self.skill_refs),
             "requirement_ids": list(self.requirement_ids),
@@ -246,15 +242,15 @@ class WorkItem:
 
     def _validate_execution_grant(self) -> None:
         if self.execution_mode is ExecutionMode.PARTITIONED:
-            if not self.output_slot or not self.output_slot.strip():
-                raise ValueError("PARTITIONED WorkItem 必须指定 output_slot")
+            if not self.slot or not self.slot.strip():
+                raise ValueError("PARTITIONED WorkItem 必须指定 slot")
             if self.publish_target is not None or self.candidate_from_work_item_id is not None:
                 raise ValueError("PARTITIONED WorkItem 不能携带发布授权")
             return
         if self.execution_mode is ExecutionMode.INTEGRATION:
             if not self.publish_target or not self.publish_target.strip():
                 raise ValueError("INTEGRATION WorkItem 必须指定 publish_target")
-            if self.output_slot is not None or self.candidate_from_work_item_id is not None:
+            if self.slot is not None or self.candidate_from_work_item_id is not None:
                 raise ValueError("INTEGRATION WorkItem 不能携带暂存或质量门授权")
             return
         if self.execution_mode is ExecutionMode.QUALITY_GATE:
@@ -262,10 +258,10 @@ class WorkItem:
                 raise ValueError("QUALITY_GATE WorkItem 必须指定 publish_target")
             if not self.candidate_from_work_item_id or not self.candidate_from_work_item_id.strip():
                 raise ValueError("QUALITY_GATE WorkItem 必须指定候选来源工作项")
-            if self.output_slot is not None:
+            if self.slot is not None:
                 raise ValueError("QUALITY_GATE WorkItem 不能携带暂存 slot")
             return
-        if any(value is not None for value in (self.output_slot, self.publish_target, self.candidate_from_work_item_id)):
+        if any(value is not None for value in (self.slot, self.publish_target, self.candidate_from_work_item_id)):
             raise ValueError("EXCLUSIVE WorkItem 不能携带分区、集成或发布授权")
 
 
@@ -276,3 +272,16 @@ def _default_output_kind(execution_mode: ExecutionMode) -> str:
         ExecutionMode.QUALITY_GATE: "quality_report",
         ExecutionMode.EXCLUSIVE: "exclusive_artifact",
     }[execution_mode]
+
+
+def _path_patterns_overlap(allowed: str, forbidden: str) -> bool:
+    """Conservative overlap check for workspace glob scopes."""
+    left = allowed.replace("\\", "/").rstrip("/")
+    right = forbidden.replace("\\", "/").rstrip("/")
+    if left == right:
+        return True
+    left_prefix = left.split("*", 1)[0].split("?", 1)[0].rstrip("/")
+    right_prefix = right.split("*", 1)[0].split("?", 1)[0].rstrip("/")
+    if left_prefix and right_prefix:
+        return left_prefix == right_prefix or left_prefix.startswith(right_prefix + "/") or right_prefix.startswith(left_prefix + "/")
+    return False

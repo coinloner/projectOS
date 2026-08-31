@@ -50,7 +50,7 @@ class TemplateCompiler:
                 artifact_key=self._artifact_key(node),
                 trace_id=trace.trace_id,
                 work_item_id=item_id_by_blueprint[node.id],
-                slot=node.output_slot or "",
+                slot=node.slot or "",
             )
             for node in template.nodes
             if node.execution_mode is ExecutionMode.PARTITIONED
@@ -93,10 +93,10 @@ class TemplateCompiler:
                     acceptance_criteria=node.acceptance_criteria,
                     constraints=node.constraints,
                     non_goals=node.non_goals,
-                    policy_id=node.policy_id,
+                    policy_refs=node.policy_refs,
                     execution_mode=node.execution_mode,
                     input_refs=input_refs,
-                    output_slot=node.output_slot,
+                    slot=node.slot,
                     publish_target=node.publish_target,
                     candidate_from_work_item_id=candidate_from,
                     implementation_unit_id=node.implementation_unit_id,
@@ -104,7 +104,6 @@ class TemplateCompiler:
                     forbidden_paths=node.forbidden_paths,
                     required_paths=node.required_paths,
                     owned_files=node.owned_files,
-                    policy_refs=node.policy_refs,
                     skill_refs=node.skill_refs,
                 )
             )
@@ -135,7 +134,7 @@ class TemplateCompiler:
         item_id_by_blueprint: Mapping[str, str],
         staged_refs: Mapping[str, ArtifactRef],
     ) -> tuple[ArtifactRef, ...]:
-        refs = [ArtifactRef.published(artifact_key) for artifact_key in node.input_artifacts]
+        refs = [ArtifactRef.published(artifact_key) for artifact_key in node.input_refs]
         for source_id in node.input_from:
             if source_id not in item_id_by_blueprint:
                 raise ValueError(
@@ -261,7 +260,7 @@ class ImplementationContractCompiler:
             wave_for(unit.unit_id)
         items: list[WorkItem] = []
         for unit in units:
-            slot = unit.output_slot or self._infer_slot(
+            slot = unit.slot or self._infer_slot(
                 unit.allowed_paths, layer=unit.layer, unit_id=unit.unit_id
             )
             allowed_paths = self._normalize_paths(unit.allowed_paths, slot)
@@ -332,7 +331,7 @@ class ImplementationContractCompiler:
                     artifact_key="implementation",
                     trace_id=trace.trace_id,
                     work_item_id=ids[dep],
-                    slot=(units_by_id[dep].output_slot or self._infer_slot(
+                    slot=(units_by_id[dep].slot or self._infer_slot(
                         units_by_id[dep].allowed_paths,
                         layer=units_by_id[dep].layer,
                         unit_id=units_by_id[dep].unit_id,
@@ -353,7 +352,7 @@ class ImplementationContractCompiler:
                     non_goals=unit.non_goals,
                     execution_mode=ExecutionMode.PARTITIONED,
                     input_refs=tuple(artifact_ref(ref) for ref in unit.input_refs) + dependency_refs,
-                    output_slot=slot,
+                    slot=slot,
                     implementation_unit_id=unit.unit_id,
                     allowed_paths=allowed_paths,
                     forbidden_paths=forbidden_paths,
@@ -441,12 +440,12 @@ class ImplementationContractCompiler:
                         depends_on=(),
                         owned_files=(path,),
                         output_key=f"{unit.output_key or unit.unit_id}_{suffix}",
-                        # ``output_slot`` is a physical partition (backend,
+                        # ``slot`` is a physical partition (backend,
                         # frontend or root), not an artifact id.  Keep it
                         # stable across file children so path normalization and
                         # staging authorization remain identical to the parent
                         # unit; WorkItem/output_key already provide uniqueness.
-                        output_slot=unit.output_slot,
+                        slot=unit.slot,
                         # Public symbols are file-scoped.  A legacy multi-file
                         # unit has no unambiguous symbol-to-file mapping, so it
                         # must omit symbols (or be split by Architecture) rather

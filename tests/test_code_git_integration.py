@@ -102,14 +102,14 @@ class CodeGitIntegrationTest(unittest.TestCase):
             work_item_id="code-backend",
             agent_id="code_agent",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend",
+            slot="backend",
         )
         frontend_context = ExecutionContext(
             trace_id="trace-code",
             work_item_id="code-frontend",
             agent_id="code_agent",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="frontend",
+            slot="frontend",
         )
 
         first = self.staging.write_staged_file(
@@ -186,7 +186,7 @@ class CodeGitIntegrationTest(unittest.TestCase):
             work_item_id="code-domain",
             agent_id="code_agent",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend",
+            slot="backend",
             allowed_paths=("backend/domain/**",),
         )
         self.staging.write_staged_file(context, "domain/entities.py", "class Product: pass\n")
@@ -196,7 +196,7 @@ class CodeGitIntegrationTest(unittest.TestCase):
     def test_partition_rejects_file_outside_explicit_owner_set(self) -> None:
         context = ExecutionContext(
             trace_id="trace-owned", work_item_id="code-domain", agent_id="code_agent",
-            execution_mode=ExecutionMode.PARTITIONED, output_slot="backend",
+            execution_mode=ExecutionMode.PARTITIONED, slot="backend",
             allowed_paths=("backend/app/domain/**",),
             owned_files=("backend/app/domain/entities.py",),
             implementation_unit_id="backend-domain",
@@ -258,7 +258,7 @@ class CodeGitIntegrationTest(unittest.TestCase):
             work_item_id="code-nested",
             agent_id="code_agent",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend",
+            slot="backend",
         )
         service.write_staged_file(context, "backend/app.py", "print('nested')\n")
         self.assertTrue((nested / ".git").exists())
@@ -269,7 +269,7 @@ class CodeGitIntegrationTest(unittest.TestCase):
             work_item_id="code-backend",
             agent_id="code_agent",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend",
+            slot="backend",
         )
         self.staging.write_staged_file(backend_context, "backend/app.py", "print('ok')\n")
         context = ExecutionContext(
@@ -296,7 +296,7 @@ class CodeGitIntegrationTest(unittest.TestCase):
             work_item_id="code-api",
             agent_id="code_agent",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend",
+            slot="backend",
             allowed_paths=("backend/app/main.py",),
             required_paths=("backend/app/main.py",),
         )

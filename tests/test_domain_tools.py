@@ -138,7 +138,7 @@ class DomainToolContractTest(unittest.TestCase):
                     "acceptance_criteria": [], "constraints": [], "non_goals": [], "policy_refs": [],
                     "skill_refs": [], "requirement_ids": [], "provides_interfaces": [],
                     "consumes_interfaces": [], "provided_symbols": [], "required_symbols": [],
-                    "forbidden_paths": [], "output_slot": "backend",
+                    "forbidden_paths": [], "slot": "backend",
                 }],
             }
             result = json.loads(tool.run(contract=contract))
@@ -178,7 +178,7 @@ class DomainToolContractTest(unittest.TestCase):
         context = ExecutionContext(
             trace_id="tr-code", work_item_id="code-backend",
             agent_id="code_agent", execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend",
+            slot="backend",
         )
         self.assertEqual(
             {tool.name for tool in self.gateway.tools_for("code", context=context)},
@@ -189,7 +189,7 @@ class DomainToolContractTest(unittest.TestCase):
         context = ExecutionContext(
             trace_id="tr-code", work_item_id="code-backend",
             agent_id="code_agent", execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend",
+            slot="backend",
         )
         tools = {
             tool.name: tool for tool in self.gateway.tools_for("code", context=context)
@@ -201,7 +201,7 @@ class DomainToolContractTest(unittest.TestCase):
         context = ExecutionContext(
             trace_id="tr-code", work_item_id="code-backend",
             agent_id="code_agent", execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend", tool_allowlist=("write_staged_code_file",),
+            slot="backend", tool_allowlist=("write_staged_code_file",),
         )
         self.assertEqual(
             {tool.name for tool in self.gateway.tools_for("code", context=context)},
@@ -221,7 +221,7 @@ class DomainToolContractTest(unittest.TestCase):
         scope_context = ExecutionContext(
             trace_id="tr-architecture", work_item_id="architecture-api",
             agent_id="architecture_agent", execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="api",
+            slot="api",
         )
         integration_context = ExecutionContext(
             trace_id="tr-architecture", work_item_id="architecture-integration",
@@ -257,7 +257,7 @@ class DomainToolContractTest(unittest.TestCase):
                 work_item_id=f"architecture-{slot}",
                 agent_id="architecture_agent",
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot=slot,
+                slot=slot,
                 tool_allowlist=("load_architecture_input", expected),
             )
             self.assertEqual(

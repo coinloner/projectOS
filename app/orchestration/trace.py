@@ -123,7 +123,6 @@ class TraceStore:
                         "acceptance_criteria": list(item.acceptance_criteria),
                         "constraints": list(item.constraints),
                         "non_goals": list(item.non_goals),
-                        "policy_id": item.policy_id,
                         "failure_package": (
                             {
                                 "signal": item.failure_package.signal.as_dict(),
@@ -223,6 +222,31 @@ class TraceStore:
         if not path.is_file():
             raise FileNotFoundError(f"Trace 没有计划基线: {trace_id}")
         return self._read_json(path)
+
+    def validate_plan_baseline(self, plan: "ExecutionPlan") -> None:
+        """Reject resume when persisted WorkItem contracts differ from baseline."""
+        try:
+            baseline = self.load_plan_baseline(plan.trace.trace_id)
+        except FileNotFoundError:
+            return
+        raw = baseline.get("contract_digests")
+        if not isinstance(raw, dict):
+            # Historical baselines did not persist contract digests.
+            return
+        expected = {str(key): str(value) for key, value in raw.items()}
+        actual = {item.id: item.contract_digest or "" for item in plan.work_items}
+        if expected != actual:
+            missing = sorted(set(expected) - set(actual))
+            added = sorted(set(actual) - set(expected))
+            changed = sorted(
+                item_id
+                for item_id in set(expected) & set(actual)
+                if expected[item_id] != actual[item_id]
+            )
+            raise ValueError(
+                "ExecutionPlan 与持久化合同基线不一致"
+                f"; missing={missing}; added={added}; changed={changed}"
+            )
 
     def record_event(
         self,
@@ -415,8 +439,12 @@ class TraceStore:
                         str(value) for value in raw.get("constraints", [])
                     ),
                     non_goals=tuple(str(value) for value in raw.get("non_goals", [])),
-                    policy_id=(
-                        str(raw["policy_id"]) if raw.get("policy_id") else None
+                    policy_refs=tuple(
+                        str(value)
+                        for value in raw.get(
+                            "policy_refs",
+                            ([raw["policy_id"]] if raw.get("policy_id") else []),
+                        )
                     ),
                     execution_mode=ExecutionMode(
                         str(raw.get("execution_mode", "exclusive"))
@@ -424,7 +452,7 @@ class TraceStore:
                     input_refs=tuple(
                         ref_from_dict(value) for value in raw.get("input_refs", [])
                     ),
-                    output_slot=(
+                    slot=(
                         str(raw.get("slot", raw.get("output_slot")))
                         if raw.get("slot", raw.get("output_slot"))
                         else None
@@ -464,7 +492,6 @@ class TraceStore:
                         if raw.get("contract_digest")
                         else None
                     ),
-                    policy_refs=tuple(str(value) for value in raw.get("policy_refs", [])),
                     skill_refs=tuple(str(value) for value in raw.get("skill_refs", [])),
                     requirement_ids=tuple(str(value) for value in raw.get("requirement_ids", [])),
                 )

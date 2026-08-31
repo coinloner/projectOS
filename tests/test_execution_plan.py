@@ -17,7 +17,7 @@ def make_item(
         agent_id="requirement_agent",
         objective="生成需求草稿",
         output_key=f"{item_id}_output",
-        policy_id="requirement_draft_v1",
+        policy_refs=("requirement_draft_v1",),
         dependencies=tuple(
             WorkItemDependency(
                 work_item_id=dependency,
@@ -58,7 +58,7 @@ class ExecutionPlanTest(unittest.TestCase):
                 objective="实现运行时入口",
                 output_key="implementation_runtime",
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="runtime",
+                slot="runtime",
                 allowed_paths=("src/runtime/**",),
                 forbidden_paths=("**",),
                 owned_files=("src/runtime/server.py",),

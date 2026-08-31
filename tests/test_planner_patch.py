@@ -5,7 +5,13 @@ from app.agent.registry import AgentDefinition, AgentRegistry
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.trace import TraceContext
 from app.orchestration.work_item import DependencySource, WorkItem, WorkItemDependency
-from app.planner.patch import PlanPatch, PlanPatchError, apply_patch
+from app.planner.patch import (
+    PlanPatch,
+    PlanPatchError,
+    RepairPlanPatch,
+    apply_patch,
+    apply_repair_patch,
+)
 
 
 def agents() -> AgentRegistry:
@@ -45,6 +51,26 @@ def plan() -> ExecutionPlan:
 
 
 class PlannerPatchTest(unittest.TestCase):
+    def test_repair_patch_appends_only_new_work_items(self) -> None:
+        patch = RepairPlanPatch.parse(
+            '{"rationale":"修复","base_plan_id":"plan-patch","repair_scope":["wi-api"],'
+            '"operations":[{"operation":"add","ref":"fix","agent_id":"test_agent",'
+            '"objective":"重新验证","depends_on":[]}]}'
+        )
+        repaired = apply_repair_patch(plan(), patch, agents=agents(), plan_id="repair-1")
+        self.assertEqual(repaired.id, "repair-1")
+        self.assertEqual([item.id for item in repaired.work_items], ["wi-repair-01-tests"])
+        self.assertEqual(repaired.trace, plan().trace)
+
+    def test_repair_patch_dependencies_must_reference_same_patch(self) -> None:
+        patch = RepairPlanPatch.parse(
+            '{"rationale":"修复","base_plan_id":"plan-patch","operations":['
+            '{"operation":"add","ref":"fix","agent_id":"test_agent",'
+            '"objective":"重新验证","depends_on":["wi-api"]}]}'
+        )
+        with self.assertRaisesRegex(PlanPatchError, "同一补丁"):
+            apply_repair_patch(plan(), patch, agents=agents())
+
     def test_work_item_contract_digest_is_stable_for_objective_diagnostics(self) -> None:
         item = plan().work_item("wi-api")
         assert item is not None
@@ -62,6 +88,17 @@ class PlannerPatchTest(unittest.TestCase):
         assert item is not None
         with self.assertRaisesRegex(ValueError, "contract_digest"):
             replace(item, allowed_paths=("workspace/**",))
+
+    def test_work_item_rejects_overlapping_allowed_and_forbidden_scopes(self) -> None:
+        with self.assertRaisesRegex(ValueError, "重叠"):
+            WorkItem(
+                id="wi-scope",
+                agent_id="code_agent",
+                objective="实现",
+                output_key="implementation",
+                allowed_paths=("workspace/**",),
+                forbidden_paths=("workspace/backend/**",),
+            )
 
     def test_dependency_changes_are_rejected_by_frozen_contract(self) -> None:
         patch = PlanPatch.model_validate(

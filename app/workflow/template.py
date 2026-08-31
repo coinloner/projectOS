@@ -18,12 +18,11 @@ class TaskBlueprint:
     objective: str
     output_key: str
     depends_on: tuple[str, ...] = ()
-    policy_id: str | None = None
     execution_mode: ExecutionMode = ExecutionMode.EXCLUSIVE
     artifact_key: str | None = None
-    input_artifacts: tuple[str, ...] = ()
+    input_refs: tuple[str, ...] = ()
     input_from: tuple[str, ...] = ()
-    output_slot: str | None = None
+    slot: str | None = None
     publish_target: str | None = None
     candidate_from: str | None = None
     acceptance_criteria: tuple[str, ...] = ()
@@ -42,7 +41,7 @@ class TaskBlueprint:
             value = getattr(self, field_name)
             if not value or not value.strip():
                 raise ValueError(f"TaskBlueprint.{field_name} 不能为空")
-        for field_name in ("artifact_key", "output_slot", "publish_target", "candidate_from", "policy_id"):
+        for field_name in ("artifact_key", "slot", "publish_target", "candidate_from"):
             value = getattr(self, field_name)
             if value is not None and not value.strip():
                 raise ValueError(f"TaskBlueprint.{field_name} 不能是空字符串")
@@ -58,8 +57,8 @@ class TaskBlueprint:
                     raise ValueError(
                         "TaskBlueprint.owned_files 必须是具体文件路径；目录/glob 只能用于 allowed_paths"
                     )
-        if any(not value.strip() for value in self.input_artifacts):
-            raise ValueError("TaskBlueprint.input_artifacts 不能包含空字符串")
+        if any(not value.strip() for value in self.input_refs):
+            raise ValueError("TaskBlueprint.input_refs 不能包含空字符串")
         if any(not value.strip() for value in self.input_from):
             raise ValueError("TaskBlueprint.input_from 不能包含空字符串")
         if any(not value.strip() for value in self.acceptance_criteria):
@@ -73,21 +72,21 @@ class TaskBlueprint:
                 "task_agent 不支持 EXCLUSIVE 执行，必须使用受控产物工作流"
             )
         if self.execution_mode is ExecutionMode.PARTITIONED:
-            if not self.output_slot:
-                raise ValueError("PARTITIONED TaskBlueprint 必须指定 output_slot")
+            if not self.slot:
+                raise ValueError("PARTITIONED TaskBlueprint 必须指定 slot")
             if self.publish_target or self.candidate_from:
                 raise ValueError("PARTITIONED TaskBlueprint 不能声明发布授权")
         elif self.execution_mode is ExecutionMode.INTEGRATION:
             if not self.publish_target:
                 raise ValueError("INTEGRATION TaskBlueprint 必须指定 publish_target")
-            if self.output_slot or self.candidate_from:
+            if self.slot or self.candidate_from:
                 raise ValueError("INTEGRATION TaskBlueprint 不能声明暂存或质量门授权")
         elif self.execution_mode is ExecutionMode.QUALITY_GATE:
             if not self.publish_target or not self.candidate_from:
                 raise ValueError("QUALITY_GATE TaskBlueprint 必须指定发布目标和候选来源")
-            if self.output_slot or self.input_from or self.input_artifacts:
+            if self.slot or self.input_from or self.input_refs:
                 raise ValueError("QUALITY_GATE TaskBlueprint 不能声明普通输入或暂存 slot")
-        elif any(value is not None for value in (self.output_slot, self.publish_target, self.candidate_from)):
+        elif any(value is not None for value in (self.slot, self.publish_target, self.candidate_from)):
             raise ValueError("EXCLUSIVE TaskBlueprint 不能声明分区、集成或质量门授权")
 
 @dataclass(frozen=True)

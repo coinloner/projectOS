@@ -44,7 +44,7 @@ def contract_payload():
                 "objective": "实现订单领域模型",
                 "allowed_paths": ["workspace/backend/app/domain/**"],
                 "required_paths": ["backend/app/domain/order.py"],
-                "output_slot": "backend",
+                "slot": "backend",
                 "acceptance_criteria": ["领域对象可被应用层调用"],
                 "policy_refs": ["architecture.layer-boundary.v1"],
                 "skill_refs": ["python.domain-model.v1"],
@@ -57,7 +57,7 @@ def contract_payload():
                 "objective": "实现订单页面壳",
                 "allowed_paths": ["workspace/frontend/**"],
                 "depends_on": ["backend-domain"],
-                "output_slot": "frontend",
+                "slot": "frontend",
                 "owned_files": ["frontend/src/main.ts"],
             },
         ],
@@ -104,7 +104,7 @@ class ImplementationContractTest(unittest.TestCase):
                 "objective": "提供房间接口",
                 "allowed_paths": ["backend/app/api/routes.py"],
                 "owned_files": ["backend/app/api/routes.py"],
-                "output_slot": "backend",
+                "slot": "backend",
             }],
         }
         contract = ImplementationContract.parse(payload)
@@ -120,7 +120,7 @@ class ImplementationContractTest(unittest.TestCase):
                     "objective": "实现领域模型",
                     "allowed_paths": ["backend/app/domain/**"],
                     "owned_files": ["backend/app/domain/models.py"],
-                    "output_slot": "backend",
+                    "slot": "backend",
                 },
                 {
                     "unit_id": "domain-errors",
@@ -128,7 +128,7 @@ class ImplementationContractTest(unittest.TestCase):
                     "objective": "实现领域异常",
                     "allowed_paths": ["backend/app/domain/**"],
                     "owned_files": ["backend/app/domain/errors.py"],
-                    "output_slot": "backend",
+                    "slot": "backend",
                 },
             ],
         }
@@ -245,7 +245,7 @@ class ImplementationContractTest(unittest.TestCase):
             contract, goal="交付订单系统", plan_id="contract-plan", trace=trace
         )
         self.assertEqual(plan.template_id, "implementation-contract")
-        self.assertEqual([item.output_slot for item in plan.work_items], ["backend", "frontend"])
+        self.assertEqual([item.slot for item in plan.work_items], ["backend", "frontend"])
         self.assertEqual(plan.work_items[1].dependency_ids, ("wi-code-backend-domain",))
         self.assertEqual(plan.work_items[0].execution_mode, ExecutionMode.PARTITIONED)
         self.assertEqual(plan.work_items[0].wave, 0)
@@ -270,7 +270,7 @@ class ImplementationContractTest(unittest.TestCase):
                     "backend/interfaces/routes.py",
                     "backend/interfaces/schemas.py",
                 ],
-                "output_slot": "backend",
+                "slot": "backend",
             }],
         }
         plan = ImplementationContractCompiler().compile(
@@ -296,7 +296,7 @@ class ImplementationContractTest(unittest.TestCase):
                     "backend/interfaces/main.py",
                     "backend/interfaces/routes.py",
                 ],
-                "output_slot": "backend",
+                "slot": "backend",
             }],
         }
         plan = ImplementationContractCompiler().compile(
@@ -334,7 +334,7 @@ async def health() -> dict:
                 "objective": "交付运行配置",
                 "allowed_paths": ["workspace/**"],
                 "owned_files": ["scripts/**"],
-                "output_slot": "root",
+                "slot": "root",
             }],
         }
         with self.assertRaisesRegex(ValueError, "owned_files.*具体文件"):
@@ -349,7 +349,7 @@ async def health() -> dict:
                 "objective": "交付运行配置",
                 "allowed_paths": ["workspace/**"],
                 "owned_files": ["docker-compose.yml", ".env.example"],
-                "output_slot": "root",
+                "slot": "root",
             }],
         }
         plan = ImplementationContractCompiler().compile(
@@ -360,7 +360,7 @@ async def health() -> dict:
             [item.owned_files for item in plan.work_items],
             [("docker-compose.yml",), (".env.example",)],
         )
-        self.assertEqual({item.output_slot for item in plan.work_items}, {"root"})
+        self.assertEqual({item.slot for item in plan.work_items}, {"root"})
         for item in plan.work_items:
             self.assertRegex(item.id, r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
@@ -393,9 +393,9 @@ async def health() -> dict:
         payload = {
             "schema_version": 1,
             "implementation_units": [
-                {"unit_id": "domain-a", "layer": "domain", "objective": "a", "allowed_paths": ["backend/app/domain/a.py"], "owned_files": ["backend/app/domain/a.py"], "wave": 0, "output_slot": "backend"},
-                {"unit_id": "domain-b", "layer": "domain", "objective": "b", "allowed_paths": ["backend/app/domain/b.py"], "owned_files": ["backend/app/domain/b.py"], "wave": 0, "output_slot": "backend"},
-                {"unit_id": "application", "layer": "application", "objective": "app", "allowed_paths": ["backend/app/application/app.py"], "owned_files": ["backend/app/application/app.py"], "wave": 1, "output_slot": "backend"},
+                {"unit_id": "domain-a", "layer": "domain", "objective": "a", "allowed_paths": ["backend/app/domain/a.py"], "owned_files": ["backend/app/domain/a.py"], "wave": 0, "slot": "backend"},
+                {"unit_id": "domain-b", "layer": "domain", "objective": "b", "allowed_paths": ["backend/app/domain/b.py"], "owned_files": ["backend/app/domain/b.py"], "wave": 0, "slot": "backend"},
+                {"unit_id": "application", "layer": "application", "objective": "app", "allowed_paths": ["backend/app/application/app.py"], "owned_files": ["backend/app/application/app.py"], "wave": 1, "slot": "backend"},
             ],
         }
         plan = ImplementationContractCompiler().compile(
@@ -426,7 +426,7 @@ async def health() -> dict:
                     "owned_files": ["backend/app/api/routes.py"],
                     "provides_interfaces": ["http-api"],
                     "wave": 3,
-                    "output_slot": "backend",
+                    "slot": "backend",
                 },
                 {
                     "unit_id": "frontend",
@@ -437,7 +437,7 @@ async def health() -> dict:
                     "consumes_interfaces": ["http-api"],
                     # Deliberately inconsistent: compiler must promote it.
                     "wave": 1,
-                    "output_slot": "frontend",
+                    "slot": "frontend",
                 },
             ],
         }
@@ -456,10 +456,10 @@ async def health() -> dict:
             contract, goal="交付分层项目", plan_id="root-plan", trace=trace
         )
         domain, tests = plan.work_items
-        self.assertEqual(domain.output_slot, "backend")
+        self.assertEqual(domain.slot, "backend")
         self.assertEqual(domain.allowed_paths, ("backend/app/domain/",))
         self.assertEqual(domain.required_paths, ("backend/app/domain/entities.py",))
-        self.assertEqual(tests.output_slot, "root")
+        self.assertEqual(tests.slot, "root")
         self.assertEqual(tests.allowed_paths, ("tests/",))
 
     def test_contract_rejects_cycles(self) -> None:
@@ -487,7 +487,7 @@ async def health() -> dict:
                 "objective": "维护项目文档",
                 "allowed_paths": ["requirement.md", "architecture.md", "architecture_contract.md", "tasks.md", "environment.md", "implementation.md", "tests.md", "review.md"],
                 "required_paths": ["requirement.md", "architecture.md", "architecture_contract.md", "tasks.md", "environment.md", "implementation.md", "tests.md", "review.md"],
-                "output_slot": "root",
+                "slot": "root",
             }],
         }
         contract = ImplementationContract.parse(payload)
@@ -523,7 +523,7 @@ async def health() -> dict:
             state.record(
                 contract_item,
                 NodeResult.completed(
-                    node_id=contract_item.id,
+                    work_item_id=contract_item.id,
                     agent_id=contract_item.agent_id,
                     content="合同已发布",
                 ),
@@ -547,7 +547,7 @@ async def health() -> dict:
             "allowed_paths": ["review.md"],
             "required_paths": ["review.md"],
             "owned_files": ["review.md"],
-            "output_slot": "root",
+            "slot": "root",
         })
         contract = ImplementationContract.parse(payload)
         plan = ImplementationContractCompiler().compile(

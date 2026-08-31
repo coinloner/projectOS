@@ -83,7 +83,7 @@ def _architecture_tool_allowlist(item: WorkItem) -> tuple[str, ...]:
     if item.execution_mode is ExecutionMode.QUALITY_GATE:
         return ()
     if item.execution_mode is ExecutionMode.PARTITIONED:
-        slot = item.output_slot or ""
+        slot = item.slot or ""
         writer = (
             "write_architecture_blueprint"
             if slot == "blueprint"
@@ -110,7 +110,7 @@ def _expected_architecture_tool(item: WorkItem) -> str | None:
     """Return the single structured writer expected by a layered item."""
     if item.agent_id != "architecture_agent":
         return None
-    slot = item.output_slot or ""
+    slot = item.slot or ""
     if item.execution_mode is ExecutionMode.PARTITIONED:
         if slot == "blueprint":
             return "write_architecture_blueprint"
@@ -141,11 +141,11 @@ def _validate_layered_blueprint_modules(plan: ExecutionPlan, content: str) -> st
     except (TypeError, ValueError, AttributeError):
         return "总体蓝图不是合法 JSON 对象"
     expected = {
-        (item.output_slot or "").removeprefix("module-")
+        (item.slot or "").removeprefix("module-")
         for item in plan.work_items
         if item.agent_id == "architecture_agent"
         and item.execution_mode is ExecutionMode.PARTITIONED
-        and (item.output_slot or "").startswith("module-")
+        and (item.slot or "").startswith("module-")
     }
     if not expected:
         return None
@@ -466,7 +466,7 @@ class GraphRunner:
                 ))
                 content = self._artifacts.load_artifact("environment") if self._artifacts is not None and self._artifacts.exists("environment") else "环境已由控制面准备。"
                 state.record(environment_item, NodeResult.completed(
-                    node_id=environment_item.id,
+                    work_item_id=environment_item.id,
                     agent_id=environment_item.agent_id,
                     content=content,
                 ))
@@ -656,7 +656,7 @@ class GraphRunner:
                     artifact_key="implementation",
                     trace_id=state.plan.trace.trace_id,
                     work_item_id=item.id,
-                    slot=item.output_slot or "",
+                    slot=item.slot or "",
                 )
                 for item in members
             )
@@ -751,7 +751,7 @@ class GraphRunner:
                 artifact_key="implementation",
                 trace_id=plan.trace.trace_id,
                 work_item_id=item.id,
-                slot=item.output_slot or "",
+                slot=item.slot or "",
             )
             for item in code_items
         )
@@ -783,6 +783,7 @@ class GraphRunner:
             DeliveryContract.project_delivery().validate_plan(state.plan.work_items)
         self._traces.record_plan(state.plan)
         self._traces.record_delivery_plan(state.plan, overwrite=True)
+        self._traces.record_plan_baseline(state.plan)
         self._traces.record_event(
             plan.trace,
             "control",
@@ -856,11 +857,11 @@ class GraphRunner:
                 continue
             if action is RecoveryAction.REQUEST_REPLAN:
                 return NodeResult.needs_replan(
-                    node_id=item.id, agent_id=item.agent_id, signal=signal
+                    work_item_id=item.id, agent_id=item.agent_id, signal=signal
                 )
             if action is RecoveryAction.BLOCK:
                 return NodeResult.needs_replan(
-                    node_id=item.id, agent_id=item.agent_id, signal=signal
+                    work_item_id=item.id, agent_id=item.agent_id, signal=signal
                 )
             if (
                 signal.kind is FailureKind.IMPLEMENTATION_SUMMARY_MISSING
@@ -872,12 +873,12 @@ class GraphRunner:
                 # 而不是让整条交付链因一次工具调用缺失而硬失败。
                 self._artifacts.save_artifact("implementation", result.content)
                 return NodeResult.completed(
-                    node_id=item.id,
+                    work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=result.content,
                 )
             return NodeResult.failed(
-                node_id=item.id,
+                work_item_id=item.id,
                 agent_id=item.agent_id,
                 error=(
                     f"工作项 '{item.id}' 的 {signal.kind.value} 重试额度已耗尽: "
@@ -995,7 +996,7 @@ class GraphRunner:
             ExecutionMode.INTEGRATION,
         }:
             return NodeResult.failed(
-                node_id=item.id,
+                work_item_id=item.id,
                 agent_id=item.agent_id,
                 error="TaskAgent 只能通过 PARTITIONED 或 INTEGRATION 标准执行方式运行",
             )
@@ -1005,7 +1006,7 @@ class GraphRunner:
             if not preflight.passed:
                 summary = "；".join(issue.summary for issue in preflight.issues)
                 return NodeResult.needs_replan(
-                    node_id=item.id,
+                    work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=preflight.policy_id,
                     signal=FailureSignal(
@@ -1016,7 +1017,7 @@ class GraphRunner:
         definition = self._agents.definition(item.agent_id)
         if definition is None:
             return NodeResult.failed(
-                node_id=item.id,
+                work_item_id=item.id,
                 agent_id=item.agent_id,
                 error=f"ExecutionPlan 引用了未注册 Agent: '{item.agent_id}'",
             )
@@ -1045,9 +1046,10 @@ class GraphRunner:
                 trace_id=state.plan.trace.trace_id,
                 work_item_id=item.id,
                 agent_id=item.agent_id,
+                contract_digest=item.contract_digest,
                 execution_mode=item.execution_mode,
                 input_refs=item.input_refs,
-                output_slot=item.output_slot,
+                slot=item.slot,
                 publish_target=item.publish_target,
                 allowed_paths=item.allowed_paths,
                 forbidden_paths=item.forbidden_paths,
@@ -1148,7 +1150,7 @@ class GraphRunner:
                         "不要把对象序列化到 content 字段，不要调用代码写入工具，也不要返回 capability_request。"
                     )
                 elif definition.domain == "architecture":
-                    slot = item.output_slot or ""
+                    slot = item.slot or ""
                     required_tool = (
                         "write_architecture_blueprint"
                         if slot == "blueprint"
@@ -1253,7 +1255,7 @@ class GraphRunner:
                 )
                 if any(marker in capability_text or marker in reason_text for marker in schema_markers):
                     return NodeResult.needs_replan(
-                        node_id=item.id,
+                        work_item_id=item.id,
                         agent_id=item.agent_id,
                         content=request.reason,
                         signal=FailureSignal(
@@ -1300,7 +1302,7 @@ class GraphRunner:
                     or any(marker in reason_text for marker in staged_tool_markers)
                 ):
                     return NodeResult.needs_replan(
-                        node_id=item.id,
+                        work_item_id=item.id,
                         agent_id=item.agent_id,
                         content=request.reason,
                         signal=FailureSignal(
@@ -1449,7 +1451,7 @@ class GraphRunner:
             if isinstance(error, ToolExecutionError):
                 tool_result = error.result
                 return NodeResult.needs_replan(
-                    node_id=item.id,
+                    work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=str(error),
                     signal=FailureSignal(
@@ -1459,7 +1461,7 @@ class GraphRunner:
                 )
             if isinstance(error, ToolDiscoveryError):
                 return NodeResult.needs_replan(
-                    node_id=item.id,
+                    work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=str(error),
                     signal=FailureSignal(
@@ -1470,7 +1472,7 @@ class GraphRunner:
             provider_kind = _provider_failure_kind(error)
             if provider_kind is not None:
                 return NodeResult.needs_replan(
-                    node_id=item.id,
+                    work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=str(error),
                     signal=FailureSignal(
@@ -1479,13 +1481,13 @@ class GraphRunner:
                     ),
                 )
             return NodeResult.failed(
-                node_id=item.id,
+                work_item_id=item.id,
                 agent_id=item.agent_id,
                 error=f"工作项 '{item.id}' 执行失败: {error}",
             )
 
         node_result = NodeResult.from_agent_result(
-            node_id=item.id,
+            work_item_id=item.id,
             agent_id=item.agent_id,
             result=agent_result,
         )
@@ -1504,11 +1506,11 @@ class GraphRunner:
                 artifact_key="architecture",
                 trace_id=state.plan.trace.trace_id,
                 work_item_id=item.id,
-                slot=item.output_slot or "",
+                slot=item.slot or "",
             )
             try:
                 staged_content = self._artifacts.load_ref(staged_ref)
-                if item.output_slot == "blueprint":
+                if item.slot == "blueprint":
                     blueprint_error = _validate_layered_blueprint_modules(
                         state.plan, staged_content
                     )
@@ -1516,7 +1518,7 @@ class GraphRunner:
                         raise ValueError(blueprint_error)
             except (FileNotFoundError, RuntimeError, ValueError) as error:
                 return NodeResult.needs_replan(
-                    node_id=item.id,
+                    work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=node_result.content,
                     signal=FailureSignal(
@@ -1538,7 +1540,7 @@ class GraphRunner:
                 )
             except (FileNotFoundError, RuntimeError, ValueError) as error:
                 return NodeResult.needs_replan(
-                    node_id=item.id,
+                    work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=node_result.content,
                     signal=FailureSignal(
@@ -1580,7 +1582,7 @@ class GraphRunner:
                 or any(marker in capability_text or marker in reason_text for marker in local_architecture_markers)
             ):
                 return NodeResult.needs_replan(
-                    node_id=item.id,
+                    work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=request.reason,
                     signal=FailureSignal(
@@ -1602,7 +1604,7 @@ class GraphRunner:
             and not self._artifacts.exists("architecture_contract")
         ):
             return NodeResult.needs_replan(
-                node_id=item.id,
+                work_item_id=item.id,
                 agent_id=item.agent_id,
                 content=node_result.content,
                 signal=FailureSignal(
@@ -1620,7 +1622,7 @@ class GraphRunner:
             incomplete = self._validate_code_delivery(state, item)
             if incomplete:
                 return NodeResult.needs_replan(
-                    node_id=item.id,
+                    work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=node_result.content,
                     signal=FailureSignal(
@@ -1644,7 +1646,7 @@ class GraphRunner:
                 # workspace 文件未变化。LLM 有时只输出诊断并声称"缺少写工具"，
                 # 这种"修复"不可能让后续测试收敛，必须重试并强制落盘。
                 return NodeResult.needs_replan(
-                    node_id=item.id,
+                    work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=node_result.content,
                     signal=FailureSignal(
@@ -1663,7 +1665,7 @@ class GraphRunner:
                 # 实现摘要是交付链的可审计凭证（如外部规范核实记录）；
                 # 不接受"Agent 声称已实现但没有产物"的文字声明。
                 return NodeResult.needs_replan(
-                    node_id=item.id,
+                    work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=node_result.content,
                     signal=FailureSignal(
@@ -1690,7 +1692,7 @@ class GraphRunner:
         evidences = tuple(latest_by_check.values())
         if not evidences:
             return NodeResult.needs_replan(
-                node_id=item.id,
+                work_item_id=item.id,
                 agent_id=item.agent_id,
                 signal=FailureSignal(
                     FailureKind.TEST_EVIDENCE_MISSING,
@@ -1713,7 +1715,7 @@ class GraphRunner:
             # 让调用方修复 runtime/sandbox 后从 checkpoint 恢复，而不是
             # 把 setup_failed 包装成 completed 继续生成误导性的 Review。
             return NodeResult.needs_replan(
-                node_id=item.id,
+                work_item_id=item.id,
                 agent_id=item.agent_id,
                 content=node_result.content,
                 signal=FailureSignal(
@@ -1738,7 +1740,7 @@ class GraphRunner:
                 evidence_id=signal.evidence_id,
             )
         return NodeResult.needs_replan(
-            node_id=item.id, agent_id=item.agent_id, signal=signal
+            work_item_id=item.id, agent_id=item.agent_id, signal=signal
         )
 
     def _complete_test_with_control_plane(self, context: ExecutionContext) -> AgentResult:
@@ -1974,7 +1976,7 @@ class GraphRunner:
         """质量门由控制面执行，不依赖模型决定是否发布。"""
         if self._artifacts is None:
             return NodeResult.failed(
-                node_id=item.id,
+                work_item_id=item.id,
                 agent_id=item.agent_id,
                 error="QUALITY_GATE WorkItem 需要 ArtifactRepository",
             )
@@ -1989,12 +1991,12 @@ class GraphRunner:
             )
         except (FileNotFoundError, PermissionError, RuntimeError, ValueError) as error:
             return NodeResult.failed(
-                node_id=item.id,
+                work_item_id=item.id,
                 agent_id=item.agent_id,
                 error=f"架构质量门拒绝发布: {error}",
             )
         return NodeResult.completed(
-            node_id=item.id,
+            work_item_id=item.id,
             agent_id=item.agent_id,
             content=f"已通过质量门并发布 {item.publish_target}: {candidate.id}",
         )
@@ -2134,7 +2136,7 @@ class GraphRunner:
                 status=GraphRunStatus.FAILED,
                 state=state,
                 node_result=NodeResult.failed(
-                    node_id=result.work_item_id,
+                    work_item_id=result.work_item_id,
                     agent_id=result.agent_id,
                     error="节点请求能力升级，但未提供能力请求详情",
                 ),
@@ -2190,7 +2192,7 @@ class GraphRunner:
                 status=GraphRunStatus.COMPLETED,
                 state=state,
                 node_result=NodeResult.completed(
-                    node_id=result.work_item_id,
+                    work_item_id=result.work_item_id,
                     agent_id=result.agent_id,
                     content=success_reason,
                 ),
@@ -2252,7 +2254,7 @@ class GraphRunner:
                     status=GraphRunStatus.COMPLETED,
                     state=state,
                     node_result=NodeResult.completed(
-                        node_id=result.work_item_id,
+                        work_item_id=result.work_item_id,
                         agent_id=result.agent_id,
                         content="环境已由控制面准备并保存 environment.md",
                     ),

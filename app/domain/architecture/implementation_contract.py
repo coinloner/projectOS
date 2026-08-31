@@ -170,7 +170,7 @@ class ImplementationUnit:
     skill_refs: tuple[str, ...] = ()
     parallel_group: str | None = None
     output_key: str | None = None
-    output_slot: str | None = None
+    slot: str | None = None
     requirement_ids: tuple[str, ...] = ()
     wave: int | None = None
     owned_files: tuple[str, ...] = ()
@@ -228,7 +228,7 @@ class ImplementationUnit:
             "skill_refs": list(self.skill_refs),
             "parallel_group": self.parallel_group,
             "output_key": self.output_key,
-            "output_slot": self.output_slot,
+            "slot": self.slot,
             "requirement_ids": list(self.requirement_ids),
             "wave": self.wave,
             "owned_files": list(self.owned_files),
@@ -269,7 +269,7 @@ class ImplementationUnit:
             skill_refs=_strings(raw.get("skill_refs", []), "skill_refs", allow_empty=True),
             parallel_group=_optional_string(raw.get("parallel_group")),
             output_key=_optional_string(raw.get("output_key")),
-            output_slot=_optional_string(raw.get("output_slot")),
+            slot=_optional_string(raw.get("slot", raw.get("output_slot"))),
             requirement_ids=_strings(raw.get("requirement_ids", []), "requirement_ids", allow_empty=True),
             wave=_optional_int(raw.get("wave")),
             owned_files=_strings(raw.get("owned_files", []), "owned_files", allow_empty=True),

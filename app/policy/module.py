@@ -23,9 +23,9 @@ class PolicyModule:
         self.project_quality = ProjectQualityPolicy()
 
     def guidance_for(self, item: "WorkItem") -> PolicyGuidance | None:
-        if item.policy_id is None and not item.policy_refs and item.agent_id != "code_agent":
+        if not item.policy_refs and item.agent_id != "code_agent":
             return None
-        references = item.policy_refs or ((item.policy_id,) if item.policy_id else ())
+        references = item.policy_refs
         return self.project_quality.preflight(
             allowed_paths=item.allowed_paths,
             required_paths=item.required_paths,

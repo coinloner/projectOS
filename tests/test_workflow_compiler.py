@@ -54,7 +54,7 @@ class WorkflowCompilerTest(unittest.TestCase):
             ],
         )
         baseline, api, data, frontend, integration, gate = plan.work_items
-        self.assertEqual(baseline.output_slot, "baseline")
+        self.assertEqual(baseline.slot, "baseline")
         self.assertEqual(api.input_refs[0].ref_id, "staged:tr-architecture:wi-01-architecture-baseline:baseline")
         self.assertEqual(
             {ref.ref_id for ref in integration.input_refs},
@@ -88,7 +88,7 @@ class WorkflowCompilerTest(unittest.TestCase):
         )
 
         self.assertEqual(len(plan.work_items), 3)
-        self.assertEqual(plan.work_items[0].output_slot, "design")
+        self.assertEqual(plan.work_items[0].slot, "design")
         self.assertTrue(plan.work_items[0].acceptance_criteria)
         self.assertEqual(plan.work_items[-1].execution_mode, ExecutionMode.QUALITY_GATE)
 

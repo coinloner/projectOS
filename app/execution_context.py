@@ -33,9 +33,10 @@ class ExecutionContext:
     trace_id: str
     work_item_id: str
     agent_id: str
+    contract_digest: str | None = None
     execution_mode: ExecutionMode = ExecutionMode.EXCLUSIVE
     input_refs: tuple[ArtifactRef, ...] = ()
-    output_slot: str | None = None
+    slot: str | None = None
     publish_target: str | None = None
     allowed_paths: tuple[str, ...] = ()
     forbidden_paths: tuple[str, ...] = ()
@@ -54,7 +55,9 @@ class ExecutionContext:
             value = getattr(self, field_name)
             if not value or not value.strip():
                 raise ValueError(f"ExecutionContext.{field_name} 不能为空")
-        if self.execution_mode is ExecutionMode.PARTITIONED and not self.output_slot:
-            raise ValueError("分区执行必须包含 output_slot")
+        if self.contract_digest is not None and len(self.contract_digest) != 64:
+            raise ValueError("ExecutionContext.contract_digest 必须是 SHA-256")
+        if self.execution_mode is ExecutionMode.PARTITIONED and not self.slot:
+            raise ValueError("分区执行必须包含 slot")
         if self.execution_mode is ExecutionMode.INTEGRATION and not self.publish_target:
             raise ValueError("集成执行必须包含 publish_target")

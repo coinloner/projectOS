@@ -48,14 +48,9 @@ class TaskScope:
     """当前节点的资源边界，明确允许范围和非目标范围。"""
 
     execution_mode: str
-    output_slot: str | None
+    slot: str | None
     allowed_paths: tuple[str, ...] = ()
     forbidden_paths: tuple[str, ...] = ()
-
-    @property
-    def slot(self) -> str | None:
-        """Canonical partition name; ``output_slot`` is an internal migration alias."""
-        return self.output_slot
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -72,14 +67,10 @@ class OutputContract:
 
     output_key: str
     artifact_key: str
-    output_slot: str | None
+    slot: str | None
     publish_target: str | None
     expected_paths: tuple[str, ...] = ()
     output_kind: str = "exclusive_artifact"
-
-    @property
-    def slot(self) -> str | None:
-        return self.output_slot
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -338,7 +329,7 @@ def build_task_input(
         execution_mode=item.execution_mode.value,
         scope=TaskScope(
             execution_mode=item.execution_mode.value,
-            output_slot=slot,
+            slot=slot,
             allowed_paths=allowed_paths,
             forbidden_paths=forbidden_paths,
         ),
@@ -347,7 +338,7 @@ def build_task_input(
         output=OutputContract(
             output_key=item.output_key,
             artifact_key=item.artifact_key or item.output_key,
-            output_slot=item.slot,
+            slot=item.slot,
             publish_target=item.publish_target,
             expected_paths=item.required_paths or item.owned_files or allowed_paths,
             output_kind=item.output_kind or "exclusive_artifact",
@@ -383,18 +374,18 @@ def build_task_input(
 
 
 def _scope_paths(
-    execution_mode: ExecutionMode, output_slot: str | None
+    execution_mode: ExecutionMode, slot: str | None
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    if execution_mode is ExecutionMode.PARTITIONED and output_slot:
-        if output_slot in {"backend", "frontend"}:
-            allowed = (f"workspace/{output_slot}/**",)
+    if execution_mode is ExecutionMode.PARTITIONED and slot:
+        if slot in {"backend", "frontend"}:
+            allowed = (f"workspace/{slot}/**",)
             forbidden = (
-                "workspace/frontend/**" if output_slot == "backend" else "workspace/backend/**",
+                "workspace/frontend/**" if slot == "backend" else "workspace/backend/**",
                 "workspace/tests/**",
                 ".projectos/**",
             )
         else:
-            allowed = (f"staged/{output_slot}/**",)
+            allowed = (f"staged/{slot}/**",)
             forbidden = ("workspace/**", ".projectos/**")
         return allowed, forbidden
     if execution_mode is ExecutionMode.INTEGRATION:
@@ -404,10 +395,10 @@ def _scope_paths(
     return (), ("任意未声明路径",)
 
 
-def _mode_constraints(execution_mode: ExecutionMode, output_slot: str | None) -> tuple[str, ...]:
+def _mode_constraints(execution_mode: ExecutionMode, slot: str | None) -> tuple[str, ...]:
     if execution_mode is ExecutionMode.PARTITIONED:
         return (
-            f"只能写入 {output_slot} 分区的 task worktree。",
+            f"只能写入 {slot} 分区的 task worktree。",
             "不能直接修改正式 workspace、其他分区或 ProjectOS 控制面文件。",
         )
     if execution_mode is ExecutionMode.INTEGRATION:

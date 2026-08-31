@@ -18,6 +18,8 @@ from app.planner.patch import (
     AppliedPlanPatch,
     PlanPatch,
     PlanPatchError,
+    RepairPlanPatch,
+    apply_repair_patch,
     apply_patch,
 )
 from app.workflow.template import WorkflowTemplateRegistry
@@ -32,6 +34,16 @@ class PlannerResult:
 
     plan: ExecutionPlan
     draft: PlanDraft
+    context: PlanningContext
+    attempts: int
+
+
+@dataclass(frozen=True)
+class RepairPlannerResult:
+    """一次受限失败恢复规划结果，不携带旧 PlanDraft。"""
+
+    plan: ExecutionPlan
+    patch: RepairPlanPatch
     context: PlanningContext
     attempts: int
 
@@ -249,8 +261,8 @@ class PlannerService:
         failure: FailureSignal,
         plan_id: str,
         repair_scope: tuple[str, ...] = (),
-    ) -> PlannerResult:
-        """为可信失败信号追加一段新计划，不修改已经执行过的 WorkItem。"""
+    ) -> RepairPlannerResult:
+        """为可信失败信号生成受限追加补丁，不修改原交付 DAG。"""
         context = PlanningContext.build(
             goal=previous_plan.goal,
             agents=self._agents,
@@ -284,47 +296,42 @@ class PlannerService:
             self._memory.append(
                 trace_id=previous_plan.trace.trace_id,
                 role="planner",
-                event_type="repair_draft_output",
+                event_type="repair_patch_output",
                 content=raw_draft,
                 attempt=attempt,
                 metadata={"plan_id": plan_id},
             )
             try:
-                draft = PlanDraft.parse(raw_draft)
-                plan = self._validator.validate(
-                    draft,
-                    context=context,
-                    plan_id=plan_id,
-                    trace=previous_plan.trace,
+                patch = RepairPlanPatch.parse(
+                    raw_draft,
+                    base_plan_id=previous_plan.id,
+                    repair_scope=repair_scope,
                 )
-                # Repair plans are append-only patches, never a fresh delivery
-                # workflow.  Integration/review/bootstrap agents cannot repair
-                # a failed test signal and their default EXCLUSIVE mode would
-                # violate their execution contracts.  Reject such drafts before
-                # they reach the Worker so the second planner attempt can fix
-                # the scope instead of producing a deterministic runtime error.
                 repair_domains = {
-                    self._agents.definition(item.agent_id).domain
-                    for item in plan.work_items
-                    if self._agents.definition(item.agent_id) is not None
+                    self._agents.definition(operation.agent_id).domain
+                    for operation in patch.operations
+                    if self._agents.definition(operation.agent_id) is not None
                 }
-                # bootstrap is permitted for environment/setup failures; the
-                # repair plan still must never recreate integration/review or
-                # planning nodes as generic EXCLUSIVE tasks.
                 invalid_domains = repair_domains - {"bootstrap", "code", "test"}
                 if invalid_domains:
                     invalid = ", ".join(sorted(invalid_domains))
                     raise PlanValidationError(
                         "修复计划不能包含 integration/review/planning Agent: " + invalid
                     )
+                plan = apply_repair_patch(
+                    previous_plan,
+                    patch,
+                    agents=self._agents,
+                    plan_id=plan_id,
+                )
                 plan = self._attach_failure_package(plan, package)
-                return PlannerResult(
+                return RepairPlannerResult(
                     plan=plan,
-                    draft=draft,
+                    patch=patch,
                     context=context,
                     attempts=attempt,
                 )
-            except (PlanDraftError, PlanValidationError) as error:
+            except (PlanPatchError, PlanDraftError, PlanValidationError) as error:
                 if attempt == 2:
                     raise PlannerFailure(
                         f"Planner 在修复计划后仍无法生成合法计划: {error}"
@@ -418,11 +425,11 @@ def _patch_prompt(
         f"用户修改请求：{change_request}\n"
         f"已完成 WorkItem（历史结果不可覆写，但本次补丁可创建新 revision 重新计算）：{sorted(completed_work_item_ids)}\n"
         f"现有 WorkItem：{json.dumps(items, ensure_ascii=False)}\n\n"
-        "只允许 operation=modify/add/remove。modify 只能修改 objective 或显式 depends_on；"
+        "只允许 operation=modify/add/remove。modify 只能修改 objective，不能修改 dependencies；"
         "add 必须提供 ref、agent_id、objective 和 depends_on；remove 必须提供 work_item_id。"
         "不允许改变 Agent 权限、execution_mode、artifact、slot、发布目标或质量门。"
         "最多 modify 2 个、add 2 个、remove 1 个节点；只输出 JSON。\n"
-        '{"rationale":"...","base_plan_id":"...","operations":['
+        '{"schema_version":1,"rationale":"...","base_plan_id":"...","operations":['
         '{"operation":"modify","work_item_id":"...","objective":"..."}]}'
     )
 
@@ -476,7 +483,8 @@ def _repair_planning_prompt(
         if repair_scope else ""
     )
     return (
-        "请为一次受控失败生成追加 PlanDraft JSON。\n\n"
+        "请为一次受控失败生成追加 RepairPlanPatch JSON。\n\n"
+        f"base_plan_id: {previous_plan.id}\n"
         "失败信号（可信控制面数据）：\n"
         f"{json.dumps(package.as_planner_data(), ensure_ascii=False)}\n\n"
         "历史计划摘要（只读，不能修改或复用其 WorkItem id）：\n"
@@ -485,15 +493,22 @@ def _repair_planning_prompt(
         + "当前可用控制面上下文：\n"
         f"{context.as_prompt_json()}\n\n"
         + (f"历史会话记忆：\n{memory_context}\n\n" if memory_context else "")
-        + "只输出新的 PlanDraft JSON。新步骤只能使用已注册 Agent，目标必须针对失败"
+        + "只输出新的 RepairPlanPatch JSON，格式为："
+        + '{"schema_version":1,"rationale":"...","base_plan_id":"'
+        + previous_plan.id
+        + '","repair_scope":'
+        + json.dumps(list(repair_scope), ensure_ascii=False)
+        + ','
+        + '"operations":[{"operation":"add","ref":"fix","agent_id":"code_agent",'
+        + '"objective":"通过 write_workspace_file 修复实现","depends_on":[]}]}'
+        + "。operations 只能使用 operation=add，depends_on 只能引用同一补丁中更早的 ref；目标必须针对失败"
         + "进行修复或再验证；不要创建工具、修改权限、复用历史 step ref，或编写业务代码。"
         + "修复计划只允许 code_agent、test_agent；只有 sandbox/environment 故障时才可加入 "
         + "bootstrap_agent。禁止 code_integration_agent、review_agent、architecture_agent 和 task_agent。"
         + "修复步骤必须产生实际变更：code_agent 的修复步骤必须在 objective 中明确要求"
         + "通过 write_workspace_file 实际修改 workspace 文件；test_agent 的修复步骤必须"
         + "通过 write_test_file 修改测试。只读诊断不构成修复步骤。"
-        + "每个 steps 项的 acceptance_criteria 最多 5 条、constraints 最多 8 条、"
-        + "non_goals 最多 8 条；steps 总数最多 10 个。"
+        + "operations 总数最多 10 个。"
     )
 
 
@@ -525,7 +540,6 @@ def _repair_planning_retry_prompt(
         + invalid_draft
         + "\n\n控制面校验错误：\n"
         + error
-        + "\n\n请重新输出一份满足上述修复协议和 PlanDraft 数量上限的 JSON；"
-        + "每个步骤 acceptance_criteria 不超过 5 条、constraints 不超过 8 条、"
-        + "non_goals 不超过 8 条；不要保留被拒绝的 Agent。"
+        + "\n\n请重新输出一份满足上述修复协议和 RepairPlanPatch 数量上限的 JSON；"
+        + "不要保留被拒绝的 Agent。"
     )

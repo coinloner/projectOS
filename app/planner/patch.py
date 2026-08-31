@@ -30,10 +30,56 @@ class PatchOperation(BaseModel):
     depends_on: list[str] = Field(default_factory=list, max_length=10)
 
 
+class RepairPlanPatch(BaseModel):
+    """失败恢复专用的局部计划补丁。
+
+    与普通 ``PlanPatch`` 不同，它只描述要追加执行的修复 WorkItem，绝不
+    重新生成原交付 DAG。历史响应中的 ``steps`` 仅在解析边界兼容，内部
+    一律转换为 ``operations``。
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    rationale: str = Field(min_length=1, max_length=1_000)
+    schema_version: int = Field(default=1, ge=1, le=1)
+    base_plan_id: str = Field(min_length=1, max_length=128)
+    repair_scope: list[str] = Field(default_factory=list, max_length=10)
+    operations: list[PatchOperation] = Field(min_length=1, max_length=10)
+
+    @classmethod
+    def parse(
+        cls,
+        content: str,
+        *,
+        base_plan_id: str | None = None,
+        repair_scope: tuple[str, ...] = (),
+    ) -> "RepairPlanPatch":
+        try:
+            raw = json.loads(content)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise PlanPatchError(f"RepairPlanPatch 不是合法 JSON: {error}") from error
+        if not isinstance(raw, dict):
+            raise PlanPatchError("RepairPlanPatch 顶层必须是对象")
+        if base_plan_id and not raw.get("base_plan_id"):
+            raw["base_plan_id"] = base_plan_id
+        if repair_scope and not raw.get("repair_scope"):
+            raw["repair_scope"] = list(repair_scope)
+        try:
+            patch = cls.model_validate(raw)
+        except ValidationError as error:
+            raise PlanPatchError(f"RepairPlanPatch 不符合 JSON schema: {error}") from error
+        if any(operation.operation != "add" for operation in patch.operations):
+            raise PlanPatchError("RepairPlanPatch 只允许追加修复 WorkItem")
+        if repair_scope and set(patch.repair_scope) != set(repair_scope):
+            raise PlanPatchError("RepairPlanPatch.repair_scope 必须与控制面修复窗口完全一致")
+        return patch
+
+
 class PlanPatch(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     rationale: str = Field(min_length=1, max_length=1_000)
+    schema_version: int = Field(default=1, ge=1, le=1)
     base_plan_id: str = Field(min_length=1, max_length=128)
     operations: list[PatchOperation] = Field(min_length=1, max_length=5)
     # Optional audit metadata emitted by repair-aware callers.  The actual
@@ -115,6 +161,71 @@ class AppliedPlanPatch:
     added_work_item_ids: tuple[str, ...]
     removed_work_item_ids: tuple[str, ...]
     dependency_change_count: int
+
+
+def apply_repair_patch(
+    plan: ExecutionPlan,
+    patch: RepairPlanPatch,
+    *,
+    agents: AgentRegistry,
+    plan_id: str | None = None,
+) -> ExecutionPlan:
+    """Append bounded repair WorkItems to an existing plan.
+
+    The original DAG and all existing WorkItems remain untouched.  Repair
+    operations may depend on original WorkItem ids or on an earlier repair
+    ``ref`` in the same patch, but cannot introduce an unknown dependency.
+    """
+    if patch.base_plan_id != plan.id:
+        raise PlanPatchError(
+            f"RepairPlanPatch 基线不匹配: 需要 '{plan.id}'，收到 '{patch.base_plan_id}'"
+        )
+    original_ids = {item.id for item in plan.work_items}
+    if patch.repair_scope and not set(patch.repair_scope).issubset(original_ids):
+        raise PlanPatchError("RepairPlanPatch repair_scope 包含未知 WorkItem")
+    refs: set[str] = set()
+    ref_to_id: dict[str, str] = {}
+    additions: list[WorkItem] = []
+    for index, operation in enumerate(patch.operations, start=1):
+        if operation.operation != "add" or not operation.ref or not operation.agent_id or not operation.objective:
+            raise PlanPatchError("修复补丁的每个操作必须是完整的 add WorkItem")
+        if operation.ref in refs:
+            raise PlanPatchError(f"修复补丁 ref 重复: {operation.ref}")
+        definition = agents.definition(operation.agent_id)
+        if definition is None:
+            raise PlanPatchError(f"修复补丁引用未注册 Agent: {operation.agent_id}")
+        dependencies: list[WorkItemDependency] = []
+        for dependency in operation.depends_on:
+            dependency_id = ref_to_id.get(dependency, dependency)
+            if dependency_id not in {item.id for item in additions}:
+                raise PlanPatchError(
+                    f"修复节点 depends_on 只能引用同一补丁中更早的 ref: {dependency}"
+                )
+            dependencies.append(
+                WorkItemDependency(dependency_id, DependencySource.PLANNER)
+            )
+        item_id = f"wi-repair-{index:02d}-{definition.output_key}"
+        if item_id in original_ids or item_id in {item.id for item in additions}:
+            raise PlanPatchError(f"修复节点 id 冲突: {item_id}")
+        additions.append(
+            WorkItem(
+                id=item_id,
+                agent_id=operation.agent_id,
+                objective=operation.objective,
+                output_key=f"{definition.output_key}_repair_{index:02d}",
+                artifact_key=definition.artifact_key or definition.output_key,
+                dependencies=tuple(dependencies),
+            )
+        )
+        refs.add(operation.ref)
+        ref_to_id[operation.ref] = item_id
+    return ExecutionPlan(
+        id=plan_id or f"{plan.id}-repair",
+        goal=plan.goal,
+        work_items=tuple(additions),
+        template_id=None,
+        trace=plan.trace,
+    )
 
 
 def apply_patch(
@@ -201,8 +312,8 @@ def apply_patch(
         if op.work_item_id in completed_work_item_ids and not allow_completed_revision:
             raise PlanPatchError(f"已完成 WorkItem 不可修改: {op.work_item_id}")
     for op in modified:
-        if not op.objective and not op.depends_on:
-            raise PlanPatchError("modify 操作至少需要 objective 或 depends_on")
+        if not op.objective:
+            raise PlanPatchError("modify 操作必须提供 objective")
         if op.objective is not None and not op.objective.strip():
             raise PlanPatchError("modify.objective 不能为空")
     add_refs = [op.ref for op in added if op.ref]
@@ -230,12 +341,6 @@ def apply_patch(
         if op is None:
             next_items.append(item)
             continue
-        dependencies = item.dependencies
-        if op.depends_on:
-            dependencies = tuple(
-                WorkItemDependency(work_item_id=dependency, source=DependencySource.PLANNER)
-                for dependency in op.depends_on
-            )
         next_items.append(
             WorkItem(
                 id=item.id,
@@ -244,14 +349,14 @@ def apply_patch(
                 output_key=item.output_key,
                 artifact_key=item.artifact_key,
                 failure_package=item.failure_package,
-                dependencies=dependencies,
+                dependencies=item.dependencies,
                 acceptance_criteria=item.acceptance_criteria,
                 constraints=item.constraints,
                 non_goals=item.non_goals,
-                policy_id=item.policy_id,
+                policy_refs=item.policy_refs,
                 execution_mode=item.execution_mode,
                 input_refs=item.input_refs,
-                output_slot=item.output_slot,
+                slot=item.slot,
                 publish_target=item.publish_target,
                 candidate_from_work_item_id=item.candidate_from_work_item_id,
                 implementation_unit_id=item.implementation_unit_id,
@@ -260,7 +365,6 @@ def apply_patch(
                 required_paths=item.required_paths,
                 wave=item.wave,
                 owned_files=item.owned_files,
-                policy_refs=item.policy_refs,
                 skill_refs=item.skill_refs,
                 requirement_ids=item.requirement_ids,
                 delivery_contract=item.delivery_contract,

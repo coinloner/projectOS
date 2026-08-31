@@ -130,9 +130,9 @@ class ArchitectureDesignContractTest(unittest.TestCase):
             },
         )
         self.assertEqual(len(plan.work_items), 10)
-        self.assertEqual(plan.work_items[0].output_slot, "blueprint")
+        self.assertEqual(plan.work_items[0].slot, "blueprint")
         self.assertEqual(
-            {item.output_slot for item in plan.work_items[1:4]},
+            {item.slot for item in plan.work_items[1:4]},
             {"module-domain", "module-api", "module-runtime"},
         )
         integration = plan.work_items[-3]
@@ -159,7 +159,7 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                     work_item_id=f"wi-{item}",
                     agent_id="architecture_agent",
                     execution_mode=ExecutionMode.PARTITIONED,
-                    output_slot=item,
+                    slot=item,
                 )
                 workflow.write_staged_design(context, design)
 
@@ -226,7 +226,7 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                         work_item_id=f"wi-{slot}",
                         agent_id="architecture_agent",
                         execution_mode=ExecutionMode.PARTITIONED,
-                        output_slot=slot,
+                        slot=slot,
                     ),
                     design,
                 )
@@ -259,7 +259,7 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                 work_item_id="wi-implementation-domain",
                 agent_id="architecture_agent",
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="implementation-domain",
+                slot="implementation-domain",
             )
             design = _implementation("domain").model_dump(mode="json")
             design["implementation_units"][0]["owned_files"] = [
@@ -285,7 +285,7 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                 work_item_id="wi-implementation-domain",
                 agent_id="architecture_agent",
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="implementation-domain",
+                slot="implementation-domain",
             )
             design = _implementation("domain").model_dump(mode="json")
             unit = design["implementation_units"][0]
@@ -305,7 +305,7 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                 work_item_id="wi-implementation-api",
                 agent_id="architecture_agent",
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="implementation-api",
+                slot="implementation-api",
             )
             design = _implementation("api").model_dump(mode="json")
             design["required_test_types"] = ["x" * 1000 for _ in range(7)]

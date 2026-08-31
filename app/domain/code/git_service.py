@@ -136,7 +136,7 @@ class GitCodeStagingService:
     ) -> str:
         if context.execution_mode is not ExecutionMode.PARTITIONED:
             raise PermissionError("只有代码分区节点可以写入 Git task worktree")
-        slot = context.output_slot or ""
+        slot = context.slot or ""
         prefix = self._SCOPE_PREFIXES.get(slot, "")
         normalized = self._validate_path(path)
         if prefix and not normalized.startswith(prefix):

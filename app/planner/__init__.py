@@ -2,7 +2,7 @@ from app.planner.context import PlanningContext
 from app.planner.draft import PlanDraft, PlannedStep
 from app.planner.errors import PlanValidationError
 from app.planner.planner import CrewAIPlannerRuntime, PlannerRuntime
-from app.planner.service import PlannerFailure, PlannerResult, PlannerService
+from app.planner.service import PlannerFailure, PlannerResult, RepairPlannerResult, PlannerService
 from app.planner.validator import PlanValidator
 from app.planner.evaluation import (
     PlannerEvaluationReport,
@@ -18,6 +18,8 @@ from app.planner.patch import (
     PlanPatch,
     PlanPatchError,
     PatchOperation,
+    RepairPlanPatch,
+    apply_repair_patch,
     apply_patch,
 )
 
@@ -26,6 +28,7 @@ __all__ = [
     "PlanDraft",
     "PlannerFailure",
     "PlannerResult",
+    "RepairPlannerResult",
     "PlannerRuntime",
     "PlannerService",
     "PlanningContext",
@@ -43,5 +46,7 @@ __all__ = [
     "PlanPatch",
     "PlanPatchError",
     "PatchOperation",
+    "RepairPlanPatch",
+    "apply_repair_patch",
     "apply_patch",
 ]

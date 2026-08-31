@@ -7,13 +7,12 @@ from app.orchestration.node_result import NodeResult, NodeStatus
 class NodeResultTest(unittest.TestCase):
     def test_completed_agent_result_becomes_completed_node_result(self) -> None:
         result = NodeResult.from_agent_result(
-            node_id="requirement",
+            work_item_id="requirement",
             agent_id="requirement_agent",
             result=AgentResult.completed("需求草稿"),
         )
 
         self.assertEqual(result.status, NodeStatus.COMPLETED)
-        self.assertEqual(result.node_id, "requirement")
         self.assertEqual(result.work_item_id, "requirement")
         self.assertIn("work_item_id", result.as_dict())
         self.assertNotIn("node_id", result.as_dict())
@@ -22,7 +21,7 @@ class NodeResultTest(unittest.TestCase):
 
     def test_capability_request_is_preserved_at_node_boundary(self) -> None:
         result = NodeResult.from_agent_result(
-            node_id="research",
+            work_item_id="research",
             agent_id="requirement_agent",
             result=AgentResult.needs_capability(
                 "external_research", "需要查询行业规范"
@@ -34,7 +33,7 @@ class NodeResultTest(unittest.TestCase):
 
     def test_failed_factory_preserves_execution_identity(self) -> None:
         result = NodeResult.failed(
-            node_id="requirement",
+            work_item_id="requirement",
             agent_id="requirement_agent",
             error="Agent unavailable",
         )

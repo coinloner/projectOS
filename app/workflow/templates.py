@@ -40,8 +40,8 @@ def project_delivery_template() -> WorkflowTemplate:
                 artifact_key="tasks",
                 depends_on=("requirement", "architecture", "architecture-contract"),
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="plan",
-                input_artifacts=("requirement", "architecture", "architecture_contract"),
+                slot="plan",
+                input_refs=("requirement", "architecture", "architecture_contract"),
                 acceptance_criteria=(
                     "使用简体中文；只列 MVP 必需任务，最多 8 项。",
                     "每项包含依赖、产出和可验证验收条件。",
@@ -78,7 +78,7 @@ def project_delivery_template() -> WorkflowTemplate:
                 objective="根据架构和任务声明项目 runtime、依赖意图和 sandbox 环境报告。",
                 output_key="environment",
                 depends_on=("requirement", "architecture", "architecture-contract", "tasks-quality-gate"),
-                input_artifacts=("requirement", "architecture", "architecture_contract", "tasks"),
+                input_refs=("requirement", "architecture", "architecture_contract", "tasks"),
             ),
             # CodeAgent 不再由模板预置一个“总实现”节点。架构合同发布后，
             # GraphRunner 会把实现单元编译成一个或多个 PARTITIONED WorkItem。
@@ -129,14 +129,13 @@ def project_delivery_layered_template() -> WorkflowTemplate:
         artifact_key=blueprint.artifact_key,
         depends_on=("requirement",),
         execution_mode=blueprint.execution_mode,
-        input_artifacts=blueprint.input_artifacts,
-        output_slot=blueprint.output_slot,
+        input_refs=blueprint.input_refs,
+        slot=blueprint.slot,
         publish_target=blueprint.publish_target,
         input_from=blueprint.input_from,
         acceptance_criteria=blueprint.acceptance_criteria,
         constraints=blueprint.constraints,
         non_goals=blueprint.non_goals,
-        policy_id=blueprint.policy_id,
         policy_refs=blueprint.policy_refs,
         skill_refs=blueprint.skill_refs,
     )
@@ -154,7 +153,7 @@ def project_delivery_layered_template() -> WorkflowTemplate:
         input_from = tuple(
             replacement.get(ref, ref) for ref in node.input_from
         )
-        input_artifacts = node.input_artifacts
+        input_refs = node.input_refs
         if node.id == "tasks-plan":
             depends_on = ("requirement", "architecture-layered-quality-gate", "architecture-layered-contract")
         elif node.id == "environment":
@@ -172,15 +171,14 @@ def project_delivery_layered_template() -> WorkflowTemplate:
                 artifact_key=node.artifact_key,
                 depends_on=depends_on,
                 execution_mode=node.execution_mode,
-                input_artifacts=input_artifacts,
-                output_slot=node.output_slot,
+                input_refs=input_refs,
+                slot=node.slot,
                 publish_target=node.publish_target,
                 candidate_from=(replacement.get(node.candidate_from, node.candidate_from) if node.candidate_from else None),
                 input_from=input_from,
                 acceptance_criteria=node.acceptance_criteria,
                 constraints=node.constraints,
                 non_goals=node.non_goals,
-                policy_id=node.policy_id,
                 policy_refs=node.policy_refs,
                 skill_refs=node.skill_refs,
             )
@@ -210,8 +208,8 @@ def architecture_parallel_template() -> WorkflowTemplate:
                 output_key="architecture_baseline",
                 artifact_key="architecture",
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="baseline",
-                input_artifacts=("requirement",),
+                slot="baseline",
+                input_refs=("requirement",),
                 acceptance_criteria=(
                     "只输出不超过 3200 字符的架构基线，不写实现细节。",
                     "固定包含：## System Boundary、## Shared Decisions、## Constraints、## Open Questions。",
@@ -226,7 +224,7 @@ def architecture_parallel_template() -> WorkflowTemplate:
                 artifact_key="architecture",
                 depends_on=("architecture-baseline",),
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="api",
+                slot="api",
                 input_from=("architecture-baseline",),
                 acceptance_criteria=(
                     "只输出不超过 4200 字符的 API 决策包，不描述前端或存储实现。",
@@ -242,7 +240,7 @@ def architecture_parallel_template() -> WorkflowTemplate:
                 artifact_key="architecture",
                 depends_on=("architecture-baseline",),
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="data",
+                slot="data",
                 input_from=("architecture-baseline",),
                 acceptance_criteria=(
                     "只输出不超过 4200 字符的数据决策包，不重写 HTTP 或页面设计。",
@@ -258,7 +256,7 @@ def architecture_parallel_template() -> WorkflowTemplate:
                 artifact_key="architecture",
                 depends_on=("architecture-baseline",),
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="frontend",
+                slot="frontend",
                 input_from=("architecture-baseline",),
                 acceptance_criteria=(
                     "只输出不超过 4200 字符的前端决策包，不重复 API 或数据字段定义。",
@@ -316,8 +314,8 @@ def architecture_layered_template() -> WorkflowTemplate:
             output_key="architecture_blueprint",
             artifact_key="architecture",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="blueprint",
-            input_artifacts=("requirement",),
+            slot="blueprint",
+            input_refs=("requirement",),
             acceptance_criteria=(
                 "只能调用 write_architecture_blueprint 保存结构化对象。",
                 "depth 必须为 0，包含系统边界、层级、模块清单和全局约束。",
@@ -335,7 +333,7 @@ def architecture_layered_template() -> WorkflowTemplate:
                 artifact_key="architecture",
                 depends_on=("architecture-blueprint",),
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot=slot,
+                slot=slot,
                 input_from=("architecture-blueprint",),
                 acceptance_criteria=(
                     "只能调用 write_module_design 保存一个结构化模块对象。",
@@ -353,7 +351,7 @@ def architecture_layered_template() -> WorkflowTemplate:
                 artifact_key="architecture",
                 depends_on=(f"architecture-{slot}",),
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot=f"implementation-{slot}",
+                slot=f"implementation-{slot}",
                 input_from=(f"architecture-{slot}",),
                 acceptance_criteria=(
                     "只能调用 write_implementation_design 保存结构化对象。",
@@ -430,8 +428,8 @@ def architecture_compact_template() -> WorkflowTemplate:
                 output_key="architecture_design",
                 artifact_key="architecture",
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="design",
-                input_artifacts=("requirement",),
+                slot="design",
+                input_refs=("requirement",),
                 acceptance_criteria=(
                     "只输出不超过 6000 字符的架构决策包。",
                     "固定包含：## System Boundary、## Modules、## Data Model、## API Summary、## Risks。",
@@ -482,8 +480,8 @@ def project_delivery_minimal_template() -> WorkflowTemplate:
                 output_key="tasks_plan",
                 artifact_key="tasks",
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="plan",
-                input_artifacts=("requirement", "architecture"),
+                slot="plan",
+                input_refs=("requirement", "architecture"),
                 acceptance_criteria=(
                     "使用简体中文；只列 MVP 必需任务，最多 8 项。",
                     "每项包含依赖、产出和可验证验收条件。",
@@ -521,7 +519,7 @@ def project_delivery_minimal_template() -> WorkflowTemplate:
                 output_key="environment",
                 artifact_key="environment",
                 depends_on=("tasks-quality-gate",),
-                input_artifacts=("requirement", "architecture", "tasks"),
+                input_refs=("requirement", "architecture", "tasks"),
                 acceptance_criteria=(
                     "使用简体中文；优先选择 python-stdlib，不能无必要引入外部依赖。",
                     "明确 runtime profile、测试命令和依赖状态。",
@@ -536,8 +534,8 @@ def project_delivery_minimal_template() -> WorkflowTemplate:
                 artifact_key="implementation",
                 depends_on=("environment",),
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="backend",
-                input_artifacts=("architecture", "environment"),
+                slot="backend",
+                input_refs=("architecture", "environment"),
                 acceptance_criteria=(
                     "只写 backend/ 下的 Python 源码，至少提供可启动的 HTTP backend。",
                     "实现需求中的 Todo 创建、列表、完成/重新打开和删除能力。",
@@ -567,8 +565,8 @@ def project_delivery_minimal_template() -> WorkflowTemplate:
                 artifact_key="implementation",
                 depends_on=("environment",),
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="frontend",
-                input_artifacts=("architecture", "environment"),
+                slot="frontend",
+                input_refs=("architecture", "environment"),
                 acceptance_criteria=(
                     "只写 frontend/ 下的 HTML、CSS 和 JavaScript 文件。",
                     "页面必须能调用 backend API，支持创建、查看、完成/重新打开和删除。",
@@ -611,7 +609,7 @@ def project_delivery_minimal_template() -> WorkflowTemplate:
                 output_key="tests",
                 artifact_key="tests",
                 depends_on=("code-integration",),
-                input_artifacts=("requirement", "tasks", "environment", "implementation"),
+                input_refs=("requirement", "tasks", "environment", "implementation"),
                 acceptance_criteria=(
                     "使用简体中文报告；必须实际调用 run_sandbox_check。",
                     "不得将没有证据的测试声明为通过。",
@@ -624,7 +622,7 @@ def project_delivery_minimal_template() -> WorkflowTemplate:
                 output_key="review",
                 artifact_key="review",
                 depends_on=("tests",),
-                input_artifacts=(
+                input_refs=(
                     "requirement", "architecture", "tasks", "environment",
                     "implementation", "tests",
                 ),

@@ -409,15 +409,15 @@ class PlannerServiceTest(unittest.TestCase):
         """第一次草案误带 review 时，第二次仍必须使用修复专用约束。"""
         runtime = FakePlannerRuntime(
             [
-                '{"rationale":"误把交付审查加入修复","steps":['
-                '{"ref":"bootstrap","agent_id":"bootstrap_agent","objective":"确认环境"},'
-                '{"ref":"code-fix","agent_id":"code_agent","objective":"通过 write_workspace_file 修复实现","depends_on":["bootstrap"]},'
-                '{"ref":"test-fix","agent_id":"test_agent","objective":"通过 write_test_file 复验修复","depends_on":["code-fix"]},'
-                '{"ref":"review","agent_id":"review_agent","objective":"审查结果","depends_on":["test-fix"]}]}',
-                '{"rationale":"修复并复验","steps":['
-                '{"ref":"bootstrap","agent_id":"bootstrap_agent","objective":"确认环境"},'
-                '{"ref":"code-fix","agent_id":"code_agent","objective":"通过 write_workspace_file 修复实现","depends_on":["bootstrap"]},'
-                '{"ref":"test-fix","agent_id":"test_agent","objective":"通过 write_test_file 复验修复","depends_on":["code-fix"]}]}',
+                '{"rationale":"误把交付审查加入修复","base_plan_id":"initial","repair_scope":[],"operations":['
+                '{"operation":"add","ref":"bootstrap","agent_id":"bootstrap_agent","objective":"确认环境"},'
+                '{"operation":"add","ref":"code-fix","agent_id":"code_agent","objective":"通过 write_workspace_file 修复实现","depends_on":["bootstrap"]},'
+                '{"operation":"add","ref":"test-fix","agent_id":"test_agent","objective":"通过 write_test_file 复验修复","depends_on":["code-fix"]},'
+                '{"operation":"add","ref":"review","agent_id":"review_agent","objective":"审查结果","depends_on":["test-fix"]}]}',
+                '{"rationale":"修复并复验","base_plan_id":"initial","repair_scope":[],"operations":['
+                '{"operation":"add","ref":"bootstrap","agent_id":"bootstrap_agent","objective":"确认环境"},'
+                '{"operation":"add","ref":"code-fix","agent_id":"code_agent","objective":"通过 write_workspace_file 修复实现","depends_on":["bootstrap"]},'
+                '{"operation":"add","ref":"test-fix","agent_id":"test_agent","objective":"通过 write_test_file 复验修复","depends_on":["code-fix"]}]}',
             ]
         )
         service = PlannerService(
@@ -574,7 +574,7 @@ class PlannerServiceTest(unittest.TestCase):
         runtime = FakePlannerRuntime(
             [
                 '{"rationale": "初始", "steps": [{"ref": "requirement", "agent_id": "requirement_agent", "objective": "整理需求"}]}',
-                '{"rationale": "准备环境、修复并重跑验证", "steps": [{"ref": "bootstrap", "agent_id": "bootstrap_agent", "objective": "准备受控运行时"}, {"ref": "fix", "agent_id": "code_agent", "objective": "修复失败原因", "depends_on": ["bootstrap"]}, {"ref": "verify", "agent_id": "test_agent", "objective": "重新验证修复", "depends_on": ["fix"]}]}',
+                '{"rationale": "准备环境、修复并重跑验证", "base_plan_id": "initial", "repair_scope": [], "operations": [{"operation":"add", "ref": "bootstrap", "agent_id": "bootstrap_agent", "objective": "准备受控运行时"}, {"operation":"add", "ref": "fix", "agent_id": "code_agent", "objective": "修复失败原因", "depends_on": ["bootstrap"]}, {"operation":"add", "ref": "verify", "agent_id": "test_agent", "objective": "重新验证修复", "depends_on": ["fix"]}]}',
             ]
         )
         service = PlannerService(

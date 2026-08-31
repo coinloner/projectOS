@@ -32,7 +32,7 @@ class TaskInputPackageTest(unittest.TestCase):
             ),
             input_refs=(ArtifactRef.published("architecture"), ArtifactRef.published("environment")),
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend",
+            slot="backend",
             acceptance_criteria=("只实现 Todo API",),
             constraints=("使用 Python 标准库",),
             non_goals=("不修改 frontend",),
@@ -49,7 +49,7 @@ class TaskInputPackageTest(unittest.TestCase):
         state.record(
             requirement,
             NodeResult.completed(
-                node_id="requirement", agent_id="requirement_agent", content="需求正文不应注入"
+                work_item_id="requirement", agent_id="requirement_agent", content="需求正文不应注入"
             ),
         )
 
@@ -81,7 +81,7 @@ class TaskInputPackageTest(unittest.TestCase):
             output_key="implementation_api",
             artifact_key="implementation",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend",
+            slot="backend",
             allowed_paths=("backend/app/main.py",),
             required_paths=("backend/app/main.py",),
         )

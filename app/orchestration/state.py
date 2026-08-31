@@ -113,6 +113,19 @@ class RunState:
                     raise ValueError(
                         f"checkpoint WorkItem 合同指纹不匹配: {item.id}"
                     )
+            if "artifact_refs" in checkpoint:
+                referenced_work_items = {
+                    str(raw_ref.get("work_item_id"))
+                    for raw_ref in raw_refs.values()
+                    if isinstance(raw_ref, dict) and raw_ref.get("work_item_id")
+                }
+                if referenced_work_items != set(results):
+                    missing = sorted(set(results) - referenced_work_items)
+                    extra = sorted(referenced_work_items - set(results))
+                    raise ValueError(
+                        "checkpoint completed WorkItem 与 artifact_refs 不一致"
+                        f"; missing={missing}; extra={extra}"
+                    )
         completed_output_keys = {
             plan.work_item(item_id).output_key
             for item_id, result in results.items()

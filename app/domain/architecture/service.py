@@ -132,12 +132,12 @@ class ArchitectureArtifactWorkflow:
     def write_staged(self, context: ExecutionContext, content: str) -> str:
         if context.execution_mode is not ExecutionMode.PARTITIONED:
             raise PermissionError("只有分区执行节点可以写入暂存产物")
-        self._validate_size(content, _STAGED_CHAR_LIMITS.get(context.output_slot or "", 4500))
+        self._validate_size(content, _STAGED_CHAR_LIMITS.get(context.slot or "", 4500))
         staged = self._repository.write_staged(
             trace_id=context.trace_id,
             work_item_id=context.work_item_id,
             artifact_key="architecture",
-            slot=context.output_slot or "",
+            slot=context.slot or "",
             content=content,
         )
         return f"已写入架构暂存输出: {staged.ref.ref_id}"
@@ -168,7 +168,7 @@ class ArchitectureArtifactWorkflow:
             parsed = parse_design(design)
         except (ValidationError, TypeError, ValueError) as error:
             raise ValueError(_structured_design_error(error)) from error
-        slot = context.output_slot or ""
+        slot = context.slot or ""
         expected_depth = (
             0
             if slot == "blueprint"
@@ -189,7 +189,7 @@ class ArchitectureArtifactWorkflow:
                         "expected_depth": expected_depth,
                         "actual_depth": parsed.depth,
                         "message": (
-                            f"架构设计 slot={context.output_slot} 要求 depth={expected_depth}，"
+                            f"架构设计 slot={context.slot} 要求 depth={expected_depth}，"
                             f"实际为 {parsed.depth}"
                         ),
                     },
@@ -199,7 +199,7 @@ class ArchitectureArtifactWorkflow:
         import json
 
         content = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2)
-        limit = _design_limit_for_slot(context.output_slot or "")
+        limit = _design_limit_for_slot(context.slot or "")
         try:
             self._validate_size(content, limit)
         except ValueError as error:
@@ -209,7 +209,7 @@ class ArchitectureArtifactWorkflow:
                         "ok": False,
                         "error_type": "artifact_size",
                         "retryable": True,
-                        "expected_tool": _expected_design_tool(context.output_slot or ""),
+                        "expected_tool": _expected_design_tool(context.slot or ""),
                         "limit": limit,
                         "message": str(error),
                     },
@@ -220,7 +220,7 @@ class ArchitectureArtifactWorkflow:
             trace_id=context.trace_id,
             work_item_id=context.work_item_id,
             artifact_key="architecture",
-            slot=context.output_slot or "",
+            slot=context.slot or "",
             content=content,
         )
         return f"已写入架构设计对象: {staged.ref.ref_id}; depth={parsed.depth}"

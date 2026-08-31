@@ -53,7 +53,7 @@ class TemplateNodeHint:
     objective: str
     depends_on: tuple[str, ...]
     execution_mode: str = "exclusive"
-    output_slot: str | None = None
+    slot: str | None = None
     publish_target: str | None = None
 
 
@@ -218,7 +218,7 @@ def _template_hint(template: "WorkflowTemplate") -> TemplateHint:
                     for dependency in node.depends_on
                 ),
                 execution_mode=node.execution_mode.value,
-                output_slot=node.output_slot,
+                slot=node.slot,
                 publish_target=node.publish_target,
             )
             for node in template.nodes

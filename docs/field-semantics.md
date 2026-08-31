@@ -22,9 +22,9 @@
 | --- | --- | --- |
 | `node_id` | `work_item_id` | 节点执行身份；旧 checkpoint 仅在读取时兼容 |
 | `project_goal` | `goal` | 一次 Trace 的目标快照 |
-| `output_slot` | `slot` | 分区槽位；当前内部对象保留旧名以完成迁移 |
-| `input_artifacts` | `input_refs` | 模板编译后只使用结构化 ArtifactRef |
-| `policy_id` / `policy_refs` | `policy_refs` | 统一为策略引用数组 |
+| `output_slot` | `slot` | 分区槽位；仅历史 JSON 读取时兼容旧名 |
+| `input_artifacts` | `input_refs` | 模板和运行时统一使用结构化引用 |
+| `policy_id` / `policy_refs` | `policy_refs` | 统一为策略引用数组；旧 policy_id 仅读取 |
 | `failure_context` | `failure_package` / `failure_signal` | 文本只在 Prompt 渲染时临时生成 |
 
 ## 不可合并字段
@@ -51,6 +51,8 @@
   输出类型、允许/禁止路径、必需路径、文件所有权、验收条件和策略/技能引用；恢复或补丁应用前必须重新计算并匹配。
 - `allowed_paths` 只能在受控修复中收窄，`forbidden_paths` 只能增加限制；`owned_files`、依赖、
   `output_kind` 和执行模式不可变。局部补丁不能通过修改依赖来绕过原有 DAG。
+- 失败恢复统一使用 `RepairPlanPatch`。它只能追加新的修复 WorkItem，依赖只能引用同一补丁中
+  更早的修复节点；原计划节点不能被替换、删除或重新授权。`schema_version=1` 是当前唯一可执行版本。
 
 ## 迁移约束
 

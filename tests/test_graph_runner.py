@@ -177,7 +177,7 @@ class ArchitectureToolNarrowingTest(unittest.TestCase):
                 objective="架构设计",
                 output_key="architecture",
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot=slot,
+                slot=slot,
             )
             self.assertEqual(
                 _architecture_tool_allowlist(item),
@@ -192,7 +192,7 @@ class ArchitectureToolNarrowingTest(unittest.TestCase):
             objective="架构 API 决策包",
             output_key="architecture_api",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="api",
+            slot="api",
         )
         self.assertEqual(_architecture_tool_allowlist(item), ())
 
@@ -205,7 +205,7 @@ class GraphRunnerTest(unittest.TestCase):
             objective="实现接口依赖文件",
             output_key="code-interface-dependencies",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend",
+            slot="backend",
             implementation_unit_id="u-interface-dependencies",
             owned_files=("backend/app/interface/dependencies.py",),
             required_paths=("backend/app/interface/dependencies.py",),
@@ -380,7 +380,7 @@ class GraphRunnerTest(unittest.TestCase):
 
         self.assertEqual(result.status, GraphRunStatus.FAILED)
         self.assertIn("未注册 Agent", result.error)
-        self.assertEqual(result.node_result.node_id, "requirement")
+        self.assertEqual(result.node_result.work_item_id, "requirement")
 
     def test_runner_returns_waiting_for_capability_without_discovering_mcp(self) -> None:
         self.register_agent(
@@ -438,7 +438,7 @@ class GraphRunnerTest(unittest.TestCase):
 
         self.assertEqual(result.status, GraphRunStatus.FAILED)
         self.assertIn("LLM unavailable", result.error)
-        self.assertEqual(result.node_result.node_id, "requirement")
+        self.assertEqual(result.node_result.work_item_id, "requirement")
 
     def test_runner_runs_independent_instances_of_the_same_parallel_agent_together(self) -> None:
         barrier = Barrier(2)
@@ -617,7 +617,7 @@ class GraphRunnerTest(unittest.TestCase):
                         objective="写入完整文件",
                         output_key="implementation_code",
                         execution_mode=ExecutionMode.PARTITIONED,
-                        output_slot="backend",
+                        slot="backend",
                         implementation_unit_id="unit",
                         allowed_paths=("backend/app.py",),
                         required_paths=("backend/app.py",),
@@ -644,7 +644,7 @@ class GraphRunnerTest(unittest.TestCase):
                 def run(self, task: str, *, context: ExecutionContext | None = None) -> AgentResult:
                     assert context is not None
                     if context.execution_mode is ExecutionMode.PARTITIONED:
-                        workflow.write_staged(context, f"# {context.output_slot}")
+                        workflow.write_staged(context, f"# {context.slot}")
                     elif context.execution_mode is ExecutionMode.INTEGRATION:
                         workflow.create_candidate(context, "# Integrated architecture")
                     return AgentResult.completed("done")
@@ -670,12 +670,12 @@ class GraphRunnerTest(unittest.TestCase):
                     WorkItem(
                         id="architecture-api", agent_id="architecture_agent", objective="设计 API",
                         output_key="architecture_api", artifact_key="architecture",
-                        execution_mode=ExecutionMode.PARTITIONED, output_slot="api",
+                        execution_mode=ExecutionMode.PARTITIONED, slot="api",
                     ),
                     WorkItem(
                         id="architecture-data", agent_id="architecture_agent", objective="设计数据层",
                         output_key="architecture_data", artifact_key="architecture",
-                        execution_mode=ExecutionMode.PARTITIONED, output_slot="data",
+                        execution_mode=ExecutionMode.PARTITIONED, slot="data",
                     ),
                     WorkItem(
                         id="architecture-integration", agent_id="architecture_agent", objective="整合分区",

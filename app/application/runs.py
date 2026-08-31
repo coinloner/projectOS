@@ -102,7 +102,7 @@ def _rebuild_delivery_state(
         if item.id not in completed_ids:
             continue
         results[item.id] = NodeResult.completed(
-            node_id=item.id,
+            work_item_id=item.id,
             agent_id=item.agent_id,
             content=artifacts.get(item.output_key, ""),
         )
@@ -129,6 +129,7 @@ def _load_delivery_resume(
         plan = _refresh_repair_plan(container.traces.load_delivery_plan(trace_id), container.traces)
     except (FileNotFoundError, ValueError):
         plan = _refresh_repair_plan(container.traces.load_plan(trace_id), container.traces)
+    container.traces.validate_plan_baseline(plan)
     # ``delivery-checkpoint.json`` is a pre-repair baseline and may contain an
     # empty state by design. For a normal delivery run, the latest
     # ``checkpoint.json`` is authoritative because GraphRunner updates it
@@ -175,7 +176,7 @@ def _sanitize_resume_state(container: ProjectOSContainer, state: RunState) -> Ru
                 artifact_key="architecture",
                 trace_id=state.plan.trace.trace_id,
                 work_item_id=item.id,
-                slot=item.output_slot or "",
+                slot=item.slot or "",
             )
             try:
                 container.artifact_repository.load_ref(ref)
@@ -953,7 +954,7 @@ class RunService:
             required_artifacts = {
                 artifact_key
                 for node in template.nodes
-                for artifact_key in node.input_artifacts
+                for artifact_key in node.input_refs
             }
             produced_artifacts = {
                 node.artifact_key or node.publish_target or node.output_key

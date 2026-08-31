@@ -39,7 +39,7 @@ compile_project_contract_from_designs；控制面会做确定性组合和校验�
    owned_files 必须列出本单元实际负责的完整文件。每个 CodeAgent 单元最终只能负责一个
    具体文件；多个文件必须拆成多个 implementation_units，由编译器按文件形成独立 WorkItem。
    可选填写 forbidden_paths、constraints、
-   policy_refs、skill_refs、parallel_group、output_slot 和 requirement_ids。
+   policy_refs、skill_refs、parallel_group、slot 和 requirement_ids。
    requirement_ids 必须引用本实现单元实际覆盖的 AC- 编号；不能遗漏任何已确认验收标准。
    顶层字段必须遵循以下结构（这是 schema 示例，不要把说明文字写入值）：
    {
@@ -77,7 +77,7 @@ compile_project_contract_from_designs；控制面会做确定性组合和校验�
    不要读取或生成 layer-contract.json；代码路径使用
    workspace 相对路径，后端 Python 文件放在 backend/ 下，独立前端文件放在
    frontend/ 下，测试、脚本和项目配置可使用根路径。每个单元必须填写与路径一致的
-   output_slot（backend、frontend 或 root），不能留下 null，也不能创造与 Layer Contract
+   slot（backend、frontend 或 root），不能留下 null，也不能创造与 Layer Contract
    冲突的路径。
    如果创建 project-documents 单元，它只负责前置规划文档（requirement.md、architecture.md、
    architecture_contract.md、tasks.md）；不要把 environment.md、implementation.md、tests.md 或

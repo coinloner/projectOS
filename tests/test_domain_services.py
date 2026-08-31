@@ -55,7 +55,7 @@ class DomainServiceTest(unittest.TestCase):
             agent_id="task_agent",
             execution_mode=ExecutionMode.PARTITIONED,
             input_refs=(ArtifactRef.published("architecture"),),
-            output_slot="plan",
+            slot="plan",
         )
         self.assertEqual(
             task.load_input(context, "published:architecture:current"), "# Updated"
@@ -69,7 +69,7 @@ class DomainServiceTest(unittest.TestCase):
         context = ExecutionContext(
             trace_id="tr-architecture", work_item_id="architecture-api",
             agent_id="architecture_agent", execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="api",
+            slot="api",
         )
 
         with self.assertRaisesRegex(ValueError, "字符上限"):
