@@ -16,15 +16,34 @@ class RunState:
     artifacts: dict[str, str] = field(default_factory=dict)
 
     def as_checkpoint(self) -> dict[str, object]:
-        """序列化可恢复状态；快照不是 Artifact 的事实来源。"""
+        """序列化可恢复状态；产物正文由 ArtifactRepository 唯一持有。"""
+        completed = {
+            item_id: result
+            for item_id, result in self.node_results.items()
+            if result.status is NodeStatus.COMPLETED
+        }
+        artifact_refs = {
+            plan_item.output_key: {
+                "artifact_key": plan_item.artifact_key or plan_item.output_key,
+                "work_item_id": plan_item.id,
+            }
+            for plan_item in self.plan.work_items
+            if plan_item.id in completed
+        }
         return {
             "schema_version": 1,
             "plan_id": self.plan.id,
             "trace_id": self.plan.trace.trace_id,
             "node_results": [
-                result.as_dict() for result in self.node_results.values()
+                {
+                    **result.as_dict(),
+                    # Keep only a bounded summary in the checkpoint.  The
+                    # authoritative content remains in ArtifactRepository.
+                    "content": None,
+                }
+                for result in self.node_results.values()
             ],
-            "artifacts": dict(self.artifacts),
+            "artifact_refs": artifact_refs,
             "completed_work_items": sorted(
                 item_id
                 for item_id, result in self.node_results.items()
@@ -66,10 +85,16 @@ class RunState:
             # 必须重新执行，避免把半完成副作用误判为已完成。
             if result.status is NodeStatus.COMPLETED:
                 results[result.work_item_id] = result
+        # ``artifacts`` is the pre-migration inline-content format.  New
+        # checkpoints carry only artifact_refs and reconstruct presence from
+        # completed WorkItems; old checkpoints remain readable.
         raw_artifacts = checkpoint.get("artifacts", {})
         if not isinstance(raw_artifacts, dict):
             raise ValueError("checkpoint.artifacts 格式无效")
         artifacts = {str(key): str(value) for key, value in raw_artifacts.items()}
+        raw_refs = checkpoint.get("artifact_refs", {})
+        if raw_refs and not isinstance(raw_refs, dict):
+            raise ValueError("checkpoint.artifact_refs 格式无效")
         completed_output_keys = {
             plan.work_item(item_id).output_key
             for item_id, result in results.items()
@@ -79,6 +104,12 @@ class RunState:
         if not set(artifacts).issubset(completed_output_keys):
             raise ValueError("checkpoint.artifacts 包含未完成节点或未知产物")
         state = cls(plan=plan, node_results=results, artifacts=artifacts)
+        for item_id in results:
+            item = plan.work_item(item_id)
+            if item is not None and item.output_key not in state.artifacts:
+                # Presence is enough for dependency scheduling.  Consumers
+                # read the actual body through the repository by ArtifactRef.
+                state.artifacts[item.output_key] = ""
         for item_id, result in results.items():
             if result.status is NodeStatus.COMPLETED and item_id not in state.artifacts:
                 item = plan.work_item(item_id)

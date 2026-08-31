@@ -210,6 +210,8 @@ class TraceStoreTest(unittest.TestCase):
 
             restored_plan = traces.load_plan(context.trace_id)
             checkpoint = traces.load_checkpoint(context.trace_id)
+            self.assertIn("artifact_refs", checkpoint)
+            self.assertNotIn("artifacts", checkpoint)
             restored_state = RunState.from_checkpoint(restored_plan, checkpoint)
             self.assertEqual(restored_state.node_results, {})
 

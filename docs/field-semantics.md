@@ -41,7 +41,7 @@
 
 - Trace 持久化运行级身份和当前计划引用。
 - Plan 持久化节点合同及 DAG 结构。
-- Checkpoint 持久化已完成 WorkItem、状态、Artifact 引用和 digest；不应把产物正文作为第二事实来源。
+- Checkpoint 持久化已完成 WorkItem、状态和 Artifact 引用；产物 digest 由 ArtifactRepository 管理，不应把产物正文作为第二事实来源。
 - ArtifactRepository 持久化正文和可审计交付物。
 - FailurePackage 只能描述失败证据，不能修改 `WorkItem` 的权限、输出类型或所有权。
 
@@ -50,3 +50,7 @@
 新代码只写标准字段。读取历史数据时允许一次性将旧字段映射到标准字段；再次持久化时必须
 写回标准字段。任何计划或重试变更都必须重新通过 WorkItem 合同校验，禁止产生允许范围与
 禁止范围相交的执行节点。
+
+当前 Checkpoint 使用 `artifact_refs` 记录完成节点的产物存在性和归属；旧版 `artifacts` 内联正文
+只在读取旧快照时兼容。恢复后的节点通过 ArtifactRepository 获取正文，Checkpoint 中只保留空值占位
+用于依赖调度，不作为业务内容来源。
