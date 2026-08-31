@@ -52,10 +52,15 @@ class TaskScope:
     allowed_paths: tuple[str, ...] = ()
     forbidden_paths: tuple[str, ...] = ()
 
+    @property
+    def slot(self) -> str | None:
+        """Canonical partition name; ``output_slot`` is an internal migration alias."""
+        return self.output_slot
+
     def as_dict(self) -> dict[str, object]:
         return {
             "execution_mode": self.execution_mode,
-            "output_slot": self.output_slot,
+            "slot": self.slot,
             "allowed_paths": list(self.allowed_paths),
             "forbidden_paths": list(self.forbidden_paths),
         }
@@ -71,11 +76,15 @@ class OutputContract:
     publish_target: str | None
     expected_paths: tuple[str, ...] = ()
 
+    @property
+    def slot(self) -> str | None:
+        return self.output_slot
+
     def as_dict(self) -> dict[str, object]:
         return {
             "output_key": self.output_key,
             "artifact_key": self.artifact_key,
-            "output_slot": self.output_slot,
+            "slot": self.slot,
             "publish_target": self.publish_target,
             "expected_paths": list(self.expected_paths),
         }
@@ -112,7 +121,7 @@ class TaskInputPackage:
     trace_id: str
     work_item_id: str
     agent_id: str
-    project_goal: str
+    goal: str
     objective: str
     execution_mode: str
     scope: TaskScope
@@ -122,13 +131,11 @@ class TaskInputPackage:
     acceptance_criteria: tuple[str, ...]
     constraints: tuple[str, ...]
     non_goals: tuple[str, ...]
-    failure_context: str | None = None
     failure_package: dict[str, object] | None = None
     implementation: dict[str, object] | None = None
     delivery_contract: dict[str, object] | None = None
     policy_refs: tuple[str, ...] = ()
     skill_refs: tuple[str, ...] = ()
-    policy_id: str | None = None
     skill_guidance: str = ""
     policy_guidance: str = ""
 
@@ -137,7 +144,7 @@ class TaskInputPackage:
             "trace_id": self.trace_id,
             "work_item_id": self.work_item_id,
             "agent_id": self.agent_id,
-            "project_goal": self.project_goal,
+            "goal": self.goal,
             "objective": self.objective,
             "execution_mode": self.execution_mode,
             "scope": self.scope.as_dict(),
@@ -148,8 +155,6 @@ class TaskInputPackage:
             "constraints": list(self.constraints),
             "non_goals": list(self.non_goals),
         }
-        if self.failure_context is not None:
-            payload["failure_context"] = self.failure_context
         if self.failure_package is not None:
             payload["failure_package"] = self.failure_package
         if self.implementation is not None:
@@ -160,8 +165,6 @@ class TaskInputPackage:
             payload["policy_refs"] = list(self.policy_refs)
         if self.skill_refs:
             payload["skill_refs"] = list(self.skill_refs)
-        if self.policy_id is not None:
-            payload["policy_id"] = self.policy_id
         if self.skill_guidance:
             payload["skill_guidance"] = self.skill_guidance
         if self.policy_guidance:
@@ -170,7 +173,7 @@ class TaskInputPackage:
 
     def as_prompt(self, *, memory_context: str = "") -> str:
         summary = [
-            f"总体目标：{self.project_goal}",
+            f"总体目标：{self.goal}",
             f"当前工作项：{self.work_item_id}",
             f"当前任务：{self.objective}",
         ]
@@ -262,7 +265,7 @@ class TaskInputPackage:
         elif (
             self.execution_mode == ExecutionMode.EXCLUSIVE.value
             and self.agent_id == "code_agent"
-            and self.failure_context is not None
+            and self.failure_package is not None
         ):
             # Repair nodes run with the regular workspace ToolSet.  State this
             # after the generic task JSON so the model cannot confuse the
@@ -277,8 +280,6 @@ class TaskInputPackage:
             )
         if self.policy_refs:
             prompt += "\n实现前必须参考 Policy: " + ", ".join(self.policy_refs)
-        elif self.policy_id:
-            prompt += "\n实现前必须参考 Policy: " + self.policy_id
         if self.skill_refs:
             prompt += "\n推荐 Skill: " + ", ".join(self.skill_refs)
         if self.skill_guidance:
@@ -313,7 +314,7 @@ def build_task_input(
             )
         )
 
-    slot = item.output_slot
+    slot = item.slot
     allowed_paths, forbidden_paths = _scope_paths(item.execution_mode, slot)
     if item.allowed_paths:
         allowed_paths = item.allowed_paths
@@ -325,7 +326,7 @@ def build_task_input(
         trace_id=state.plan.trace.trace_id,
         work_item_id=item.id,
         agent_id=item.agent_id,
-        project_goal=state.plan.goal,
+        goal=state.plan.goal,
         objective=item.objective,
         execution_mode=item.execution_mode.value,
         scope=TaskScope(
@@ -339,18 +340,13 @@ def build_task_input(
         output=OutputContract(
             output_key=item.output_key,
             artifact_key=item.artifact_key or item.output_key,
-            output_slot=item.output_slot,
+            output_slot=item.slot,
             publish_target=item.publish_target,
             expected_paths=item.required_paths or item.owned_files or allowed_paths,
         ),
         acceptance_criteria=item.acceptance_criteria,
         constraints=tuple(dict.fromkeys(constraints)),
         non_goals=item.non_goals,
-        failure_context=(
-            item.failure_package.as_task_text()
-            if item.failure_package is not None
-            else None
-        ),
         failure_package=(
             item.failure_package.as_task_data()
             if item.failure_package is not None
@@ -372,7 +368,6 @@ def build_task_input(
         delivery_contract=item.delivery_contract,
         policy_refs=item.policy_refs,
         skill_refs=resolved_skill_refs or item.skill_refs,
-        policy_id=item.policy_id,
         skill_guidance=skill_guidance,
         policy_guidance=policy_guidance,
     )

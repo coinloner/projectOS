@@ -778,14 +778,14 @@ class RunCoordinator:
                 plan.trace,
                 result.state.as_checkpoint(),
             )
-            repair_scope = _repair_scope(plan, result.node_result.node_id if result.node_result else "")
+            repair_scope = _repair_scope(plan, result.node_result.work_item_id if result.node_result else "")
             container.traces.record_event(
                 plan.trace,
                 "control",
                 "repair_cycle_started",
                 details={
                     "attempt": repair_attempt,
-                    "failed_work_item_id": result.node_result.node_id
+                    "failed_work_item_id": result.node_result.work_item_id
                     if result.node_result
                     else None,
                     "failure_kind": failure.kind.value,
@@ -806,7 +806,7 @@ class RunCoordinator:
                     "repair_cycle_failed",
                     details={
                         "attempt": repair_attempt,
-                        "failed_work_item_id": result.node_result.node_id
+                        "failed_work_item_id": result.node_result.work_item_id
                         if result.node_result
                         else None,
                         "failure_kind": failure.kind.value,

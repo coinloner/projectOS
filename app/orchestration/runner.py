@@ -2129,7 +2129,7 @@ class GraphRunner:
                 status=GraphRunStatus.FAILED,
                 state=state,
                 node_result=NodeResult.failed(
-                    node_id=result.node_id,
+                    node_id=result.work_item_id,
                     agent_id=result.agent_id,
                     error="节点请求能力升级，但未提供能力请求详情",
                 ),
@@ -2163,7 +2163,7 @@ class GraphRunner:
                 / "runs"
                 / state.plan.trace.trace_id
                 / "work-items"
-                / result.node_id
+                / result.work_item_id
             )
             staged_task_written = any(
                 path.is_file()
@@ -2185,7 +2185,7 @@ class GraphRunner:
                 status=GraphRunStatus.COMPLETED,
                 state=state,
                 node_result=NodeResult.completed(
-                    node_id=result.node_id,
+                    node_id=result.work_item_id,
                     agent_id=result.agent_id,
                     content=success_reason,
                 ),
@@ -2247,7 +2247,7 @@ class GraphRunner:
                     status=GraphRunStatus.COMPLETED,
                     state=state,
                     node_result=NodeResult.completed(
-                        node_id=result.node_id,
+                        node_id=result.work_item_id,
                         agent_id=result.agent_id,
                         content="环境已由控制面准备并保存 environment.md",
                     ),

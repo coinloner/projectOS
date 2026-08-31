@@ -58,6 +58,9 @@ class TaskInputPackageTest(unittest.TestCase):
         prompt = package.as_prompt()
 
         self.assertEqual(data["work_item_id"], "backend")
+        self.assertEqual(data["goal"], "交付 Todo 项目")
+        self.assertNotIn("project_goal", data)
+        self.assertNotIn("failure_context", data)
         self.assertEqual(data["scope"]["allowed_paths"], ["workspace/backend/**"])
         self.assertIn("workspace/frontend/**", data["scope"]["forbidden_paths"])
         self.assertEqual(data["dependencies"][0]["status"], "completed")

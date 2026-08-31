@@ -6,6 +6,7 @@ from app.orchestration.work_item import (
     WorkItem,
     WorkItemDependency,
 )
+from app.execution_context import ExecutionMode
 
 
 def make_item(
@@ -48,6 +49,21 @@ class ExecutionPlanTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "重复依赖"):
             make_item("draft", depends_on=("input", "input"))
+
+    def test_item_rejects_global_forbidden_scope(self) -> None:
+        with self.assertRaisesRegex(ValueError, "全局通配符"):
+            WorkItem(
+                id="code-runtime",
+                agent_id="code_agent",
+                objective="实现运行时入口",
+                output_key="implementation_runtime",
+                execution_mode=ExecutionMode.PARTITIONED,
+                output_slot="runtime",
+                allowed_paths=("src/runtime/**",),
+                forbidden_paths=("**",),
+                owned_files=("src/runtime/server.py",),
+                implementation_unit_id="runtime-server",
+            )
 
     def test_plan_rejects_duplicate_work_item_ids(self) -> None:
         with self.assertRaisesRegex(ValueError, "重复 WorkItem id"):

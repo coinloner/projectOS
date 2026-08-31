@@ -34,9 +34,14 @@ class NodeResult:
     failure_signal: FailureSignal | None = None
     error: str | None = None
 
+    @property
+    def work_item_id(self) -> str:
+        """Canonical execution identity; ``node_id`` is retained only for API migration."""
+        return self.node_id
+
     def as_dict(self) -> dict[str, object]:
         return {
-            "node_id": self.node_id,
+            "work_item_id": self.work_item_id,
             "agent_id": self.agent_id,
             "status": self.status.value,
             "content": self.content,
@@ -74,7 +79,10 @@ class NodeResult:
             else None
         )
         return cls(
-            node_id=str(payload["node_id"]),
+            # Checkpoints written before the field-alignment migration used
+            # ``node_id``.  Read it once at the boundary but emit only the
+            # canonical ``work_item_id`` form thereafter.
+            node_id=str(payload.get("work_item_id", payload.get("node_id", ""))),
             agent_id=str(payload["agent_id"]),
             status=NodeStatus(str(payload["status"])),
             content=(

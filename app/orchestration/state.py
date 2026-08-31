@@ -56,16 +56,16 @@ class RunState:
             if not isinstance(raw_result, dict):
                 raise ValueError("checkpoint 包含无效 NodeResult")
             result = NodeResult.from_dict(raw_result)
-            item = plan.work_item(result.node_id)
+            item = plan.work_item(result.work_item_id)
             if item is None or item.agent_id != result.agent_id:
                 raise ValueError("checkpoint 包含不属于当前计划的 NodeResult")
-            if result.node_id in seen_ids:
+            if result.work_item_id in seen_ids:
                 raise ValueError("checkpoint 包含重复 NodeResult")
-            seen_ids.add(result.node_id)
+            seen_ids.add(result.work_item_id)
             # 只有 completed 结果可以跨进程信任；失败、等待和 replan 节点恢复时
             # 必须重新执行，避免把半完成副作用误判为已完成。
             if result.status is NodeStatus.COMPLETED:
-                results[result.node_id] = result
+                results[result.work_item_id] = result
         raw_artifacts = checkpoint.get("artifacts", {})
         if not isinstance(raw_artifacts, dict):
             raise ValueError("checkpoint.artifacts 格式无效")
@@ -100,7 +100,7 @@ class RunState:
         )
 
     def record(self, item: WorkItem, result: NodeResult) -> None:
-        if result.node_id != item.id or result.agent_id != item.agent_id:
+        if result.work_item_id != item.id or result.agent_id != item.agent_id:
             raise ValueError("NodeResult 与 WorkItem 不匹配")
         if item.id in self.node_results:
             raise ValueError(f"工作项 '{item.id}' 已有运行结果")

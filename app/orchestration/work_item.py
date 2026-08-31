@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import fnmatch
 
 from app.artifact.repository import ArtifactRef
 from app.execution_context import ExecutionMode
@@ -80,6 +81,22 @@ class WorkItem:
         for field_name in ("allowed_paths", "forbidden_paths", "required_paths", "policy_refs", "skill_refs", "requirement_ids"):
             if any(not value.strip() for value in getattr(self, field_name)):
                 raise ValueError(f"WorkItem.{field_name} 不能包含空字符串")
+        # A retry/repair overlay must never turn a scoped grant into a global
+        # deny (for example forbidden_paths=["**"]).  Reject broad deny
+        # patterns and any concrete ownership collision before a Worker is
+        # started; otherwise the failure only appears after the Agent has
+        # generated content and attempted to persist it.
+        if self.allowed_paths and any(path in {"*", "**"} for path in self.forbidden_paths):
+            raise ValueError("WorkItem.forbidden_paths 不能使用全局通配符")
+        for owned in self.owned_files:
+            normalized = owned.replace("\\", "/").lstrip("/")
+            if any(
+                fnmatch.fnmatch(normalized, pattern.replace("**", "*"))
+                for pattern in self.forbidden_paths
+            ):
+                raise ValueError(
+                    f"WorkItem.owned_files 命中 forbidden_paths: {owned}"
+                )
         if self.wave < 0:
             raise ValueError("WorkItem.wave 不能小于 0")
         if (
@@ -119,6 +136,11 @@ class WorkItem:
     @property
     def dependency_ids(self) -> tuple[str, ...]:
         return tuple(dependency.work_item_id for dependency in self.dependencies)
+
+    @property
+    def slot(self) -> str | None:
+        """Canonical partition slot; serialized legacy plans may still use output_slot."""
+        return self.output_slot
 
     def _validate_execution_grant(self) -> None:
         if self.execution_mode is ExecutionMode.PARTITIONED:

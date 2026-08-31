@@ -14,6 +14,9 @@ class NodeResultTest(unittest.TestCase):
 
         self.assertEqual(result.status, NodeStatus.COMPLETED)
         self.assertEqual(result.node_id, "requirement")
+        self.assertEqual(result.work_item_id, "requirement")
+        self.assertIn("work_item_id", result.as_dict())
+        self.assertNotIn("node_id", result.as_dict())
         self.assertEqual(result.agent_id, "requirement_agent")
         self.assertEqual(result.content, "需求草稿")
 
@@ -38,3 +41,15 @@ class NodeResultTest(unittest.TestCase):
 
         self.assertEqual(result.status, NodeStatus.FAILED)
         self.assertEqual(result.error, "Agent unavailable")
+
+    def test_checkpoint_migrates_legacy_node_id_to_work_item_id(self) -> None:
+        result = NodeResult.from_dict(
+            {
+                "node_id": "legacy-node",
+                "agent_id": "requirement_agent",
+                "status": "completed",
+                "content": "ok",
+            }
+        )
+        self.assertEqual(result.work_item_id, "legacy-node")
+        self.assertEqual(result.as_dict()["work_item_id"], "legacy-node")
