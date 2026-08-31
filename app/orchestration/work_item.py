@@ -219,6 +219,31 @@ class WorkItem:
             "owned_files": list(self.owned_files),
         }
 
+    def validate_scope_transition(self, revised: "WorkItem") -> None:
+        """Ensure a repair never expands this WorkItem's filesystem authority."""
+        if self.agent_id != revised.agent_id or self.execution_mode != revised.execution_mode:
+            raise ValueError("修复不能改变 WorkItem 的 Agent 或 execution_mode")
+        if self.output_kind != revised.output_kind:
+            raise ValueError("修复不能改变 WorkItem.output_kind")
+        if self.owned_files != revised.owned_files:
+            raise ValueError("修复不能改变 WorkItem.owned_files")
+        if not set(self.forbidden_paths).issubset(set(revised.forbidden_paths)):
+            raise ValueError("修复不能减少 forbidden_paths")
+        if not self.allowed_paths and revised.allowed_paths:
+            # EXCLUSIVE repair nodes may start without a path declaration. In
+            # that case the control plane can materialize only concrete paths
+            # extracted from trusted failure evidence; wildcard expansion is
+            # still forbidden.
+            if any(any(token in path for token in ("*", "?", "[", "]")) for path in revised.allowed_paths):
+                raise ValueError("修复不能从未授权范围扩大通配 allowed_paths")
+        if self.allowed_paths:
+            for path in revised.allowed_paths:
+                if any(token in path for token in ("*", "?", "[", "]")):
+                    if path not in self.allowed_paths:
+                        raise ValueError("修复 allowed_paths 只能收窄，不能扩大通配范围")
+                elif not any(fnmatch.fnmatch(path, pattern.replace("**", "*")) for pattern in self.allowed_paths):
+                    raise ValueError(f"修复路径超出原 allowed_paths: {path}")
+
     def _validate_execution_grant(self) -> None:
         if self.execution_mode is ExecutionMode.PARTITIONED:
             if not self.output_slot or not self.output_slot.strip():

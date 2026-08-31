@@ -377,7 +377,7 @@ class PlannerService:
                 owner_files=item.owned_files or item.required_paths,
             )
             if definition.domain == "code" and repair_paths:
-                item = replace(
+                revised_item = replace(
                     item,
                     allowed_paths=tuple(repair_paths),
                     forbidden_paths=tuple(forbidden_rework),
@@ -386,6 +386,8 @@ class PlannerService:
                     # fresh digest for this repaired contract.
                     contract_digest=None,
                 )
+                item.validate_scope_transition(revised_item)
+                item = revised_item
             work_items.append(replace(item, failure_package=scoped))
         return replace(plan, work_items=work_items)
 
