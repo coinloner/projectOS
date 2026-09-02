@@ -88,6 +88,7 @@ class TemplateCompiler:
                     agent_id=node.agent_id,
                     objective=node.objective,
                     output_key=node.output_key,
+                    stage_id=node.stage_id,
                     artifact_key=self._artifact_key(node),
                     dependencies=dependencies,
                     acceptance_criteria=node.acceptance_criteria,

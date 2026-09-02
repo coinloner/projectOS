@@ -13,6 +13,9 @@ class PlannedStep(BaseModel):
     ref: str = Field(min_length=1, max_length=100)
     agent_id: str = Field(min_length=1, max_length=100)
     objective: str = Field(min_length=1, max_length=500)
+    # Process stage is a semantic role only; execution mode and permissions
+    # are still compiled by PlanValidator from the registered process.
+    stage_id: str | None = Field(default=None, max_length=100)
     depends_on: list[str] = Field(default_factory=list, max_length=10)
     acceptance_criteria: list[str] = Field(default_factory=list, max_length=5)
     constraints: list[str] = Field(default_factory=list, max_length=8)

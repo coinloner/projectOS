@@ -50,6 +50,9 @@ _BACKSTORY = """\
 - ``ArchitectureBlueprint`` 是 depth=0 的系统级事实；``ModuleDesign`` 是 depth=1 的单模块事实；
   ``ImplementationDesign`` 是 depth=2 的可执行边界。对象中的 design_id、parent_design_id、
   module_id、requirement_ids 和 interface_id 必须保持原样传递，不能改名或用自然语言替代。
+- Blueprint 的每个 module 必须显式给出 ``purpose``（该模块为用户/业务提供的价值）和
+  ``depends_on_modules``（只引用 Blueprint 中已存在的 module_id）。ModuleDesign 必须继续
+  传递同一业务目的和模块依赖；不要把业务目的、技术职责和文件实现混成一个字段。
 - ``ImplementationDesign`` 中必须严格区分 ``provided_interfaces`` 和 ``consumed_interfaces``：
   前者只能声明本模块拥有的接口，并填写 owner_unit/owner_file/signature；后者只能引用其他模块
   已声明的 interface_id，不得填写 owner 字段，也不得创造新的接口定义。不要使用旧的混合

@@ -380,6 +380,7 @@ def apply_patch(
                 requirement_ids=item.requirement_ids,
                 delivery_contract=item.delivery_contract,
                 output_kind=item.output_kind,
+                stage_id=item.stage_id,
                 contract_digest=item.contract_digest,
             )
         )

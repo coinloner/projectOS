@@ -73,3 +73,20 @@
 - Wave 3 Integration 按真实 ChangeSet 阻塞：API 分区引用了应用层和基础设施层尚未实际落盘的模块。
 - 该结果是有效质量门证据，不是环境故障，也没有生成伪造的 tests/review 产物。下一步应对
   application/infrastructure 分区执行局部修复，再恢复 Integration。
+
+# 2026-09-02
+
+- 第二阶段架构重构：流程阶段仍由 `ProcessDefinition` 固定，Blueprint 的模块 `purpose` 和
+  `depends_on_modules` 成为业务语义事实；控制面新增 `DynamicPlanBuilder`，在 Blueprint
+  完成后动态生成 depth=1 ModuleDesign WorkItem，按依赖计算并行 wave，并持久化扩展 provenance。
+- Planner 草案新增可选 `stage_id`。它只表达流程语义，执行模式、slot、发布目标和输出类型仍由
+  `PlanValidator` 硬编码编译，避免模型借字段注入权限。旧模板和旧 Trace 保持可恢复。
+- 第三阶段架构重构：ModuleDesign 全部完成后，`DynamicPlanBuilder.expand_implementations()`
+  按模块一对一生成 depth=2 `ImplementationDesign` WorkItem。实现设计节点只依赖本模块的
+  ModuleDesign，直接依赖模块通过冻结 staged 引用传递，避免同级实现设计形成隐式顺序。
+- Runner 在完成检查前依次执行 Blueprint 扩展和 ImplementationDesign 扩展；架构集成节点会被
+  自动补齐实现设计依赖和输入引用，只有三层对象齐备后才能生成 ArchitectureDesignBundle。
+- 动态扩展 provenance 现在按 `kind` 保存不可覆盖的记录，同时保留最新扩展指针；checkpoint、
+  plan.json 和 Trace 事件都记录新增 WorkItem，Worker 重启后沿用同一份 DAG。
+- 第三阶段回归：控制面测试 `378 passed, 3 skipped`，`tests/test_dynamic_builder.py` 覆盖动态实现
+  节点、模块依赖和 Runner 三层最小闭环；`compileall` 通过。

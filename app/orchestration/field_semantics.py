@@ -65,6 +65,10 @@ _COMMON_FIELDS: dict[str, SemanticFieldSpec] = {
         "本 WorkItem 必须完成的单一职责", "WorkItem", "当前 Agent", True,
         ("不得扩展为其他节点职责",),
     ),
+    "stage_id": SemanticFieldSpec(
+        "流程中的生命周期阶段角色；不包含执行权限", "ProcessDefinition/WorkItem", "当前 Agent/GraphRunner", False,
+        ("只能使用已注册阶段；执行模式和授权由控制面编译",),
+    ),
     "dependencies": SemanticFieldSpec(
         "执行顺序上的前置 WorkItem 摘要；值只能是 work_item_id", "ExecutionPlan", "调度器", False,
         ("不得填写 interface_id 或文件路径",),
@@ -125,6 +129,20 @@ def compile_node_contract(state: Any, item: Any) -> NodeExecutionContract:
     agent_id = str(getattr(item, "agent_id", ""))
     if agent_id == "architecture_agent":
         fields.update({
+            "purpose": SemanticFieldSpec(
+                "模块为用户或业务提供的明确价值及边界",
+                "ArchitectureBlueprint/ModuleDesign",
+                "ArchitectureAgent/Planner",
+                False,
+                ("必须区别于技术职责；不能凭空增加需求",),
+            ),
+            "depends_on_modules": SemanticFieldSpec(
+                "模块之间的业务依赖；值只能是 Blueprint 中已声明的 module_id",
+                "ArchitectureBlueprint",
+                "DynamicPlanBuilder/ArchitectureIntegration",
+                False,
+                ("不得填写 work_item_id、interface_id 或文件路径；依赖图必须无环",),
+            ),
             "layers": SemanticFieldSpec(
                 "系统分层及每层允许/禁止依赖", "Architecture Contract", "Policy/ContractCompiler", True,
                 ("层名必须稳定且依赖图无环",),

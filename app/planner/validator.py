@@ -11,6 +11,8 @@ from app.planner.errors import PlanValidationError
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.trace import TraceContext
 from app.orchestration.work_item import WorkItem
+from app.artifact.repository import ArtifactRef
+from app.execution_context import ExecutionMode
 from app.workflow.compiler import TemplateCompiler
 from app.process import default_process_registry
 
@@ -49,6 +51,8 @@ class PlanValidator:
         process = default_process_registry().get(process_id)
         if process is None:
             raise PlanValidationError(f"计划引用未知流程: '{process_id}'")
+
+        self._validate_stage_declarations(draft, process)
 
         # 空项目的实现/验证/审查不能绕过需求、架构和任务基线。
         # 这些节点包含受控产物发布权限，必须通过完整交付模板编译。
@@ -138,6 +142,19 @@ class PlanValidator:
                     )
                 ),
                 non_goals=tuple(step.non_goals),
+                stage_id=step.stage_id,
+                execution_mode=self._stage_execution_mode(step.stage_id),
+                slot=("blueprint" if step.stage_id == "architecture_blueprint" else None),
+                publish_target=(
+                    "architecture" if step.stage_id == "architecture_integration" else
+                    "architecture_contract" if step.stage_id == "contract" else None
+                ),
+                output_kind=self._stage_output_kind(step.stage_id),
+                input_refs=(
+                    (ArtifactRef.published("requirement"),)
+                    if step.stage_id == "architecture_blueprint"
+                    else ()
+                ),
             )
             for index, step in enumerate(draft.steps, 1)
         )
@@ -173,6 +190,10 @@ class PlanValidator:
             context.workspace.implementation_file_count == 0
             and asks_for_verification
             and bool(missing_baseline)
+            # A dynamic architecture plan intentionally starts from a single
+            # Blueprint stage; the control plane will add module stages after
+            # that object is validated instead of forcing a fixed template.
+            and not any(step.stage_id == "architecture_blueprint" for step in draft.steps)
             and (
                 context.template_source("project_delivery") is not None
                 or context.template_source("project_delivery_layered") is not None
@@ -206,6 +227,42 @@ class PlanValidator:
         if not is_repeated:
             return base_key
         return f"{base_key}_{index:02d}"
+
+    @staticmethod
+    def _validate_stage_declarations(draft: PlanDraft, process) -> None:
+        for step in draft.steps:
+            if not step.stage_id:
+                continue
+            stage = process.stage(step.stage_id)
+            if stage is None:
+                raise PlanValidationError(
+                    f"步骤 '{step.ref}' 引用了未知流程阶段: {step.stage_id}"
+                )
+            if stage.agent_id != step.agent_id:
+                raise PlanValidationError(
+                    f"步骤 '{step.ref}' 的 agent_id={step.agent_id} 与阶段 "
+                    f"{step.stage_id} 要求的 {stage.agent_id} 不一致"
+                )
+            if step.stage_id in {"architecture_module", "architecture_implementation"}:
+                raise PlanValidationError(
+                    f"{step.stage_id} 由 Blueprint 动态生成，Planner 不得预先枚举节点"
+                )
+
+    @staticmethod
+    def _stage_execution_mode(stage_id: str | None) -> ExecutionMode:
+        if stage_id in {"architecture_blueprint"}:
+            return ExecutionMode.PARTITIONED
+        if stage_id in {"architecture_integration", "contract"}:
+            return ExecutionMode.INTEGRATION
+        return ExecutionMode.EXCLUSIVE
+
+    @staticmethod
+    def _stage_output_kind(stage_id: str | None) -> str | None:
+        return {
+            "architecture_blueprint": "ArchitectureBlueprint",
+            "architecture_integration": "ArchitectureDesignBundle",
+            "contract": "ImplementationContract",
+        }.get(stage_id)
 
     @staticmethod
     def _validate_unique(values: list[str], message: str) -> None:

@@ -42,7 +42,40 @@ class LayerDecision(_DesignModel):
 class ModuleRef(_DesignModel):
     module_id: str = Field(min_length=1, max_length=128)
     responsibility: str = Field(min_length=1, max_length=500)
+    # Business intent is kept separate from implementation responsibilities so
+    # dynamic planning can preserve the value boundary of each module.
+    purpose: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="模块为用户或业务提供的价值及边界，不是技术职责列表",
+    )
+    depends_on_modules: list[str] = Field(
+        default_factory=list,
+        max_length=64,
+        description="只引用 Blueprint 中已声明的 module_id",
+    )
     requirement_ids: list[str] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_dependencies(cls, value: object) -> object:
+        if not isinstance(value, dict) or "dependencies" not in value:
+            return value
+        data = dict(value)
+        if "depends_on_modules" not in data:
+            data["depends_on_modules"] = data.get("dependencies") or []
+        data.pop("dependencies", None)
+        return data
+
+    @model_validator(mode="after")
+    def normalize_business_purpose(self) -> "ModuleRef":
+        if not self.purpose:
+            object.__setattr__(self, "purpose", self.responsibility)
+        if self.module_id in self.depends_on_modules:
+            raise ValueError("ModuleRef 不能依赖自身")
+        if len(set(self.depends_on_modules)) != len(self.depends_on_modules):
+            raise ValueError("ModuleRef.depends_on_modules 不能重复")
+        return self
 
 
 class InterfaceRef(_DesignModel):
@@ -85,13 +118,33 @@ class ModuleDesign(_DesignModel):
     depth: Literal[1] = 1
     parent_design_id: str = Field(min_length=1, max_length=128)
     module_id: str = Field(min_length=1, max_length=128)
+    purpose: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="必须保留对应 Blueprint 模块的业务目的",
+    )
     responsibilities: list[str] = Field(min_length=1, max_length=64)
     provided_interfaces: list[InterfaceRef] = Field(default_factory=list, max_length=64)
     consumed_interfaces: list[InterfaceRef] = Field(default_factory=list, max_length=64)
     entities: list[str] = Field(default_factory=list, max_length=64)
-    dependencies: list[str] = Field(default_factory=list, max_length=64)
+    depends_on_modules: list[str] = Field(
+        default_factory=list,
+        max_length=64,
+        description="与 Blueprint 模块依赖保持一致",
+    )
     acceptance_criteria: list[str] = Field(default_factory=list, max_length=64)
     requirement_ids: list[str] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_fields(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "depends_on_modules" not in data and "dependencies" in data:
+            data["depends_on_modules"] = data.get("dependencies") or []
+        data.pop("dependencies", None)
+        return data
 
     @model_validator(mode="after")
     def validate_interface_directions(self) -> "ModuleDesign":
@@ -99,6 +152,10 @@ class ModuleDesign(_DesignModel):
             raise ValueError("provided_interfaces 中的 direction 必须为 provided")
         if any(item.direction != "consumed" for item in self.consumed_interfaces):
             raise ValueError("consumed_interfaces 中的 direction 必须为 consumed")
+        if self.module_id in self.depends_on_modules:
+            raise ValueError("ModuleDesign 不能依赖自身")
+        if len(set(self.depends_on_modules)) != len(self.depends_on_modules):
+            raise ValueError("ModuleDesign.depends_on_modules 不能重复")
         return self
 
 
@@ -188,7 +245,42 @@ class ArchitectureDesignBundle(_DesignModel):
                 raise ValueError(f"模块设计 {design.module_id} 不在总体蓝图模块清单中")
             if design.module_id in modules_by_id:
                 raise ValueError(f"模块 {design.module_id} 存在多个模块设计")
+            blueprint_ref = next(
+                item for item in self.blueprint.modules if item.module_id == design.module_id
+            )
+            if design.purpose is not None and design.purpose != blueprint_ref.purpose:
+                raise ValueError(
+                    f"模块设计 {design.module_id} 的 purpose 必须与 Blueprint 一致"
+                )
+            if set(design.depends_on_modules) != set(blueprint_ref.depends_on_modules):
+                raise ValueError(
+                    f"模块设计 {design.module_id} 的 depends_on_modules 必须与 Blueprint 一致"
+                )
             modules_by_id[design.module_id] = design
+
+        # Resolve business-level module dependencies before accepting any
+        # lower-level implementation objects.  The dependency graph is owned
+        # by the Blueprint; ModuleDesign only refines its target module.
+        module_refs_by_id = {item.module_id: item for item in self.blueprint.modules}
+        module_edges = {
+            module_id: set(module_ref.depends_on_modules)
+            for module_id, module_ref in module_refs_by_id.items()
+        }
+        for module_id, dependencies in module_edges.items():
+            unknown = sorted(dependencies - set(module_refs_by_id))
+            if unknown:
+                raise ValueError(
+                    f"模块 {module_id} 依赖不存在的模块: {', '.join(unknown)}"
+                )
+        pending = {key: set(value) for key, value in module_edges.items()}
+        resolved: set[str] = set()
+        while pending:
+            ready = {key for key, value in pending.items() if value <= resolved}
+            if not ready:
+                raise ValueError("ArchitectureBlueprint 模块依赖存在循环")
+            resolved.update(ready)
+            for key in ready:
+                pending.pop(key)
 
         interface_ids: set[str] = set()
         for design in self.implementations:

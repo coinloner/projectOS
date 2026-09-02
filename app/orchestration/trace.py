@@ -110,6 +110,7 @@ class TraceStore:
                         "objective": item.objective,
                         "output_key": item.output_key,
                         "artifact_key": item.artifact_key,
+                        "stage_id": item.stage_id,
                         "execution_mode": item.execution_mode.value,
                         "input_refs": [
                             {
@@ -175,6 +176,40 @@ class TraceStore:
         DeliveryStore(self.project_path).bind_plan(plan)
         for item in plan.work_items:
             self.record_event(plan.trace, item.id, "work_item_planned")
+
+    def record_plan_expansion(self, expansion: dict[str, object]) -> None:
+        """Persist dynamic-plan provenance independently from the active plan.
+
+        A dynamic delivery can expand the same plan more than once (Blueprint
+        -> modules -> implementations).  Keep the historical ``<plan_id>.json``
+        pointer as the latest expansion for existing readers, while also
+        writing a kind-specific immutable record so the earlier expansion is
+        not overwritten by the next phase.
+        """
+        trace_id = str(expansion.get("trace_id", ""))
+        plan_id = str(expansion.get("plan_id", ""))
+        self._validate_trace_id(trace_id)
+        if not plan_id or "/" in plan_id or "\\" in plan_id:
+            raise ValueError("动态计划扩展缺少合法 plan_id")
+        payload = dict(expansion)
+        payload.setdefault("schema_version", 1)
+        payload["trace_id"] = trace_id
+        payload["plan_id"] = plan_id
+        expansions_dir = self._trace_root(trace_id) / "expansions"
+        self._write_json(expansions_dir / f"{plan_id}.json", payload)
+        kind = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(payload.get("kind", "expansion"))).strip("-_.")
+        if kind:
+            self._write_json(expansions_dir / f"{plan_id}.{kind}.json", payload)
+
+    def load_plan_expansion(self, trace_id: str, plan_id: str) -> dict[str, object]:
+        """Read one dynamic expansion record for audit and recovery tooling."""
+        self._validate_trace_id(trace_id)
+        if not plan_id or "/" in plan_id or "\\" in plan_id:
+            raise ValueError("plan_id 格式无效")
+        path = self._trace_root(trace_id) / "expansions" / f"{plan_id}.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"计划扩展记录不存在: {plan_id}")
+        return self._read_json(path)
 
     def set_llm_selection(self, trace_id: str, selection: LLMSelection) -> None:
         """将本轮模型选择写入 Trace，供隔离 Worker 和恢复流程使用。"""
@@ -453,6 +488,7 @@ class TraceStore:
                         if raw.get("artifact_key")
                         else None
                     ),
+                    stage_id=(str(raw["stage_id"]) if raw.get("stage_id") else None),
                     failure_package=failure_package,
                     dependencies=dependencies,
                     acceptance_criteria=tuple(

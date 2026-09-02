@@ -17,6 +17,7 @@ class TaskBlueprint:
     agent_id: str
     objective: str
     output_key: str
+    stage_id: str | None = None
     depends_on: tuple[str, ...] = ()
     execution_mode: ExecutionMode = ExecutionMode.EXCLUSIVE
     artifact_key: str | None = None
@@ -41,7 +42,7 @@ class TaskBlueprint:
             value = getattr(self, field_name)
             if not value or not value.strip():
                 raise ValueError(f"TaskBlueprint.{field_name} 不能为空")
-        for field_name in ("artifact_key", "slot", "publish_target", "candidate_from"):
+        for field_name in ("artifact_key", "slot", "publish_target", "candidate_from", "stage_id"):
             value = getattr(self, field_name)
             if value is not None and not value.strip():
                 raise ValueError(f"TaskBlueprint.{field_name} 不能是空字符串")

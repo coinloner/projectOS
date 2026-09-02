@@ -31,7 +31,13 @@ ProjectOS 的对象按边界分层，禁止用同一个 `status` 或 `content` �
   符号是协作边界（`provided_symbols`/`required_symbols`），Wave 是依赖边界；这些字段不能互相替代。
 - `CapabilityRequest.capability` 必须是单一 canonical id。多项工具名会在 Agent 边界规范化为能力集合语义（例如 `environment_preparation`），不能拼成待审批来源名。
 - 架构对象的 `depth` 只允许 `0/1/2`。`ArchitectureBlueprint.design_id` 是 L0 的根；`ModuleDesign.parent_design_id` 必须指向该根；`ImplementationDesign.parent_design_id` 必须指向对应模块设计。`module_id`、`interface_id`、`requirement_ids` 在层间传递时保持同名同义。
-- `ArchitectureDesignBundle` 是 Integration 的唯一输入组合。Integration 通过后才生成 Markdown 候选；后续 `ProjectContract` 和 `TaskInputPackage` 只能从组合后的事实编译，不读取某个模块的自然语言猜测。
+- Blueprint 模块的 `purpose` 表示业务价值边界，`responsibility` 表示技术职责，
+  `depends_on_modules` 表示模块级 DAG 依赖。第二阶段由 `DynamicPlanBuilder` 将后者编译成
+  `architecture_module` WorkItem；模块数量和并行 wave 不再写死在模板中。
+- `ArchitectureDesignBundle` 是 Integration 的唯一输入组合。动态线路会在全部
+  `ImplementationDesign` 完成后才允许集成；Integration 通过后才生成 Markdown 候选，
+  后续 `ProjectContract` 和 `TaskInputPackage` 只能从组合后的事实编译，不读取某个模块的
+  自然语言猜测。
 
 ## LLM 终态协议
 

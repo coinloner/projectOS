@@ -24,6 +24,19 @@ ExecutionPlan
 | `SandboxEvidence` | Docker check 的状态、退出码、耗时和原始受限输出，绑定到 Trace 与 WorkItem |
 | `ProgressTracker` | 接收 LLM 流式、工具和节点事件，写入 Worker 最近进度快照，不保存模型正文 |
 
+架构动态线路由 `architecture_blueprint` WorkItem 触发控制面扩展：
+`DynamicPlanBuilder` 读取已校验的 Blueprint，为每个模块生成独立的
+`architecture_module` WorkItem。模块的业务 `purpose` 只作为任务语义传递，
+`depends_on_modules` 才会转换为 DAG 依赖；模块节点完成后扩展 provenance 会写入 Trace。
+
+当所有 `architecture_module` 节点完成后，Runner 再触发第二次动态扩展：
+`expand_implementations()` 为每个模块生成一个 `architecture_implementation` WorkItem。
+这些节点只依赖对应的 ModuleDesign，模块依赖通过输入引用传递，不把未完成的实现设计
+强行串成同级依赖。架构集成节点会被控制面补齐实现设计依赖和引用，只有 Blueprint、
+ModuleDesign、ImplementationDesign 三层对象齐备后才允许生成 `ArchitectureDesignBundle`。
+每次扩展都记录 `kind`、父计划 revision、模块到 WorkItem 映射和 wave，断点恢复直接复用
+已持久化的 DAG。
+
 `ExecutionPlan` 同时记录 `process_id`（稳定的流程规则）和可选的 `template_id`（历史或兼容
 适配器）。流程规则不等同于某个项目的节点数量；后续动态计划编译会在流程约束下生成项目专属 DAG。
 

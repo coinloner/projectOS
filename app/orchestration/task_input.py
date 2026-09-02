@@ -139,12 +139,14 @@ class TaskInputPackage:
     semantic_contract: NodeExecutionContract | None = None
     contract_digest: str | None = None
     schema_version: int = 1
+    stage_id: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "trace_id": self.trace_id,
             "work_item_id": self.work_item_id,
             "agent_id": self.agent_id,
+            "stage_id": self.stage_id,
             "goal": self.goal,
             "objective": self.objective,
             "execution_mode": self.execution_mode,
@@ -342,6 +344,7 @@ def build_task_input(
         trace_id=state.plan.trace.trace_id,
         work_item_id=item.id,
         agent_id=item.agent_id,
+        stage_id=item.stage_id,
         goal=state.plan.goal,
         objective=item.objective,
         execution_mode=item.execution_mode.value,

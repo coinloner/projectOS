@@ -117,7 +117,11 @@ def _architecture_tool_allowlist(item: WorkItem) -> tuple[str, ...]:
     # contract is enforced for both compiled and hand-built plans.
     if (
         item.execution_mode is ExecutionMode.INTEGRATION
-        and item.id.endswith("architecture-layered-integration")
+        and (
+            item.stage_id == "architecture_integration"
+            or item.id.endswith("architecture-layered-integration")
+            or item.publish_target == "architecture"
+        )
     ):
         return ("load_architecture_input", "integrate_architecture_designs")
     return ()
@@ -137,7 +141,11 @@ def _expected_architecture_tool(item: WorkItem) -> str | None:
             return "write_implementation_design"
     if (
         item.execution_mode is ExecutionMode.INTEGRATION
-        and item.id.endswith("architecture-layered-integration")
+        and (
+            item.stage_id == "architecture_integration"
+            or item.id.endswith("architecture-layered-integration")
+            or item.publish_target == "architecture"
+        )
     ):
         return "integrate_architecture_designs"
     return None
@@ -489,8 +497,31 @@ class GraphRunner:
                 ))
                 self._record_checkpoint(state)
 
-        while not state.is_complete():
+        # Expansion must run before the completion check: a Blueprint can be
+        # the only node in the initial plan, yet it is precisely its completed
+        # artifact that creates the next module wave.
+        while True:
+            architecture_error = self._expand_architecture_modules_if_ready(state)
+            if architecture_error is not None:
+                result = GraphRunResult(
+                    status=GraphRunStatus.FAILED,
+                    state=state,
+                    error=architecture_error,
+                )
+                self._finish_trace(state.plan, result)
+                return result
+            architecture_error = self._expand_architecture_implementations_if_ready(state)
+            if architecture_error is not None:
+                result = GraphRunResult(
+                    status=GraphRunStatus.FAILED,
+                    state=state,
+                    error=architecture_error,
+                )
+                self._finish_trace(state.plan, result)
+                return result
             self._expand_implementation_plan_if_ready(state)
+            if state.is_complete():
+                break
             # Expansion keeps the trace/plan id stable but replaces the DAG.
             plan = state.plan
             ready_items = state.ready_items()
@@ -656,6 +687,251 @@ class GraphRunner:
                         )
         self._finish_trace(plan, graph_result)
         return graph_result
+
+    def _expand_architecture_modules_if_ready(self, state: RunState) -> str | None:
+        """在 Blueprint 完成后按真实模块清单扩展 depth=1 节点。
+
+        固定分层模板已经包含模块节点，因此只对带有
+        ``stage_id=architecture_blueprint`` 且尚未扩展的动态计划生效。
+        """
+        if self._traces is None:
+            return None
+        plan = state.plan
+        blueprint_item = next(
+            (
+                item
+                for item in plan.work_items
+                if item.stage_id == "architecture_blueprint"
+                or (
+                    item.agent_id == "architecture_agent"
+                    and item.slot == "blueprint"
+                    and item.output_kind == "ArchitectureBlueprint"
+                )
+            ),
+            None,
+        )
+        if blueprint_item is None:
+            return None
+        if any(
+            item.stage_id == "architecture_module"
+            or (item.slot or "").startswith("module-")
+            for item in plan.work_items
+        ):
+            return None
+        result = state.node_results.get(blueprint_item.id)
+        if result is None or result.status is not NodeStatus.COMPLETED:
+            return None
+        from app.artifact.repository import ArtifactRef, ArtifactRepository
+        from app.domain.architecture.design_contract import parse_design, ArchitectureBlueprint
+        from app.planner.dynamic_builder import BlueprintValidationError, DynamicPlanBuilder
+
+        ref = ArtifactRef.staged(
+            artifact_key=blueprint_item.artifact_key or "architecture",
+            trace_id=plan.trace.trace_id,
+            work_item_id=blueprint_item.id,
+            slot=blueprint_item.slot or "blueprint",
+        )
+        parent_plan_revision: int | None = None
+        try:
+            baseline = self._traces.load_plan_baseline(plan.trace.trace_id)
+            if baseline:
+                parent_plan_revision = int(baseline.get("revision", 0))
+        except FileNotFoundError:
+            # In-memory/test callers may not create a baseline; expansion is
+            # still valid, only the optional provenance revision is omitted.
+            pass
+        try:
+            payload = ArtifactRepository(self._traces.project_path).load_ref(ref)
+            parsed = parse_design(payload)
+            if not isinstance(parsed, ArchitectureBlueprint):
+                raise BlueprintValidationError("Blueprint 暂存产物不是 depth=0 ArchitectureBlueprint")
+            integration = next(
+                (
+                    item
+                    for item in plan.work_items
+                    if item.stage_id == "architecture_integration"
+                    or (
+                        item.agent_id == "architecture_agent"
+                        and item.execution_mode is ExecutionMode.INTEGRATION
+                        and item.publish_target == "architecture"
+                    )
+                ),
+                None,
+            )
+            expansion = DynamicPlanBuilder().expand_modules(
+                plan,
+                parsed,
+                blueprint_work_item_id=blueprint_item.id,
+                integration_work_item_id=integration.id if integration is not None else None,
+                parent_plan_revision=parent_plan_revision,
+            )
+        except (BlueprintValidationError, FileNotFoundError, RuntimeError, TypeError, ValueError) as error:
+            self._traces.record_event(
+                plan.trace,
+                "control",
+                "architecture_module_expansion_failed",
+                details={"blueprint_work_item_id": blueprint_item.id, "error": str(error)},
+            )
+            return f"架构 Blueprint 无法扩展模块计划: {error}"
+
+        state.plan = expansion.plan
+        self._traces.record_plan(state.plan)
+        self._traces.record_plan_baseline(state.plan)
+        self._traces.record_plan_expansion(expansion.as_dict())
+        self._traces.record_event(
+            state.plan.trace,
+            "control",
+            "architecture_modules_expanded",
+            details=expansion.as_dict(),
+        )
+        self._record_checkpoint(state)
+        return None
+
+    def _expand_architecture_implementations_if_ready(self, state: RunState) -> str | None:
+        """在所有 ModuleDesign 完成后动态生成 depth=2 实现设计节点。"""
+        if self._traces is None:
+            return None
+        plan = state.plan
+        blueprint_item = next(
+            (
+                item
+                for item in plan.work_items
+                if item.stage_id == "architecture_blueprint"
+                or (
+                    item.agent_id == "architecture_agent"
+                    and item.slot == "blueprint"
+                    and item.output_kind == "ArchitectureBlueprint"
+                )
+            ),
+            None,
+        )
+        module_items = tuple(
+            item
+            for item in plan.work_items
+            if item.agent_id == "architecture_agent"
+            and item.stage_id == "architecture_module"
+        )
+        if blueprint_item is None or not module_items:
+            return None
+        # A blueprint-only architecture probe is intentionally allowed to stop
+        # after ModuleDesign.  Full dynamic delivery always supplies the
+        # architecture integration anchor; without it there is no consumer for
+        # depth=2 objects, so preserve the lightweight probe semantics.
+        integration = next(
+            (
+                item
+                for item in plan.work_items
+                if item.stage_id == "architecture_integration"
+                or (
+                    item.agent_id == "architecture_agent"
+                    and item.execution_mode is ExecutionMode.INTEGRATION
+                    and item.publish_target == "architecture"
+                )
+            ),
+            None,
+        )
+        if integration is None:
+            return None
+        # Static layered templates already contain implementation nodes.  Only
+        # dynamic plans (where the current DAG has no implementation stage)
+        # enter this expansion path.
+        if any(
+            item.stage_id == "architecture_implementation"
+            or (item.slot or "").startswith("implementation-")
+            for item in plan.work_items
+        ):
+            return None
+        if any(
+            state.node_results.get(item.id) is None
+            or state.node_results[item.id].status is not NodeStatus.COMPLETED
+            for item in module_items
+        ):
+            return None
+
+        blueprint_result = state.node_results.get(blueprint_item.id)
+        if blueprint_result is None or blueprint_result.status is not NodeStatus.COMPLETED:
+            return None
+
+        from app.artifact.repository import ArtifactRef, ArtifactRepository
+        from app.domain.architecture.design_contract import (
+            ArchitectureBlueprint,
+            ModuleDesign,
+            parse_design,
+        )
+        from app.planner.dynamic_builder import (
+            BlueprintValidationError,
+            DynamicPlanBuilder,
+        )
+
+        repository = ArtifactRepository(self._traces.project_path)
+        blueprint_ref = ArtifactRef.staged(
+            artifact_key=blueprint_item.artifact_key or "architecture",
+            trace_id=plan.trace.trace_id,
+            work_item_id=blueprint_item.id,
+            slot=blueprint_item.slot or "blueprint",
+        )
+        parent_plan_revision: int | None = None
+        try:
+            baseline = self._traces.load_plan_baseline(plan.trace.trace_id)
+            if baseline:
+                parent_plan_revision = int(baseline.get("revision", 0))
+        except FileNotFoundError:
+            pass
+
+        try:
+            blueprint = parse_design(repository.load_ref(blueprint_ref))
+            if not isinstance(blueprint, ArchitectureBlueprint):
+                raise BlueprintValidationError("Blueprint 暂存产物不是 depth=0 ArchitectureBlueprint")
+            module_designs: list[ModuleDesign] = []
+            module_work_item_ids: dict[str, str] = {}
+            for item in module_items:
+                ref = ArtifactRef.staged(
+                    artifact_key=item.artifact_key or "architecture",
+                    trace_id=plan.trace.trace_id,
+                    work_item_id=item.id,
+                    slot=item.slot or "",
+                )
+                design = parse_design(repository.load_ref(ref))
+                if not isinstance(design, ModuleDesign):
+                    raise BlueprintValidationError(
+                        f"模块 WorkItem {item.id} 暂存产物不是 depth=1 ModuleDesign"
+                    )
+                module_designs.append(design)
+                module_work_item_ids[design.module_id] = item.id
+            expansion = DynamicPlanBuilder().expand_implementations(
+                plan,
+                blueprint,
+                module_designs,
+                blueprint_work_item_id=blueprint_item.id,
+                module_work_item_ids=module_work_item_ids,
+                integration_work_item_id=integration.id,
+                parent_plan_revision=parent_plan_revision,
+            )
+        except (BlueprintValidationError, FileNotFoundError, RuntimeError, TypeError, ValueError) as error:
+            self._traces.record_event(
+                plan.trace,
+                "control",
+                "architecture_implementation_expansion_failed",
+                details={
+                    "blueprint_work_item_id": blueprint_item.id,
+                    "module_work_item_ids": [item.id for item in module_items],
+                    "error": str(error),
+                },
+            )
+            return f"架构 ModuleDesign 无法扩展实现设计计划: {error}"
+
+        state.plan = expansion.plan
+        self._traces.record_plan(state.plan)
+        self._traces.record_plan_baseline(state.plan)
+        self._traces.record_plan_expansion(expansion.as_dict())
+        self._traces.record_event(
+            state.plan.trace,
+            "control",
+            "architecture_implementations_expanded",
+            details=expansion.as_dict(),
+        )
+        self._record_checkpoint(state)
+        return None
 
     def _integrate_ready_waves(self, state: RunState) -> str | None:
         """在进入下一实现 Wave 前发布已完成 Wave 的代码 ChangeSet。"""

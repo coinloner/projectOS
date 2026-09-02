@@ -68,6 +68,11 @@ class WorkItem:
     # are deliberately excluded so a repair can attach new evidence without
     # changing the authorization envelope.
     output_kind: str | None = None
+    # Optional process-stage identity.  Unlike ``agent_id`` this identifies
+    # the lifecycle role (for example architecture_blueprint) and lets the
+    # control plane safely expand project-specific stages without asking the
+    # model to provide execution permissions.
+    stage_id: str | None = None
     contract_digest: str | None = None
 
     def __post_init__(self) -> None:
@@ -79,7 +84,7 @@ class WorkItem:
             object.__setattr__(self, "artifact_key", self.output_key)
         elif not self.artifact_key.strip():
             raise ValueError("WorkItem.artifact_key 不能为空")
-        for field_name in ("implementation_unit_id",):
+        for field_name in ("implementation_unit_id", "stage_id"):
             value = getattr(self, field_name)
             if value is not None and not value.strip():
                 raise ValueError(f"WorkItem.{field_name} 不能是空字符串")
@@ -195,6 +200,10 @@ class WorkItem:
             "delivery_contract": self.delivery_contract,
             "output_kind": self.output_kind,
         }
+        # Historical plans without a process-stage identity retain their
+        # original contract digest; dynamic stages opt into this extra field.
+        if self.stage_id is not None:
+            payload["stage_id"] = self.stage_id
         return hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
@@ -205,6 +214,7 @@ class WorkItem:
         return {
             "contract_digest": self.contract_digest,
             "agent_id": self.agent_id,
+            "stage_id": self.stage_id,
             "execution_mode": self.execution_mode.value,
             "output_kind": self.output_kind,
             "input_refs": [ref.ref_id for ref in self.input_refs],

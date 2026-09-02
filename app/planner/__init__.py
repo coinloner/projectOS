@@ -4,6 +4,13 @@ from app.planner.errors import PlanValidationError
 from app.planner.planner import CrewAIPlannerRuntime, PlannerRuntime
 from app.planner.service import PlannerFailure, PlannerResult, RepairPlannerResult, PlannerService
 from app.planner.validator import PlanValidator
+from app.planner.dynamic_builder import (
+    BlueprintExpansion,
+    BlueprintValidationError,
+    BlueprintValidator,
+    DynamicPlanBuilder,
+    ImplementationExpansion,
+)
 from app.planner.evaluation import (
     PlannerEvaluationReport,
     PlannerEvaluator,
@@ -35,6 +42,11 @@ __all__ = [
     "PlannedStep",
     "PlanValidationError",
     "PlanValidator",
+    "BlueprintExpansion",
+    "BlueprintValidationError",
+    "BlueprintValidator",
+    "DynamicPlanBuilder",
+    "ImplementationExpansion",
     "PlannerEvaluationReport",
     "PlannerEvaluator",
     "PlannerScenario",

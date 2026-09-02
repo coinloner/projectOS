@@ -15,6 +15,19 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 - Trace 级 Memory 已记录目标、Planner/Agent/Tool 事件和 checkpoint；SQLite/FTS5、可选向量混合召回、运行摘要、预算化上下文组装以及 durable candidate 审批控制面已接入。
 - MCP、动态依赖解析和运行恢复都不会由 Agent 自动触发。
 
+## 动态架构线路进度
+
+- 第二阶段已完成：Planner 可声明 `architecture_blueprint` 语义阶段，控制面校验并执行 Blueprint，
+  再由 `DynamicPlanBuilder` 按 Blueprint 的业务 `purpose`、`depends_on_modules` 动态生成
+  ModuleDesign WorkItem 和执行 wave。旧模板仍作为兼容适配器。
+- 第三阶段已完成：所有 ModuleDesign 完成后，控制面按真实模块清单动态生成
+  depth=2 ImplementationDesign WorkItem；每个实现设计只依赖自己的 ModuleDesign，架构集成节点
+  等待全部实现设计后再组装 `ArchitectureDesignBundle`。扩展过程写入独立 provenance，恢复时复用
+  同一份动态 DAG，不会重新询问模型决定节点数量。
+- 现有 `ImplementationContractCompiler` 已能将集成后的 ImplementationDesign 确定性编译为
+  文件级 CodeAgent WorkItem；下一阶段将把这条编译结果直接接入动态 Planner 的任务、环境、
+  代码、测试和审查链路，并对实现设计中的 unit、接口 ownership 和文件 wave 做更细的项目级质量评测。
+
 ## MVP 闭环：下一阶段
 
 目标：让系统能依据真实测试结果完成有限次数的修复、再验证，并在固定计划中可靠恢复。

@@ -36,6 +36,14 @@
 - Architecture 实现设计中的 `provided_interfaces` 是本模块定义并拥有的接口声明，
   `consumed_interfaces` 是对外部接口的引用，不能再放入同一个 `interfaces` 数组。
   前者必须声明 owner，后者不得声明 owner；Integration 根据两组内容生成最终绑定关系。
+- Blueprint 的 `purpose` 是模块的业务价值边界，`responsibility` 是技术职责摘要，
+  `depends_on_modules` 是模块级依赖。三者不互换：动态计划只用
+  `depends_on_modules` 生成 WorkItem 依赖，ModuleDesign 必须原样传递 `purpose`。
+
+- `implementation_units` 只在 depth=2 `ImplementationDesign` 中出现，是文件级实现边界；
+  `provided_interfaces` 是本模块拥有的接口定义，`consumed_interfaces` 只能引用其他设计已
+  声明的接口。动态实现扩展不会把这些字段交给 Blueprint 或 ModuleDesign 猜测，而是将模块
+  级语义和冻结引用交给对应的实现设计节点，最终由 Integration 统一校验。
 - `allowed_paths`（授权范围）、`required_paths`（必须产出）和 `owned_files`（文件所有权）
   语义不同，不能互相替代。
 - `dependencies` 是真实 DAG 依赖；`dependency_ids` 只能是派生属性；

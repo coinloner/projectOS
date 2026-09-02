@@ -90,6 +90,7 @@ output key、文件路径或 Python 代码。
     {
       "ref": "该步骤在本次计划内唯一的临时标识",
       "agent_id": "已提供的 Agent id",
+      "stage_id": "可选的 processes.stages 中阶段 id；需要动态架构时使用 architecture_blueprint",
       "objective": "该 Agent 本次应完成的具体目标",
       "depends_on": ["同一 steps 内前置步骤的 ref"],
       "acceptance_criteria": ["可选的、可检查的完成标准"],
@@ -104,6 +105,8 @@ output key、文件路径或 Python 代码。
 
 规则：
 0. process_id 只选择流程规则，不代表具体项目模块或节点数量；不要根据 process_id 自行生成模块、文件或权限。
+   若项目结构必须由 Blueprint 决定，只选择 ``architecture_blueprint`` 阶段；不要预先枚举
+   ``architecture_module`` 节点。控制面会在 Blueprint 通过校验后动态生成模块任务。
 1. 同一 Agent 可以出现多次，但每个 ref 必须唯一，并且每次 objective 都必须是可独立验收的窄任务。
 2. depends_on 只能引用同一计划中已选择的其他步骤 ref。
 3. 已存在的 artifact 通常表示对应文档工作可跳过；但空项目若目标同时要求实现、测试或交付审查，

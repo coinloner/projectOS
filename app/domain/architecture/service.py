@@ -306,6 +306,15 @@ class ArchitectureArtifactWorkflow:
         implementations = [item.model_copy(update={"module_id": canonical(item.module_id)}) for item in implementations]
         implementations = _dedupe_interface_declarations(implementations)
         implementations = _normalize_interface_dependencies(implementations)
+        from app.process import default_process_registry
+        process = default_process_registry().get("software_delivery")
+        if process is not None:
+            unit_count = sum(len(item.implementation_units) for item in implementations)
+            if unit_count > process.limits.max_implementation_units:
+                raise ValueError(
+                    f"实现单元数量 {unit_count} 超过流程上限 "
+                    f"{process.limits.max_implementation_units}"
+                )
         return ArchitectureDesignBundle(
             schema_version=1,
             blueprint=blueprint,
@@ -552,15 +561,19 @@ def _render_design_bundle(bundle: ArchitectureDesignBundle) -> str:
         lines.append(f"- {layer.name}: 允许依赖 {dependencies}")
     lines.extend(["", "## Modules"])
     for module in bundle.blueprint.modules:
-        lines.append(f"- {module.module_id}: {module.responsibility}")
+        lines.append(f"- {module.module_id}: {module.purpose or module.responsibility}")
+        if module.depends_on_modules:
+            lines.append("  依赖模块：" + "；".join(module.depends_on_modules))
     lines.extend(["", "## Module Decisions"])
     for design in bundle.modules:
         lines.append(f"### {design.module_id}")
+        if design.purpose:
+            lines.append("业务目的：" + design.purpose)
         lines.append("职责：" + "；".join(design.responsibilities))
         if design.entities:
             lines.append("实体：" + "；".join(design.entities))
-        if design.dependencies:
-            lines.append("依赖：" + "；".join(design.dependencies))
+        if design.depends_on_modules:
+            lines.append("依赖模块：" + "；".join(design.depends_on_modules))
     lines.extend(["", "## Interfaces"])
     for design in bundle.implementations:
         for interface in design.provided_interfaces:
