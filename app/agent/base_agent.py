@@ -157,11 +157,31 @@ class BaseAgent:
         # Execute only the known local tools that are currently exposed by the
         # Gateway; unauthorized or external tools are never inferred from text.
         _execute_serialized_local_tools(output_text, self._gateway, self._domain, context)
+        # Some OpenAI-compatible relays preserve the model's structured design
+        # payload but drop the native function-call envelope.  Layered
+        # architecture nodes have a single deterministic writer, so replay a
+        # bare, schema-valid object through that already-authorized tool.  This
+        # is intentionally narrower than the textual tool-call compatibility
+        # path: only architecture PARTITIONED slots are eligible, and ordinary
+        # JSON/natural-language output is left untouched.
+        _replay_structured_architecture_output(
+            output_text,
+            available_tools,
+            context=context,
+        )
         result = from_llm_content(output_text)
         if (
             result.capability_request is not None
             and result.capability_request.capability in visible_tool_names
         ):
+            # Controlled partition/integration nodes have a domain-specific
+            # recovery path in GraphRunner (architecture/code/test local
+            # tools must never become external capability grants).  Return
+            # the typed AgentResult there so that path can classify the
+            # request and issue the correct bounded retry.  Keep the legacy
+            # protocol exception for unscoped/direct Agent callers.
+            if context is not None and context.execution_mode.value != "exclusive":
+                return result
             request = result.capability_request
             protocol_result = ToolResult(
                 tool_name=request.capability,
@@ -176,6 +196,75 @@ class BaseAgent:
             )
             raise ToolExecutionError(protocol_result)
         return result
+
+
+def _replay_structured_architecture_output(
+    output: str,
+    available_tools: list[object],
+    *,
+    context: ExecutionContext | None,
+) -> str | None:
+    """Replay a bare architecture design object through its writer tool.
+
+    Providers occasionally return the JSON arguments they intended to pass to
+    a function without emitting a function-call message.  Treating that text
+    as a completed node loses the staged artifact.  The replay is a bounded
+    transport fallback, not a second planner: the WorkItem determines the
+    only expected writer and CrewAI's tool wrapper performs the same argument
+    validation and authorization as a native call.
+    """
+    if context is None or context.execution_mode.value != "partitioned":
+        return None
+    if context.agent_id != "architecture_agent" or context.slot is None:
+        return None
+    expected = (
+        "write_architecture_blueprint"
+        if context.slot == "blueprint"
+        else "write_module_design"
+        if context.slot.startswith("module-")
+        else "write_implementation_design"
+        if context.slot.startswith("implementation-")
+        else None
+    )
+    if expected is None:
+        return None
+
+    payload = _strict_json_object(output)
+    if payload is None or payload.get("type") == "capability_request":
+        return None
+    expected_depth = 0 if expected == "write_architecture_blueprint" else 1 if expected == "write_module_design" else 2
+    if payload.get("depth") != expected_depth:
+        return None
+
+    tool = next(
+        (candidate for candidate in available_tools if getattr(candidate, "name", None) == expected),
+        None,
+    )
+    if tool is None:
+        # The gateway did not expose the writer for this attempt.  Do not infer
+        # or call an unauthorized tool; Runner will classify the missing
+        # staged output and schedule its normal bounded retry.
+        return None
+    try:
+        return str(tool.run(design=payload))
+    except Exception:
+        # Preserve the tool's typed failure semantics for the Runner.  A
+        # malformed object must not be silently promoted to a completed node.
+        raise
+
+
+def _strict_json_object(output: str) -> dict[str, object] | None:
+    """Parse only a complete JSON object, accepting one fenced code block."""
+    candidate = output.strip()
+    if candidate.startswith("```") and candidate.endswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) >= 3:
+            candidate = "\n".join(lines[1:-1]).strip()
+    try:
+        payload = json.loads(candidate)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _execute_serialized_local_tools(
