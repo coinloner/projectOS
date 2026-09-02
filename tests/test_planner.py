@@ -136,6 +136,7 @@ class PlanningContextTest(unittest.TestCase):
         self.assertIn('"id": "planning_baseline"', prompt_json)
         self.assertIn('"implementation_file_count": 0', prompt_json)
         self.assertIn('"manifest_exists": false', prompt_json)
+        self.assertIn('"software_delivery"', prompt_json)
 
     def test_context_counts_real_workspace_implementation_files_not_tests(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
@@ -163,6 +164,32 @@ class PlanningContextTest(unittest.TestCase):
 
 
 class PlanValidatorTest(unittest.TestCase):
+    def test_validator_rejects_unknown_process(self) -> None:
+        draft = PlanDraft.model_validate(
+            {
+                "rationale": "x",
+                "process_id": "missing-process",
+                "steps": [
+                    {"ref": "requirement", "agent_id": "requirement_agent", "objective": "整理需求"}
+                ],
+            }
+        )
+        with self.assertRaises(PlanValidationError):
+            self.validator.validate(draft, context=self.context, plan_id="plan-process")
+
+    def test_plan_carries_process_id_even_for_legacy_template(self) -> None:
+        draft = PlanDraft.model_validate(
+            {
+                "rationale": "x",
+                "template_hint_id": "planning_baseline",
+                "steps": [
+                    {"ref": "requirement", "agent_id": "requirement_agent", "objective": "整理需求"}
+                ],
+            }
+        )
+        plan = self.validator.validate(draft, context=self.context, plan_id="plan-process")
+        self.assertEqual(plan.process_id, "software_delivery")
+
     def test_validator_allows_repeated_agent_with_distinct_work_item_results(self) -> None:
         draft = PlanDraft.parse(
             """{

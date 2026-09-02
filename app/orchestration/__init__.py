@@ -26,6 +26,12 @@ from app.orchestration.work_item import (
     WorkItem,
     WorkItemDependency,
 )
+from app.orchestration.field_semantics import (
+    NodeExecutionContract,
+    SemanticFieldSpec,
+    compile_node_contract,
+    validate_task_input_semantics,
+)
 
 __all__ = [
     "DependencySource",
@@ -51,4 +57,8 @@ __all__ = [
     "WorkItem",
     "WorkItemDependency",
     "build_task_input",
+    "SemanticFieldSpec",
+    "NodeExecutionContract",
+    "compile_node_contract",
+    "validate_task_input_semantics",
 ]

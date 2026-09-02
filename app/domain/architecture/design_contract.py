@@ -20,6 +20,7 @@ from app.domain.architecture.contract_input import (
     ContractEntrypointInput,
     ContractImplementationUnitInput,
     ContractInterfaceInput,
+    ConsumedInterfaceRefInput,
 )
 
 
@@ -107,7 +108,8 @@ class ImplementationDesign(_DesignModel):
     depth: Literal[2] = 2
     parent_design_id: str = Field(min_length=1, max_length=128)
     module_id: str = Field(min_length=1, max_length=128)
-    interfaces: list[ContractInterfaceInput] = Field(default_factory=list, max_length=128)
+    provided_interfaces: list[ContractInterfaceInput] = Field(default_factory=list, max_length=128)
+    consumed_interfaces: list[ConsumedInterfaceRefInput] = Field(default_factory=list, max_length=128)
     implementation_units: list[ContractImplementationUnitInput] = Field(
         min_length=1, max_length=256
     )
@@ -122,12 +124,49 @@ class ImplementationDesign(_DesignModel):
                 raise ValueError(
                     f"实现单元 {unit.unit_id} 必须且只能负责一个具体 owned_file"
                 )
-        for interface in self.interfaces:
+        for interface in self.provided_interfaces:
             if interface.owner_unit not in unit_ids:
                 raise ValueError(
                     f"接口 {interface.interface_id} 的 owner_unit 不属于模块 {self.module_id}"
                 )
+        provided_ids = [item.interface_id for item in self.provided_interfaces]
+        if len(provided_ids) != len(set(provided_ids)):
+            raise ValueError("provided_interfaces 不能包含重复 interface_id")
+        consumed_ids = [item.interface_id for item in self.consumed_interfaces]
+        if len(consumed_ids) != len(set(consumed_ids)):
+            raise ValueError("consumed_interfaces 不能包含重复 interface_id")
         return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_interfaces(cls, value: object) -> object:
+        """Accept the old mixed array only at the wire boundary.
+
+        Persisted and validated objects never retain ``interfaces``.  Legacy
+        entries marked consumed become references; all other entries remain
+        provider declarations for one migration cycle.
+        """
+        if not isinstance(value, dict) or "interfaces" not in value:
+            return value
+        data = dict(value)
+        legacy = data.pop("interfaces") or []
+        provided = list(data.get("provided_interfaces") or [])
+        consumed = list(data.get("consumed_interfaces") or [])
+        for raw in legacy:
+            if not isinstance(raw, dict):
+                continue
+            kind = str(raw.get("kind", "")).lower()
+            direction = str(raw.get("direction", "")).lower()
+            if direction == "consumed" or "consum" in kind:
+                consumed.append({
+                    "interface_id": raw.get("interface_id", raw.get("id", "")),
+                    "usage": raw.get("summary") or raw.get("name"),
+                })
+            else:
+                provided.append(raw)
+        data["provided_interfaces"] = provided
+        data["consumed_interfaces"] = consumed
+        return data
 
 
 class ArchitectureDesignBundle(_DesignModel):
@@ -157,16 +196,60 @@ class ArchitectureDesignBundle(_DesignModel):
                 raise ValueError(f"实现设计 {design.design_id} 未引用已存在的模块设计")
             if design.module_id not in modules_by_id:
                 raise ValueError(f"实现设计 {design.module_id} 没有对应模块设计")
-            for interface in design.interfaces:
+            for interface in design.provided_interfaces:
                 if interface.interface_id in interface_ids:
                     raise ValueError(f"接口 {interface.interface_id} 在多个实现设计中重复")
                 interface_ids.add(interface.interface_id)
+        for design in self.implementations:
+            unknown = sorted(
+                {item.interface_id for item in design.consumed_interfaces} - interface_ids
+            )
+            if unknown:
+                raise ValueError(
+                    f"实现设计 {design.module_id} 引用了未声明的接口: {', '.join(unknown)}"
+                )
         missing = sorted(module_refs - set(modules_by_id))
         if missing:
             raise ValueError("缺少模块设计: " + ", ".join(missing))
         missing_impl = sorted(module_refs - {item.module_id for item in self.implementations})
         if missing_impl:
             raise ValueError("缺少实现设计: " + ", ".join(missing_impl))
+        # Integration is the boundary between module-level design and code
+        # waves.  Unit ids and file ownership must therefore be globally
+        # unique, and a unit may only depend on an earlier wave.  This makes
+        # the merge order deterministic and prevents same-wave imports from
+        # being mistaken for an available interface.
+        units = [unit for design in self.implementations for unit in design.implementation_units]
+        unit_ids = [unit.unit_id for unit in units]
+        if len(unit_ids) != len(set(unit_ids)):
+            raise ValueError("实现单元 unit_id 在不同模块之间不能重复")
+        by_id = {unit.unit_id: unit for unit in units}
+        owned_files: dict[str, str] = {}
+        for unit in units:
+            for path in unit.owned_files:
+                normalized = path.replace("\\", "/").lstrip("/")
+                previous = owned_files.get(normalized)
+                if previous is not None and previous != unit.unit_id:
+                    raise ValueError(f"文件 {normalized} 被多个实现单元拥有: {previous}, {unit.unit_id}")
+                owned_files[normalized] = unit.unit_id
+            for required in unit.required_paths:
+                normalized = required.replace("\\", "/").lstrip("/")
+                if normalized not in {p.replace("\\", "/").lstrip("/") for p in unit.owned_files}:
+                    raise ValueError(f"实现单元 {unit.unit_id} 的 required_paths 必须属于 owned_files: {required}")
+        for unit in units:
+            current_wave = unit.wave if unit.wave is not None else 0
+            unknown = sorted(set(unit.depends_on) - set(by_id))
+            if unknown:
+                raise ValueError(
+                    f"实现单元 {unit.unit_id} 依赖不存在的实现单元: {', '.join(unknown)}"
+                )
+            for dependency in unit.depends_on:
+                dep_wave = by_id[dependency].wave if by_id[dependency].wave is not None else 0
+                if dep_wave >= current_wave:
+                    raise ValueError(
+                        f"实现单元 {unit.unit_id} 必须依赖更早 wave；"
+                        f"{dependency} 为 wave={dep_wave}, 当前为 wave={current_wave}"
+                    )
         return self
 
     def as_dict(self) -> dict[str, object]:
@@ -192,10 +275,17 @@ class ArchitectureDesignBundle(_DesignModel):
         }
         # ContractInput expects layers as objects; ArchitectureService will
         # normalize this to the canonical layer mapping before persistence.
-        for implementation in self.implementations:
-            for interface in implementation.interfaces:
+        implementations = sorted(
+            self.implementations,
+            key=lambda item: item.module_id,
+        )
+        for implementation in implementations:
+            for interface in implementation.provided_interfaces:
                 payload["interfaces"].append(interface.model_dump(mode="json"))  # type: ignore[union-attr]
-            for unit in implementation.implementation_units:
+            for unit in sorted(
+                implementation.implementation_units,
+                key=lambda item: (item.wave if item.wave is not None else 0, item.unit_id),
+            ):
                 payload["implementation_units"].append(unit.model_dump(mode="json"))  # type: ignore[union-attr]
         return payload
 

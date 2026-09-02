@@ -113,6 +113,7 @@ class TemplateCompiler:
             goal=goal,
             work_items=tuple(work_items),
             template_id=template.id,
+            process_id=template.process_id,
             trace=trace,
         )
         if template.id == "project_delivery" and any(

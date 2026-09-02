@@ -37,6 +37,7 @@ class PlanDraft(BaseModel):
     rationale: str = Field(min_length=1, max_length=1000)
     steps: list[PlannedStep] = Field(min_length=0, max_length=10)
     template_hint_id: str | None = Field(default=None, max_length=100)
+    process_id: str | None = Field(default=None, max_length=100)
     template_dependency_overrides: list[TemplateDependencyOverride] = Field(
         default_factory=list, max_length=10
     )

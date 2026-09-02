@@ -44,6 +44,10 @@ class RepairPlanPatch(BaseModel):
     schema_version: int = Field(default=1, ge=1, le=1)
     base_plan_id: str = Field(min_length=1, max_length=128)
     repair_scope: list[str] = Field(default_factory=list, max_length=10)
+    # Diagnostic metadata is advisory but structured so retries can be
+    # audited without scraping natural-language rationale.
+    failure_kind: str | None = Field(default=None, min_length=1, max_length=64)
+    verification: list[str] = Field(default_factory=list, max_length=10)
     operations: list[PatchOperation] = Field(min_length=1, max_length=10)
 
     @classmethod
@@ -64,6 +68,11 @@ class RepairPlanPatch(BaseModel):
             raw["base_plan_id"] = base_plan_id
         if repair_scope and not raw.get("repair_scope"):
             raw["repair_scope"] = list(repair_scope)
+        # Canonicalize legacy planner responses that omitted verification.
+        # The control plane still requires a concrete evidence-producing step;
+        # this default keeps old checkpoints readable while making the
+        # requirement explicit in the persisted patch.
+        raw.setdefault("verification", ["由控制面重新运行失败检查并产生新证据"])
         try:
             patch = cls.model_validate(raw)
         except ValidationError as error:
@@ -72,6 +81,8 @@ class RepairPlanPatch(BaseModel):
             raise PlanPatchError("RepairPlanPatch 只允许追加修复 WorkItem")
         if repair_scope and set(patch.repair_scope) != set(repair_scope):
             raise PlanPatchError("RepairPlanPatch.repair_scope 必须与控制面修复窗口完全一致")
+        if any(not step.strip() for step in patch.verification):
+            raise PlanPatchError("RepairPlanPatch.verification 不能包含空步骤")
         return patch
 
 

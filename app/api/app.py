@@ -443,6 +443,21 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             "progress": progress,
         }
 
+    @app.get("/api/v1/projects/{project_id}/runs/{trace_id}/metrics")
+    def get_run_metrics(project_id: str, trace_id: str) -> dict[str, object]:
+        project_path = _project_path(root, project_id)
+        traces = TraceStore(str(project_path))
+        try:
+            traces.load_trace(trace_id)
+        except (FileNotFoundError, ValueError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        from app.orchestration.delivery import DeliveryStore
+        metrics = traces.metrics(trace_id)
+        delivery = DeliveryStore(str(project_path))
+        metrics["coverage"] = delivery.load_matrix().coverage_summary()
+        metrics["quality_dimensions"] = delivery.load_quality_matrix().as_dict()["dimensions"]
+        return metrics
+
     @app.post(
         "/api/v1/projects/{project_id}/runs/{trace_id}/resume",
         status_code=status.HTTP_202_ACCEPTED,

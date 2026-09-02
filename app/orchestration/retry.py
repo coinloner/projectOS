@@ -8,6 +8,21 @@ from enum import Enum
 from app.sandbox.result import SandboxStatus
 
 
+REPAIR_PROTOCOL = (
+    "observe -> classify -> narrow -> act -> verify -> report"
+)
+
+
+def repair_protocol_prompt() -> str:
+    """Canonical retry protocol shared by Runner and Planner prompts."""
+    return (
+        f"修复协议（{REPAIR_PROTOCOL}）：先读取 FailurePackage 与最新证据；"
+        "将失败归类；仅在 repair_paths/owner_files 范围内收窄修改；"
+        "调用当前节点已授权工具执行；重新运行对应检查并确认新证据；"
+        "最后只报告工具已验证事实，不得以解释代替交付。"
+    )
+
+
 class FailureKind(str, Enum):
     AGENT_RUNTIME = "agent_runtime"
     PROVIDER_TRANSPORT = "provider_transport"

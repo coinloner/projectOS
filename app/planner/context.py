@@ -11,6 +11,7 @@ from app.workflow.template import WorkflowTemplateRegistry
 from app.workspace.store import WorkspaceStore
 from app.runtime.state import RuntimeSnapshot, runtime_snapshot
 from app.domain.architecture.implementation_contract import ProjectContractStore
+from app.process import default_process_registry, ProcessDefinition
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class TemplateHint:
     name: str
     description: str
     nodes: tuple["TemplateNodeHint", ...]
+    process_id: str = "software_delivery"
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,16 @@ class TemplateNodeHint:
     execution_mode: str = "exclusive"
     slot: str | None = None
     publish_target: str | None = None
+
+
+@dataclass(frozen=True)
+class ProcessHint:
+    """Planner 可见的流程规则摘要，不包含具体项目节点。"""
+
+    id: str
+    name: str
+    stages: tuple[str, ...]
+    limits: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -91,6 +103,7 @@ class PlanningContext:
     workspace: WorkspaceSnapshot
     runtime: RuntimeSnapshot
     project_contract: ProjectContractSnapshot
+    processes: tuple[ProcessHint, ...] = ()
     source_templates: tuple["WorkflowTemplate", ...] = field(
         default=(), repr=False, compare=False
     )
@@ -159,6 +172,7 @@ class PlanningContext:
             ),
             runtime=runtime_snapshot(artifacts.project_path),
             project_contract=project_contract,
+            processes=tuple(_process_hint(process) for process in default_process_registry().processes()),
             source_templates=templates.templates(),
         )
 
@@ -196,6 +210,7 @@ class PlanningContext:
                 "workspace": self.workspace.__dict__,
                 "runtime": self.runtime.__dict__,
                 "project_contract": self.project_contract.as_dict(),
+                "processes": [process.__dict__ for process in self.processes],
             },
             ensure_ascii=False,
             indent=2,
@@ -208,6 +223,7 @@ def _template_hint(template: "WorkflowTemplate") -> TemplateHint:
         id=template.id,
         name=template.name,
         description=template.description,
+        process_id=template.process_id,
         nodes=tuple(
             TemplateNodeHint(
                 id=node.id,
@@ -223,4 +239,17 @@ def _template_hint(template: "WorkflowTemplate") -> TemplateHint:
             )
             for node in template.nodes
         ),
+    )
+
+
+def _process_hint(process: ProcessDefinition) -> ProcessHint:
+    return ProcessHint(
+        id=process.id,
+        name=process.name,
+        stages=tuple(stage.id for stage in process.stages),
+        limits={
+            "max_architecture_depth": process.limits.max_architecture_depth,
+            "max_modules": process.limits.max_modules,
+            "max_implementation_units": process.limits.max_implementation_units,
+        },
     )

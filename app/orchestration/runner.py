@@ -32,6 +32,7 @@ from app.orchestration.retry import (
     RecoveryAction,
     RetryPolicy,
     sandbox_failure_signal,
+    repair_protocol_prompt,
 )
 from app.orchestration.task_input import build_task_input
 from app.sandbox.result import SandboxResult, SandboxStatus
@@ -45,6 +46,22 @@ from app.orchestration.evidence import RuntimeEvidence
 
 def _agent_result_text(result) -> str:
     return str(result)
+
+
+def _implementation_unit_count_from_item(item: WorkItem) -> int:
+    """Estimate design fan-out for prompt budgeting without widening authority.
+
+    Architecture implementation WorkItems are module-scoped.  Their input
+    contract may not expose the eventual number of units, so use the explicit
+    ownership/required-file declarations as a conservative lower bound. The
+    persisted object is still validated against its exact count by the domain
+    service; this hint only sizes the provider response envelope.
+    """
+    declared = len(item.owned_files) or len(item.required_paths)
+    # A module-level architecture design normally fans out to several files;
+    # when no declaration exists yet, budget for the three-unit baseline rather
+    # than starving the first response at the one-unit minimum.
+    return max(3, declared)
 
 
 def _provider_failure_kind(error: BaseException) -> FailureKind | None:
@@ -619,6 +636,24 @@ class GraphRunner:
                         state=state,
                         error="需求追踪矩阵仍有未闭环需求: " + ", ".join(incomplete),
                     )
+                # A completed graph is not a delivery unless every mandatory
+                # control-plane artifact has actually been persisted. This
+                # guards against agents returning textual "done" responses
+                # after a lost tool call or a partial Worker restart.
+                agent_ids = {item.agent_id for item in state.plan.work_items}
+                full_delivery_plan = (
+                    state.plan.template_id in {"project_delivery", "project_delivery_layered", "implementation-contract"}
+                    or {"requirement_agent", "review_agent"}.issubset(agent_ids)
+                )
+                if full_delivery_plan and graph_result.status is GraphRunStatus.COMPLETED and self._artifacts is not None:
+                    required_artifacts = ("requirement", "architecture", "environment", "implementation", "tests", "review")
+                    missing_artifacts = [key for key in required_artifacts if not self._artifacts.exists(key)]
+                    if missing_artifacts:
+                        graph_result = GraphRunResult(
+                            status=GraphRunStatus.BLOCKED,
+                            state=state,
+                            error="交付产物不完整，缺少: " + ", ".join(missing_artifacts),
+                        )
         self._finish_trace(plan, graph_result)
         return graph_result
 
@@ -1068,6 +1103,11 @@ class GraphRunner:
                     else None
                 ),
                 llm_selection=self._llm_overrides.get(item.agent_id, self._llm_selection),
+                implementation_unit_count=(
+                    _implementation_unit_count_from_item(item)
+                    if item.agent_id == "architecture_agent"
+                    else None
+                ),
                 tool_allowlist=_tool_allowlist_for_attempt(
                     item,
                     attempt=attempt,
@@ -1128,7 +1168,8 @@ class GraphRunner:
                     "不要选择其他架构写入工具，不要返回 capability_request。"
                 )
             if retry_context:
-                prompt += "\n\n【控制面重试诊断】上一轮未通过控制面校验，必须优先处理：" + retry_context
+                prompt += "\n\n【控制面重试协议】" + repair_protocol_prompt()
+                prompt += "不得重新设计、扩大权限或重复已满足约束。\n上一轮未通过控制面校验，必须优先处理：" + retry_context
                 if (
                     definition.domain == "code"
                     and item.execution_mode in {ExecutionMode.PARTITIONED, ExecutionMode.EXCLUSIVE}

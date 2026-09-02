@@ -269,6 +269,11 @@ class ProgressTracker:
         self._llm_calls += 1
         self._llm_state = "started"
         self._llm_call_id = getattr(event, "call_id", None)
+        # A ProgressTracker spans all provider calls made by one WorkItem.
+        # Starting a new call must clear the previous call's terminal marker;
+        # otherwise the API can report terminal_at from call N while call N+1
+        # is still streaming.
+        self._llm_terminal_at = None
         self.update("llm_streaming" if getattr(event, "stream", False) else "llm_request", "llm_request_started", call_id=getattr(event, "call_id", None))
 
     def llm_chunk(self, event: Any) -> None:

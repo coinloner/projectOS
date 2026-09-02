@@ -22,6 +22,43 @@ class FakeCrewAgent:
 
 
 class CrewAIAgentAdapterTest(unittest.TestCase):
+    def test_empty_provider_return_is_not_completed(self) -> None:
+        class EmptyAgent(FakeCrewAgent):
+            def execute_task(self, task: object) -> str:
+                return ""
+
+        with patch("app.agent.base_agent.Agent", side_effect=EmptyAgent), patch(
+            "app.agent.base_agent.Task", side_effect=lambda **kwargs: kwargs
+        ), patch("app.agent.base_agent.build_llm", return_value=object()):
+            agent = BaseAgent(
+                gateway=ToolGateway(),
+                domain="requirement",
+                role="需求分析师",
+                goal="生成需求文档",
+                backstory="整理用户需求",
+            )
+            with self.assertRaisesRegex(RuntimeError, "terminal signal"):
+                agent.run("生成一个项目需求")
+
+    def test_implementation_response_protocol_text_is_not_artifact_budget(self) -> None:
+        class LargeAgent(FakeCrewAgent):
+            def execute_task(self, task: object) -> str:
+                return "x" * 6000
+
+        with patch("app.agent.base_agent.Agent", side_effect=LargeAgent), patch(
+            "app.agent.base_agent.Task", side_effect=lambda **kwargs: kwargs
+        ), patch("app.agent.base_agent.build_llm", return_value=object()):
+            agent = BaseAgent(
+                gateway=ToolGateway(), domain="architecture", role="架构师",
+                goal="设计", backstory="分层",
+            )
+            context = ExecutionContext(
+                trace_id="tr-budget", work_item_id="wi-budget", agent_id="architecture_agent",
+                execution_mode=ExecutionMode.PARTITIONED, slot="implementation-api",
+            )
+            result = agent.run("生成实现设计", context=context)
+            self.assertEqual(result.status, AgentStatus.COMPLETED)
+
     def test_base_agent_delegates_tool_runtime_to_crewai(self) -> None:
         gateway = ToolGateway()
         created: list[FakeCrewAgent] = []

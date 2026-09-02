@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.orchestration.field_semantics import normalize_aliases
+
 
 class _ContractModel(BaseModel):
     """Closed wire object shared by all contract DTOs."""
@@ -52,19 +54,29 @@ class ContractInterfaceInput(_ContractModel):
     constraints: list[str] = Field(default_factory=list, max_length=32)
 
 
+class ConsumedInterfaceRefInput(_ContractModel):
+    """A reference to an interface owned by another implementation unit."""
+
+    interface_id: str = Field(min_length=1, max_length=128)
+    usage: str | None = Field(default=None, max_length=1000)
+    required: bool = True
+
+
 class ContractImplementationUnitInput(_ContractModel):
     """One complete-file implementation scope.
 
-    ``required_files`` is the public wire name.  ``required_paths`` remains an
-    accepted compatibility alias during migration; the DTO rejects conflicting
-    values so the canonical contract never has two different meanings.
+    ``required_paths`` is the canonical field. ``required_files`` is accepted
+    only as a wire-level migration alias and is removed by the pre-validator;
+    it never exists on the validated object or in persisted contracts.
     """
 
     unit_id: str = Field(min_length=1, max_length=128)
     layer: str = Field(min_length=1, max_length=64)
     objective: str = Field(min_length=1, max_length=1000)
     allowed_paths: list[str] = Field(min_length=1, max_length=64)
-    required_files: list[str] = Field(default_factory=list, max_length=64)
+    # Wire-only migration alias. It is removed by ``normalize_wire_aliases``
+    # before validation and excluded from every canonical dump.
+    required_files: list[str] = Field(default_factory=list, max_length=64, exclude=True)
     required_paths: list[str] = Field(default_factory=list, max_length=64)
     forbidden_paths: list[str] = Field(default_factory=list, max_length=64)
     depends_on: list[str] = Field(default_factory=list, max_length=64)
@@ -85,14 +97,21 @@ class ContractImplementationUnitInput(_ContractModel):
     provided_symbols: list[str] = Field(default_factory=list, max_length=128)
     required_symbols: list[str] = Field(default_factory=list, max_length=128)
 
-    @model_validator(mode="after")
-    def normalize_required_alias(self) -> "ContractImplementationUnitInput":
-        if self.required_files and self.required_paths and self.required_files != self.required_paths:
-            raise ValueError("required_files 与 required_paths 不能表示不同文件")
-        if not self.required_paths and self.required_files:
-            self.required_paths = list(self.required_files)
-        return self
-
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_wire_aliases(cls, value: Any) -> Any:
+        # All downstream objects use slot/required_paths/provides_interfaces/
+        # consumes_interfaces.  Keep aliases at this single wire boundary so
+        # retry and resume code never has to guess which spelling was used.
+        return normalize_aliases(
+            value,
+            {
+                "slot": ("output_slot",),
+                "required_paths": ("required_files",),
+                "provides_interfaces": ("provides",),
+                "consumes_interfaces": ("consumes",),
+            },
+        )
 
 class ProjectContractInput(_ContractModel):
     """唯一 Project Contract 的结构化工具输入。"""
@@ -151,6 +170,7 @@ class ProjectContractInput(_ContractModel):
 
 
 __all__ = [
+    "ConsumedInterfaceRefInput",
     "ContractEntrypointInput",
     "ContractImplementationUnitInput",
     "ContractInterfaceInput",

@@ -13,6 +13,8 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+from app.orchestration.field_semantics import coalesce_alias
+
 
 @dataclass(frozen=True)
 class EntrypointContract:
@@ -250,9 +252,10 @@ class ImplementationUnit:
             root.rstrip("/") + "/**" for root in allowed_roots
         )
         allowed_paths = tuple(dict.fromkeys((*allowed_paths, *normalized_roots)))
-        required_value = raw.get("required_paths")
-        if required_value in (None, []):
-            required_value = raw.get("required_files", [])
+        required_value = coalesce_alias(raw, "required_paths", "required_files", default=[])
+        slot_value = coalesce_alias(raw, "slot", "output_slot")
+        provides_value = coalesce_alias(raw, "provides_interfaces", "provides", default=[])
+        consumes_value = coalesce_alias(raw, "consumes_interfaces", "consumes", default=[])
         return cls(
             unit_id=str(raw.get("unit_id", "")).strip(),
             layer=str(raw.get("layer", "")).strip(),
@@ -269,12 +272,12 @@ class ImplementationUnit:
             skill_refs=_strings(raw.get("skill_refs", []), "skill_refs", allow_empty=True),
             parallel_group=_optional_string(raw.get("parallel_group")),
             output_key=_optional_string(raw.get("output_key")),
-            slot=_optional_string(raw.get("slot", raw.get("output_slot"))),
+            slot=_optional_string(slot_value),
             requirement_ids=_strings(raw.get("requirement_ids", []), "requirement_ids", allow_empty=True),
             wave=_optional_int(raw.get("wave")),
             owned_files=_strings(raw.get("owned_files", []), "owned_files", allow_empty=True),
-            provides_interfaces=_strings(raw.get("provides_interfaces", raw.get("provides", [])), "provides_interfaces", allow_empty=True),
-            consumes_interfaces=_strings(raw.get("consumes_interfaces", raw.get("consumes", [])), "consumes_interfaces", allow_empty=True),
+            provides_interfaces=_strings(provides_value, "provides_interfaces", allow_empty=True),
+            consumes_interfaces=_strings(consumes_value, "consumes_interfaces", allow_empty=True),
             provided_symbols=_strings(raw.get("provided_symbols", []), "provided_symbols", allow_empty=True),
             required_symbols=_strings(raw.get("required_symbols", []), "required_symbols", allow_empty=True),
         )

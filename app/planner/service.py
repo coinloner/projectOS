@@ -25,6 +25,7 @@ from app.planner.patch import (
 from app.workflow.template import WorkflowTemplateRegistry
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.retry import FailurePackage, FailureSignal
+from app.orchestration.retry import repair_protocol_prompt
 from app.orchestration.trace import TraceStore
 
 
@@ -483,7 +484,9 @@ def _repair_planning_prompt(
         if repair_scope else ""
     )
     return (
-        "请为一次受控失败生成追加 RepairPlanPatch JSON。\n\n"
+        "请为一次受控失败生成追加 RepairPlanPatch JSON。\n"
+        + repair_protocol_prompt()
+        + "\n\n"
         f"base_plan_id: {previous_plan.id}\n"
         "失败信号（可信控制面数据）：\n"
         f"{json.dumps(package.as_planner_data(), ensure_ascii=False)}\n\n"
@@ -499,6 +502,7 @@ def _repair_planning_prompt(
         + '","repair_scope":'
         + json.dumps(list(repair_scope), ensure_ascii=False)
         + ','
+        + '"failure_kind":"<kind>","verification":["运行指定检查并确认新证据通过"],'
         + '"operations":[{"operation":"add","ref":"fix","agent_id":"code_agent",'
         + '"objective":"通过 write_workspace_file 修复实现","depends_on":[]}]}'
         + "。operations 只能使用 operation=add，depends_on 只能引用同一补丁中更早的 ref；目标必须针对失败"
@@ -508,7 +512,7 @@ def _repair_planning_prompt(
         + "修复步骤必须产生实际变更：code_agent 的修复步骤必须在 objective 中明确要求"
         + "通过 write_workspace_file 实际修改 workspace 文件；test_agent 的修复步骤必须"
         + "通过 write_test_file 修改测试。只读诊断不构成修复步骤。"
-        + "operations 总数最多 10 个。"
+        + "operations 总数最多 10 个；verification 至少描述一个可观察的工具/测试证据。"
     )
 
 

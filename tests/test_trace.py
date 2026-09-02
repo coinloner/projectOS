@@ -32,6 +32,16 @@ class FailingRequirementAgent:
 
 
 class TraceStoreTest(unittest.TestCase):
+    def test_metrics_summarize_retry_and_terminal_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = TraceStore(directory)
+            trace = store.start_trace("metrics")
+            store.record_event(trace, "wi-1", "work_item_retrying")
+            store.record_event(trace, "wi-1", "work_item_completed")
+            metrics = store.metrics(trace.trace_id)
+            self.assertEqual(metrics["retry_count"], 1)
+            self.assertEqual(metrics["work_items_completed"], 1)
+            self.assertEqual(metrics["retry_convergence_rate"], 1.0)
 
     def test_requirement_snapshot_initializes_delivery_matrix(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:

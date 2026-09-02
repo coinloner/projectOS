@@ -72,6 +72,11 @@ class TaskInputPackageTest(unittest.TestCase):
         self.assertIn("environment", prompt)
         self.assertNotIn("需求正文不应注入", prompt)
         self.assertIn("不修改 frontend", prompt)
+        self.assertIn("节点语义契约", prompt)
+        self.assertEqual(
+            data["semantic_contract"]["fields"]["dependencies"]["consumer"],
+            "调度器",
+        )
 
     def test_code_prompt_makes_write_and_required_path_obligations_explicit(self) -> None:
         item = WorkItem(
@@ -95,6 +100,26 @@ class TaskInputPackageTest(unittest.TestCase):
         self.assertIn("write_staged_code_file", prompt)
         self.assertIn("backend/app/main.py", prompt)
         self.assertIn("不能调用 save_implementation", prompt)
+
+    def test_semantic_contract_exposes_local_lineage_and_code_field_rules(self) -> None:
+        dependency = WorkItem(
+            id="architecture", agent_id="architecture_agent", objective="设计", output_key="architecture"
+        )
+        item = WorkItem(
+            id="code-api", agent_id="code_agent", objective="实现 API", output_key="implementation_api",
+            dependencies=(WorkItemDependency("architecture", source=DependencySource.SYSTEM),),
+            implementation_unit_id="unit-api", execution_mode=ExecutionMode.PARTITIONED,
+            slot="backend", owned_files=("backend/app/api.py",), required_paths=("backend/app/api.py",),
+        )
+        plan = ExecutionPlan(
+            id="plan-semantic", goal="交付 API", work_items=(dependency, item),
+            trace=TraceContext(requirement_id="req-semantic", trace_id="tr-semantic"),
+        )
+        package = build_task_input(RunState(plan=plan), item)
+        contract = package.as_dict()["semantic_contract"]
+        self.assertEqual(contract["predecessors"][0]["work_item_id"], "architecture")
+        self.assertIn("depends_on_units", contract["fields"])
+        self.assertIn("只能引用 unit_id", contract["fields"]["depends_on_units"]["value_rules"][0])
 
     def test_exclusive_repair_prompt_contains_structured_failure_and_workspace_protocol(self) -> None:
         item = WorkItem(

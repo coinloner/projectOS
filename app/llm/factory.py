@@ -17,6 +17,7 @@ def build_llm(
     seed: int | None = None,
     stream: bool | None = None,
     selection: LLMSelection | None = None,
+    max_tokens: int | None = None,
 ) -> LLM:
     """加载项目 .env 后创建当前配置的 CrewAI LLM，不发起模型请求。"""
     load_dotenv(override=False)
@@ -50,6 +51,11 @@ def build_llm(
             return default
         return value if value > 0 else default
 
+    resolved_max_tokens = (
+        _positive_int("PROJECTOS_LLM_MAX_TOKENS", 12000)
+        if os.environ.get("PROJECTOS_LLM_MAX_TOKENS")
+        else (max_tokens or 12000)
+    )
     return LLM(
         model=selected.model,
         api_key=api_key,
@@ -58,6 +64,6 @@ def build_llm(
         temperature=temperature,
         seed=seed,
         stream=stream,
-        max_tokens=_positive_int("PROJECTOS_LLM_MAX_TOKENS", 12000),
+        max_tokens=resolved_max_tokens,
         timeout=_positive_float("PROJECTOS_LLM_TIMEOUT_SECONDS", 600.0),
     )

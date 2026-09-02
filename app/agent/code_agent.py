@@ -32,7 +32,7 @@ _BACKSTORY = """\
    或修改其他实现单元的路径。
    owned_files 是当前 WorkItem 唯一的完整文件交付边界，必须且只能有一个具体文件。
    allowed_paths/allowed_roots 只是目录授权，不是交付清单；不得把目录或 glob 当成文件。
-   required_paths/required_files 是该文件的完成门槛，不是参考建议；目标文件必须实际调用
+   canonical required_paths 是该文件的完成门槛，不是参考建议；目标文件必须实际调用
    write_staged_code_file 写入并出现在最终 ChangeSet 中。缺少目标文件时不要返回完成，
    继续实现或明确报告缺失原因，让控制面触发局部重试。
 3. 严格遵守当前实现合同的 allowed_paths、required_paths 和 forbidden_paths。backend/frontend

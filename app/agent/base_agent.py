@@ -6,6 +6,7 @@ from app.llm.factory import build_llm
 from app.execution_context import ExecutionContext
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import ToolExecutionError, ToolResult, ToolResultStatus
+from app.domain.architecture.service import llm_token_budget_for_design
 import json
 import re
 
@@ -107,7 +108,13 @@ class BaseAgent:
             # Respect the deployment/request-level stream setting.  Forcing SSE
             # here breaks providers whose CrewAI adapter cannot parse streamed
             # responses from some OpenAI-compatible gateways.
-            llm=build_llm(selection=getattr(context, "llm_selection", None)),
+            llm=build_llm(
+                selection=getattr(context, "llm_selection", None),
+                max_tokens=llm_token_budget_for_design(
+                    getattr(context, "slot", None),
+                    unit_count=getattr(context, "implementation_unit_count", None) or 3,
+                ),
+            ),
             tools=available_tools,
             max_iter=self._max_iterations,
             verbose=False,
@@ -139,7 +146,12 @@ class BaseAgent:
             # signal when CrewAI did not emit its completed callback.
             progress.llm_completed_from_agent_return()
             progress.completed()
-        output_text = str(output)
+        output_text = str(output or "").strip()
+        if not output_text:
+            # A provider can close an SSE stream without emitting a terminal
+            # message or a tool result. Treat an empty return as transport
+            # failure; never allow it to become a completed NodeResult.
+            raise RuntimeError("Provider stream ended without terminal signal: empty response")
         # Some OpenAI-compatible gateways return a textual representation of
         # CrewAI's tool-call envelope instead of dispatching the function call.
         # Execute only the known local tools that are currently exposed by the

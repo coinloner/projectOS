@@ -14,6 +14,7 @@ from app.domain.architecture.design_contract import (
     parse_design,
 )
 from app.domain.architecture.service import ArchitectureArtifactWorkflow
+from app.domain.architecture.service import implementation_design_budget, implementation_unit_budget
 from app.domain.architecture.contract_input import ProjectContractInput
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.orchestration.trace import TraceContext
@@ -115,6 +116,98 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                         ],
                     }
                 ],
+            )
+
+    def test_implementation_design_separates_provided_and_consumed_interfaces(self) -> None:
+        design = ImplementationDesign(
+            schema_version=1,
+            design_id="implementation-api",
+            parent_design_id="module-api",
+            module_id="api",
+            provided_interfaces=[
+                {
+                    "interface_id": "api.http",
+                    "kind": "api",
+                    "name": "HTTP API",
+                    "owner_unit": "unit-api",
+                }
+            ],
+            consumed_interfaces=[
+                {"interface_id": "domain.todo", "usage": "调用领域服务"}
+            ],
+            implementation_units=[
+                {
+                    "unit_id": "unit-api",
+                    "layer": "api",
+                    "objective": "实现 API",
+                    "allowed_paths": ["backend/app/api/**"],
+                    "owned_files": ["backend/app/api/main.py"],
+                }
+            ],
+        )
+        self.assertEqual(design.provided_interfaces[0].owner_unit, "unit-api")
+        self.assertEqual(design.consumed_interfaces[0].interface_id, "domain.todo")
+        self.assertNotIn("interfaces", design.model_dump())
+
+    def test_legacy_mixed_interfaces_are_migrated_at_wire_boundary(self) -> None:
+        design = ImplementationDesign.model_validate(
+            {
+                "schema_version": 1,
+                "design_id": "implementation-api",
+                "parent_design_id": "module-api",
+                "module_id": "api",
+                "interfaces": [
+                    {
+                        "interface_id": "api.http",
+                        "kind": "api",
+                        "name": "HTTP API",
+                        "owner_unit": "unit-api",
+                    },
+                    {
+                        "interface_id": "domain.todo",
+                        "kind": "internal-consumed",
+                        "name": "Todo service",
+                        "owner_unit": "unit-api",
+                    },
+                ],
+                "implementation_units": [
+                    {
+                        "unit_id": "unit-api",
+                        "layer": "api",
+                        "objective": "实现 API",
+                        "allowed_paths": ["backend/app/api/**"],
+                        "owned_files": ["backend/app/api/main.py"],
+                    }
+                ],
+            }
+        )
+        self.assertEqual([i.interface_id for i in design.provided_interfaces], ["api.http"])
+        self.assertEqual([i.interface_id for i in design.consumed_interfaces], ["domain.todo"])
+
+    def test_consumed_interface_must_reference_a_provider(self) -> None:
+        provider = _implementation("domain")
+        consumer = ImplementationDesign(
+            schema_version=1,
+            design_id="implementation-api",
+            parent_design_id="module-api",
+            module_id="api",
+            consumed_interfaces=[{"interface_id": "missing.service"}],
+            implementation_units=[
+                {
+                    "unit_id": "unit-api",
+                    "layer": "api",
+                    "objective": "实现 API",
+                    "allowed_paths": ["backend/app/api/**"],
+                    "owned_files": ["backend/app/api/main.py"],
+                }
+            ],
+        )
+        with self.assertRaisesRegex(ValueError, "未声明的接口"):
+            ArchitectureDesignBundle(
+                schema_version=1,
+                blueprint=_blueprint(),
+                modules=[_module("domain"), _module("api")],
+                implementations=[provider, consumer],
             )
 
     def test_layered_template_has_l0_l1_l2_and_integration_barrier(self) -> None:
@@ -309,8 +402,57 @@ class ArchitectureDesignContractTest(unittest.TestCase):
             )
             design = _implementation("api").model_dump(mode="json")
             design["required_test_types"] = ["x" * 1000 for _ in range(7)]
-            result = workflow.write_staged_design(context, design)
-            self.assertIn("depth=2", result)
+            with self.assertRaises(ValueError) as raised:
+                workflow.write_staged_design(context, design)
+            payload = json.loads(str(raised.exception))
+            self.assertEqual(payload["error_type"], "artifact_budget")
+            self.assertEqual(payload["limit"], 5000)
+
+    def test_implementation_budget_scales_after_third_unit(self) -> None:
+        self.assertEqual(implementation_design_budget(1), 5000)
+        self.assertEqual(implementation_design_budget(3), 8000)
+        self.assertEqual(implementation_design_budget(4), 9500)
+        self.assertEqual(implementation_design_budget(10), 16000)
+        self.assertEqual(implementation_unit_budget(), 4500)
+
+    def test_token_budget_tracks_unit_hint(self) -> None:
+        from app.domain.architecture.service import llm_token_budget_for_design
+
+        self.assertEqual(llm_token_budget_for_design("implementation-api", unit_count=1), 7500)
+        self.assertEqual(llm_token_budget_for_design("implementation-api", unit_count=10), 24000)
+        self.assertIsNone(llm_token_budget_for_design("module-api", unit_count=10))
+
+    def test_wire_aliases_are_normalized_once(self) -> None:
+        from app.domain.architecture.contract_input import ContractImplementationUnitInput
+
+        value = ContractImplementationUnitInput.model_validate({
+            "unit_id": "u-api",
+            "layer": "api",
+            "objective": "实现接口",
+            "allowed_paths": ["backend/api/**"],
+            "required_files": ["backend/api/main.py"],
+            "output_slot": "backend",
+            "provides": ["api.orders"],
+            "consumes": ["application.orders"],
+        })
+        self.assertEqual(value.required_paths, ["backend/api/main.py"])
+        self.assertFalse(hasattr(value, "required_files") and value.required_files)
+        self.assertEqual(value.slot, "backend")
+        self.assertEqual(value.provides_interfaces, ["api.orders"])
+        self.assertEqual(value.consumes_interfaces, ["application.orders"])
+
+    def test_wire_alias_conflict_is_rejected(self) -> None:
+        from app.domain.architecture.contract_input import ContractImplementationUnitInput
+
+        with self.assertRaises(ValueError):
+            ContractImplementationUnitInput.model_validate({
+                "unit_id": "u-api",
+                "layer": "api",
+                "objective": "实现接口",
+                "allowed_paths": ["backend/api/**"],
+                "required_files": ["backend/api/main.py"],
+                "required_paths": ["backend/api/other.py"],
+            })
 
 
 if __name__ == "__main__":

@@ -31,6 +31,10 @@ TraceStore.list_sandbox_evidence(context) -> tuple[SandboxEvidence, ...]
 TraceStore.load_sandbox_evidence(context, evidence_id) -> SandboxEvidence
 ```
 
+运行指标可通过 `GET /api/v1/projects/{project_id}/runs/{trace_id}/metrics` 查询。指标由
+Trace 追加事件确定性计算，包含事件总数、完成/失败 WorkItem 数、重试次数、重试收敛率和
+事件类型计数，不依赖进程内缓存。
+
 `ExecutionContext(trace_id, work_item_id, agent_id)` 由 GraphRunner 为每个 WorkItem 创建，再绑定到该 Agent 获得的工具对象。它不属于 LLM task 或工具参数。
 
 GraphRunner 调度依赖已满足的 WorkItem，写入进程内 `RunState`。传入 TraceStore 时，它还会写入 `.projectos/runs/<trace_id>/plan.json`、`events.jsonl`、`evidence/<evidence_id>.json` 与 Trace 终态；Requirement 内容变动会形成修订快照。传入 `MemoryStore` 后，Runner 会追加 Agent 输入/输出、工具结果和 checkpoint，Agent 输入只读取同一 WorkItem 的有限历史窗口。

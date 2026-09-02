@@ -185,7 +185,7 @@ class ArchitectureToolNarrowingTest(unittest.TestCase):
             )
             self.assertEqual(_expected_architecture_tool(item), expected)
 
-    def test_legacy_architecture_slots_keep_legacy_tools(self) -> None:
+    def test_unscoped_architecture_slots_require_explicit_tool_contract(self) -> None:
         item = WorkItem(
             id="architecture-api",
             agent_id="architecture_agent",

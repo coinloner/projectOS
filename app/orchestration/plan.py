@@ -17,6 +17,7 @@ class ExecutionPlan:
     goal: str
     work_items: tuple[WorkItem, ...]
     template_id: str | None = None
+    process_id: str = "software_delivery"
     trace: TraceContext = field(default_factory=TraceContext.ephemeral)
 
     def __post_init__(self) -> None:
@@ -28,6 +29,8 @@ class ExecutionPlan:
             raise ValueError("ExecutionPlan 至少需要一个 WorkItem")
         if self.template_id is not None and not self.template_id.strip():
             raise ValueError("ExecutionPlan.template_id 不能是空字符串")
+        if not self.process_id or not self.process_id.strip():
+            raise ValueError("ExecutionPlan.process_id 不能为空")
 
         item_ids = [item.id for item in self.work_items]
         if len(set(item_ids)) != len(item_ids):

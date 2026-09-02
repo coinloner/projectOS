@@ -346,7 +346,11 @@ def _semantic_error_item(contract: Any, message: str) -> dict[str, Any]:
     path = "$"
     text = message.lower()
     if "owner_unit" in text or "owner_unit" in message:
-        interfaces = contract.get("interfaces", []) if isinstance(contract, dict) else []
+        interfaces = (
+            contract.get("provided_interfaces", contract.get("interfaces", []))
+            if isinstance(contract, dict)
+            else []
+        )
         units = {
             str(item.get("unit_id"))
             for item in (contract.get("implementation_units", []) if isinstance(contract, dict) else [])
@@ -354,12 +358,12 @@ def _semantic_error_item(contract: Any, message: str) -> dict[str, Any]:
         }
         for index, interface in enumerate(interfaces):
             if isinstance(interface, dict) and interface.get("owner_unit") not in units:
-                path = f"interfaces[{index}].owner_unit"
+                path = f"provided_interfaces[{index}].owner_unit"
                 break
     elif "重复 unit_id" in message:
         path = "implementation_units"
     elif "重复 interface_id" in message:
-        path = "interfaces"
+        path = "provided_interfaces"
     elif "循环依赖" in message:
         path = "implementation_units[].depends_on"
     return {"path": path, "code": "semantic_invalid", "message": message}

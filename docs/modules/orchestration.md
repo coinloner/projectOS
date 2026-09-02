@@ -18,11 +18,14 @@ ExecutionPlan
 | `ExecutionPlan` | 本次运行的合法 WorkItem DAG |
 | `GraphRunner` | 找到 ready WorkItem，创建 Agent，执行并处理失败/能力缺口 |
 | `RunState` | 当前执行结果和 artifact 文本，并可从版本化 checkpoint 重建 |
-| `ExecutionContext` | GraphRunner 为单个 WorkItem 创建的可信身份，以及 `execution_mode/input_refs/output_slot/publish_target` 授权 |
+| `ExecutionContext` | GraphRunner 为单个 WorkItem 创建的可信身份，以及 `execution_mode/input_refs/slot/publish_target` 授权 |
 | `TaskInputPackage` | 执行前生成的结构化任务合同：输入用途、资源 scope、输出合同、前置状态、约束和非目标 |
 | `TraceStore` | 持久化计划、事件、终态、requirement 修订和 sandbox evidence |
 | `SandboxEvidence` | Docker check 的状态、退出码、耗时和原始受限输出，绑定到 Trace 与 WorkItem |
 | `ProgressTracker` | 接收 LLM 流式、工具和节点事件，写入 Worker 最近进度快照，不保存模型正文 |
+
+`ExecutionPlan` 同时记录 `process_id`（稳定的流程规则）和可选的 `template_id`（历史或兼容
+适配器）。流程规则不等同于某个项目的节点数量；后续动态计划编译会在流程约束下生成项目专属 DAG。
 
 ## 边界
 
@@ -31,7 +34,7 @@ ExecutionPlan
 - Orchestration 不保存可复用流程经验，这是 Workflow 的职责。
 - Agent 和 Domain Service 不直接修改 WorkItem 状态或 Trace；只有 GraphRunner 与 TraceStore 可以写入。
 - `ExecutionContext` 经 ToolGateway 绑定到工具对象，不会写入 Agent task 文本或 ToolDef schema。
-- `PARTITIONED` WorkItem 必须有唯一 `output_slot`，只能写暂存输出；`INTEGRATION` 必须有
+- `PARTITIONED` WorkItem 必须有唯一 `slot`，只能写暂存输出；`INTEGRATION` 必须有
   `publish_target`，只能创建候选；`QUALITY_GATE` 必须依赖一个集成 WorkItem，由 GraphRunner
   调用确定性质量门发布。三者均不能由 Planner 的自由文本直接授予。
 
@@ -83,7 +86,7 @@ GraphRunner 不再只把 `objective` 拼成一段任务字符串，而是为每�
 | 字段 | 作用 |
 |---|---|
 | `InputBinding` | 说明 `ArtifactRef` 的用途和读取方式，不注入正文 |
-| `TaskScope` | 表达 execution mode、output slot、允许路径和禁止路径 |
+| `TaskScope` | 表达 execution mode、canonical `slot`、允许路径和禁止路径 |
 | `OutputContract` | 表达 output/artifact key、发布目标和预期路径 |
 | `DependencySummary` | 只传递前置 WorkItem 的状态和产物是否可用 |
 | `constraints` / `non_goals` | 把必须遵守的技术边界和明确不做的内容从大段背景中分离出来 |
@@ -144,3 +147,31 @@ CodeAgent WorkItem；CodeAgent 只执行当前单元，不重新拆分架构。�
 
 TestAgent 的 `SandboxEvidence.status=setup_failed` 同样属于环境阻塞，不是完成状态。原始证据仍
 持久化，Trace 会停在 `blocked`，避免在没有执行测试的情况下生成误导性的最终 Review。
+
+## 状态机与职责
+
+状态字段按层隔离，不能把不同层的 `status` 直接比较：
+
+```text
+LLM call:  idle -> started -> streaming -> completed | failed
+WorkItem:  planned -> started -> completed | needs_replan | failed
+Graph:     running -> completed | waiting_for_capability_approval
+                    -> needs_replan | blocked | failed
+Worker:    started -> running -> completed | failed | timed_out
+```
+
+`ProgressTracker` 只维护单个 WorkItem 内一次 LLM/工具调用的进度与终态标记；
+`GraphRunner` 根据 DAG 依赖和 `NodeResult` 驱动 WorkItem 状态，并把失败归因转换成
+有界 retry 或局部 `RepairPlanPatch`；`RunCoordinator` 位于更外层，负责 Worker 线程的
+启动、硬截止、Provider stall watchdog、checkpoint 恢复和 API 级运行生命周期。它不参与
+节点业务判断，也不替代 GraphRunner 的 DAG 调度。`TraceStore` 是跨进程恢复的事实来源，
+`RunState` 是一次 GraphRunner 执行中的内存投影。
+
+## 修复输出协议
+
+每次重试遵循固定的六步：`observe -> classify -> narrow -> act -> verify -> report`。
+Agent 必须先读取受控 `FailurePackage`，将失败归类为工具、传输、环境或业务测试问题；
+随后只能在 `repair_paths`/`owned_files` 范围内修改，并调用当前 WorkItem 已授权的写入或
+测试工具。只有新的工具证据满足输出合同后才可报告完成。Planner 输出 `RepairPlanPatch`
+只允许追加 `code_agent`/`test_agent` 修复节点，`repair_scope` 必须与控制面窗口一致，
+最多 10 个操作，不能授予新权限、重做未受影响节点或输出业务代码。

@@ -1,10 +1,19 @@
 import tempfile
 import unittest
 
-from app.orchestration.delivery import DeliveryState, DeliveryStore, RequirementRecord, TraceabilityMatrix
+from app.orchestration.delivery import DeliveryState, DeliveryStore, RequirementRecord, TraceabilityMatrix, QualityMatrix
 
 
 class DeliveryStoreTest(unittest.TestCase):
+    def test_coverage_summary_and_quality_matrix_persist(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = DeliveryStore(directory)
+            matrix = TraceabilityMatrix()
+            matrix.register(RequirementRecord("AC-1", "创建订单", implementation_units=("u1",), test_evidence_ids=("e1",), runtime_evidence_ids=("r1",)))
+            store.save_matrix(matrix)
+            self.assertTrue(store.load_matrix().coverage_summary()["complete"])
+            store.save_quality_matrix(QualityMatrix({"test:api_http": "required"}))
+            self.assertEqual(store.load_quality_matrix().dimensions["test:api_http"], "required")
     def test_state_machine_rejects_skipping_and_records_valid_progress(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = DeliveryStore(directory)

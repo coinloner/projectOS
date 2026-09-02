@@ -97,6 +97,9 @@ class WorkflowTemplate:
     name: str
     description: str
     nodes: tuple[TaskBlueprint, ...]
+    # Process rules are independent from the concrete node graph.  Existing
+    # templates remain valid adapters while dynamic planning is introduced.
+    process_id: str = "software_delivery"
 
     def __post_init__(self) -> None:
         for field_name in ("id", "name", "description"):
@@ -105,6 +108,8 @@ class WorkflowTemplate:
                 raise ValueError(f"WorkflowTemplate.{field_name} 不能为空")
         if not self.nodes:
             raise ValueError("WorkflowTemplate 至少需要一个节点")
+        if not self.process_id or not self.process_id.strip():
+            raise ValueError("WorkflowTemplate.process_id 不能为空")
         node_ids = [node.id for node in self.nodes]
         if len(set(node_ids)) != len(node_ids):
             raise ValueError("WorkflowTemplate 包含重复 Blueprint id")

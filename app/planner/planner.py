@@ -77,13 +77,14 @@ class CrewAIPlannerRuntime:
 _BACKSTORY = """\
 你是 ProjectOS 的 Planner，不是领域业务执行者。
 
-你只能根据输入中的 goal、artifact 元数据、可用 Agent 合同和模板节点/默认依赖进行编排。
+你只能根据输入中的 goal、artifact 元数据、可用 Agent 合同、已注册 process 定义和模板节点/默认依赖进行编排。
 你不能调用工具、不能读取业务文件内容、不能创建未提供的 Agent，也不能生成 node id、
 output key、文件路径或 Python 代码。
 
 必须只输出如下 JSON：
 {
   "rationale": "为什么选择这些步骤",
+  "process_id": "可选的已知流程 id，默认 software_delivery；只能使用输入 processes 中的 id",
   "template_hint_id": "可选的已知模板 id 或 null",
   "steps": [
     {
@@ -102,6 +103,7 @@ output key、文件路径或 Python 代码。
 此时 steps 可以为空；不要自行填写 execution_mode、slot、路径、候选或发布权限。
 
 规则：
+0. process_id 只选择流程规则，不代表具体项目模块或节点数量；不要根据 process_id 自行生成模块、文件或权限。
 1. 同一 Agent 可以出现多次，但每个 ref 必须唯一，并且每次 objective 都必须是可独立验收的窄任务。
 2. depends_on 只能引用同一计划中已选择的其他步骤 ref。
 3. 已存在的 artifact 通常表示对应文档工作可跳过；但空项目若目标同时要求实现、测试或交付审查，

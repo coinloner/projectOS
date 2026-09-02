@@ -9,6 +9,11 @@ from typing import TYPE_CHECKING
 from app.artifact.repository import ArtifactRef
 from app.execution_context import ExecutionMode
 from app.orchestration.work_item import WorkItem
+from app.orchestration.field_semantics import (
+    NodeExecutionContract,
+    compile_node_contract,
+    validate_task_input_semantics,
+)
 
 if TYPE_CHECKING:
     from app.orchestration.runner import RunState
@@ -131,6 +136,7 @@ class TaskInputPackage:
     skill_refs: tuple[str, ...] = ()
     skill_guidance: str = ""
     policy_guidance: str = ""
+    semantic_contract: NodeExecutionContract | None = None
     contract_digest: str | None = None
     schema_version: int = 1
 
@@ -167,6 +173,8 @@ class TaskInputPackage:
             payload["skill_guidance"] = self.skill_guidance
         if self.policy_guidance:
             payload["policy_guidance"] = self.policy_guidance
+        if self.semantic_contract is not None:
+            payload["semantic_contract"] = self.semantic_contract.as_dict()
         return payload
 
     def as_prompt(self, *, memory_context: str = "") -> str:
@@ -181,14 +189,24 @@ class TaskInputPackage:
         if self.inputs:
             summary.append("可读取的授权引用（只能使用列出的 ref_id）：")
             summary.extend(f"- {item.ref_id}" for item in self.inputs)
+        task_payload = self.as_dict()
+        # Render semantic definitions in a dedicated section below instead of
+        # duplicating the (usually larger) object inside the wire payload.
+        task_payload.pop("semantic_contract", None)
         prompt = (
             "以下是 ProjectOS 控制面生成的结构化任务输入包。它是当前 WorkItem 的唯一任务边界；"
             "输入引用只允许通过列出的 ref_id 按需读取，不能把引用之外的文件当作输入。\n\n"
             + "\n".join(summary)
             + "\n\n"
-            + json.dumps({"task_input": self.as_dict()}, ensure_ascii=False, indent=2)
+            + json.dumps({"task_input": task_payload}, ensure_ascii=False, indent=2)
             + "\n\n请只完成 objective、constraints 和 acceptance_criteria 范围内的工作。"
         )
+        if self.semantic_contract is not None:
+            prompt += (
+                "\n\n【节点语义契约】以下定义是字段的执行含义、来源和消费者。"
+                "即使 JSON 结构合法，也不得违反这些语义规则：\n"
+                + json.dumps(self.semantic_contract.as_dict(), ensure_ascii=False, indent=2)
+            )
         if self.failure_package is not None:
             prompt += (
                 "\n\n结构化失败证据（由控制面生成，只能用于定位修复范围）：\n"
@@ -320,7 +338,7 @@ def build_task_input(
         forbidden_paths = item.forbidden_paths
     constraints = list(item.constraints)
     constraints.extend(_mode_constraints(item.execution_mode, slot))
-    return TaskInputPackage(
+    package = TaskInputPackage(
         trace_id=state.plan.trace.trace_id,
         work_item_id=item.id,
         agent_id=item.agent_id,
@@ -369,8 +387,13 @@ def build_task_input(
         skill_refs=resolved_skill_refs or item.skill_refs,
         skill_guidance=skill_guidance,
         policy_guidance=policy_guidance,
+        semantic_contract=compile_node_contract(state, item),
         contract_digest=item.contract_digest,
     )
+    semantic_errors = validate_task_input_semantics(package)
+    if semantic_errors:
+        raise ValueError("TaskInputPackage 语义校验失败: " + "; ".join(semantic_errors))
+    return package
 
 
 def _scope_paths(

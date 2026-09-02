@@ -12,6 +12,7 @@ from threading import RLock
 from uuid import uuid4
 
 from app.execution_context import ExecutionContext
+from app.orchestration.field_semantics import coalesce_alias
 from app.orchestration.evidence import RuntimeEvidence, SandboxEvidence
 from app.orchestration.retry import FailurePackage, FailureSignal
 from app.sandbox.result import SandboxResult, SandboxStatus
@@ -51,6 +52,27 @@ class TraceStore:
 
         return WorkerProgressStore(self.project_path).read(trace_id)
 
+    def metrics(self, trace_id: str) -> dict[str, object]:
+        """Return deterministic run metrics from append-only Trace events."""
+        events = self.list_events(trace_id)
+        counts: dict[str, int] = {}
+        for event in events:
+            kind = str(event.get("type", "unknown"))
+            counts[kind] = counts.get(kind, 0) + 1
+        retries = counts.get("work_item_retrying", 0)
+        completed = counts.get("work_item_completed", 0)
+        failed = counts.get("work_item_failed", 0)
+        terminal = completed + failed
+        return {
+            "trace_id": trace_id,
+            "event_count": len(events),
+            "work_items_completed": completed,
+            "work_items_failed": failed,
+            "retry_count": retries,
+            "retry_convergence_rate": (completed / terminal) if terminal else None,
+            "event_counts": counts,
+        }
+
     def start_trace(self, goal: str, *, parent_trace_id: str | None = None) -> TraceContext:
         requirement = self._load_requirement_metadata()
         context = TraceContext(
@@ -79,6 +101,7 @@ class TraceStore:
         payload = {
                 "plan_id": plan.id,
                 "template_id": plan.template_id,
+                "process_id": plan.process_id,
                 "goal": plan.goal,
                 "work_items": [
                     {
@@ -453,8 +476,8 @@ class TraceStore:
                         ref_from_dict(value) for value in raw.get("input_refs", [])
                     ),
                     slot=(
-                        str(raw.get("slot", raw.get("output_slot")))
-                        if raw.get("slot", raw.get("output_slot"))
+                        str(coalesce_alias(raw, "slot", "output_slot"))
+                        if coalesce_alias(raw, "slot", "output_slot")
                         else None
                     ),
                     publish_target=(
@@ -502,6 +525,7 @@ class TraceStore:
             template_id=(
                 str(payload["template_id"]) if payload.get("template_id") else None
             ),
+            process_id=str(payload.get("process_id") or "software_delivery"),
             trace=TraceContext(
                 requirement_id=str(trace_payload["requirement_id"]),
                 trace_id=str(trace_payload["trace_id"]),

@@ -12,6 +12,7 @@ from app.orchestration.plan import ExecutionPlan
 from app.orchestration.trace import TraceContext
 from app.orchestration.work_item import WorkItem
 from app.workflow.compiler import TemplateCompiler
+from app.process import default_process_registry
 
 
 class PlanValidator:
@@ -44,6 +45,11 @@ class PlanValidator:
                     f"计划引用未知模板: '{draft.template_hint_id}'"
                 )
 
+        process_id = draft.process_id or "software_delivery"
+        process = default_process_registry().get(process_id)
+        if process is None:
+            raise PlanValidationError(f"计划引用未知流程: '{process_id}'")
+
         # 空项目的实现/验证/审查不能绕过需求、架构和任务基线。
         # 这些节点包含受控产物发布权限，必须通过完整交付模板编译。
         effective_template_id = self._effective_template_id(draft, context)
@@ -64,13 +70,18 @@ class PlanValidator:
             )
         if template is not None and template.has_controlled_execution:
             try:
-                return TemplateCompiler().compile(
+                plan = TemplateCompiler().compile(
                     template,
                     goal=context.goal,
                     plan_id=plan_id,
                     trace=trace or TraceContext.ephemeral(),
                     agent_output_keys={agent.id: agent.output_key for agent in context.agents},
                 )
+                if plan.process_id != process.id:
+                    raise PlanValidationError(
+                        f"模板 '{template.id}' 的 process_id={plan.process_id} 与计划流程 {process.id} 不一致"
+                    )
+                return plan
             except ValueError as error:
                 raise PlanValidationError(
                     f"受控模板无法编译为执行计划: {error}"
@@ -136,6 +147,7 @@ class PlanValidator:
                 goal=context.goal,
                 work_items=work_items,
                 template_id=effective_template_id,
+                process_id=process.id,
                 trace=trace or TraceContext.ephemeral(),
             )
         except ValueError as error:

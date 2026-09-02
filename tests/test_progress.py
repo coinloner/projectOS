@@ -67,6 +67,18 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(payload["llm"]["state"], "completed")
         self.assertEqual(payload["event"], "llm_completed")
 
+    def test_new_llm_call_clears_previous_terminal_marker(self) -> None:
+        tracker = ProgressTracker(
+            self.directory.name, "tr-terminal-reset", "implementation", "code_agent"
+        )
+        tracker.llm_started(type("Event", (), {"stream": True, "call_id": "c1"})())
+        tracker.llm_completed_from_agent_return()
+        tracker.llm_started(type("Event", (), {"stream": True, "call_id": "c2"})())
+        payload = WorkerProgressStore(self.directory.name).read("tr-terminal-reset")
+        self.assertEqual(payload["llm"]["state"], "started")
+        self.assertEqual(payload["llm"]["call_id"], "c2")
+        self.assertIsNone(payload["llm"]["terminal_at"])
+
     def test_file_delivery_events_are_persisted_without_content(self) -> None:
         tracker = ProgressTracker(
             self.directory.name, "tr-write", "wi-code", "code_agent"

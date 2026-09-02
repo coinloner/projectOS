@@ -99,6 +99,15 @@ class ArchitectureService:
             for key, value in defaults.items():
                 raw.setdefault(key, value)
         contract = self._implementation_contract.save(raw)
+        # Persist the applicable quality dimensions alongside the contract so
+        # Review and API metrics can explain which checks were project-specific.
+        try:
+            from app.orchestration.delivery import DeliveryStore
+            DeliveryStore(self._project_path).snapshot_quality(contract=contract)
+        except Exception:
+            # Quality snapshot is observability metadata; contract persistence
+            # remains authoritative and must not be rolled back for it.
+            pass
         return json.dumps(
             {
                 "ok": True,
@@ -201,6 +210,24 @@ class ArchitectureArtifactWorkflow:
         content = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2)
         limit = _design_limit_for_slot(context.slot or "")
         try:
+            _validate_design_budget(parsed, content, context.slot or "")
+        except ValueError as error:
+            raise ValueError(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error_type": "artifact_budget",
+                        "retryable": True,
+                        "expected_tool": _expected_design_tool(context.slot or ""),
+                        "limit": implementation_design_budget(len(parsed.implementation_units))
+                        if isinstance(parsed, ImplementationDesign)
+                        else limit,
+                        "message": str(error),
+                    },
+                    ensure_ascii=False,
+                )
+            ) from error
+        try:
             self._validate_size(content, limit)
         except ValueError as error:
             raise ValueError(
@@ -277,12 +304,15 @@ class ArchitectureArtifactWorkflow:
             return target if len(matches) == 1 else module_id
         modules = [item.model_copy(update={"module_id": canonical(item.module_id)}) for item in modules]
         implementations = [item.model_copy(update={"module_id": canonical(item.module_id)}) for item in implementations]
+        implementations = _dedupe_interface_declarations(implementations)
+        implementations = _normalize_interface_dependencies(implementations)
         return ArchitectureDesignBundle(
             schema_version=1,
             blueprint=blueprint,
             modules=modules,
             implementations=implementations,
         )
+
 
     def create_candidate(self, context: ExecutionContext, content: str) -> str:
         if context.execution_mode is not ExecutionMode.INTEGRATION:
@@ -310,6 +340,44 @@ class ArchitectureArtifactWorkflow:
             )
 
 
+def _normalize_interface_dependencies(
+    implementations: list[ImplementationDesign],
+) -> list[ImplementationDesign]:
+    """Map model-emitted interface IDs in ``depends_on`` to owning units."""
+    owners: dict[str, str] = {}
+    for design in implementations:
+        for interface in design.provided_interfaces:
+            owners.setdefault(interface.interface_id, interface.owner_unit)
+    result: list[ImplementationDesign] = []
+    for design in implementations:
+        units = []
+        for unit in design.implementation_units:
+            dependencies = tuple(dict.fromkeys(owners.get(dep, dep) for dep in unit.depends_on))
+            units.append(unit.model_copy(update={"depends_on": list(dependencies)}))
+        result.append(design.model_copy(update={"implementation_units": units}))
+    return result
+
+
+def _dedupe_interface_declarations(
+    implementations: list[ImplementationDesign],
+) -> list[ImplementationDesign]:
+    """Keep one canonical declaration when agents repeat a shared interface."""
+    seen: dict[str, dict[str, Any]] = {}
+    result: list[ImplementationDesign] = []
+    for design in implementations:
+        kept = []
+        for interface in design.provided_interfaces:
+            payload = interface.model_dump(mode="json")
+            previous = seen.get(interface.interface_id)
+            if previous is None:
+                seen[interface.interface_id] = payload
+                kept.append(interface)
+            elif previous != payload:
+                raise ValueError(f"接口 {interface.interface_id} 在多个实现设计中定义冲突")
+        result.append(design.model_copy(update={"provided_interfaces": kept}))
+    return result
+
+
 _STAGED_CHAR_LIMITS = {
     "baseline": 3200,
     "api": 4200,
@@ -321,19 +389,75 @@ _STAGED_CHAR_LIMITS = {
 _DESIGN_CHAR_LIMITS = {
     "blueprint": 7000,
     "module": 6000,
-    "implementation": 9000,
 }
+
+# Implementation designs are file-granular.  A fixed 9k cap allowed a single
+# unit to consume the whole envelope while ten units had no room for their
+# dependency metadata.  The envelope starts at 5k and grows by 1k only after
+# the third unit, with an upper bound suitable for a single module hand-off.
+_IMPLEMENTATION_BASE_CHARS = 5_000
+_IMPLEMENTATION_EXTRA_PER_UNIT_CHARS = 1_500
+_IMPLEMENTATION_MAX_CHARS = 16_000
+_IMPLEMENTATION_UNIT_MAX_CHARS = 4_500
 
 
 def _design_limit_for_slot(slot: str) -> int:
     """Resolve exact slots and prefixed layered slots to their depth limit."""
+    if slot == "implementation" or slot.startswith("implementation-"):
+        return _IMPLEMENTATION_MAX_CHARS
     if slot in _DESIGN_CHAR_LIMITS:
         return _DESIGN_CHAR_LIMITS[slot]
-    if slot.startswith("implementation-"):
-        return _DESIGN_CHAR_LIMITS["implementation"]
     if slot.startswith("module-"):
         return _DESIGN_CHAR_LIMITS["module"]
     return 8000
+
+
+def implementation_design_budget(unit_count: int) -> int:
+    """Return the total serialized-character budget for N implementation units."""
+    count = max(1, int(unit_count))
+    return min(
+        _IMPLEMENTATION_MAX_CHARS,
+        _IMPLEMENTATION_BASE_CHARS
+        + max(0, count - 1) * _IMPLEMENTATION_EXTRA_PER_UNIT_CHARS,
+    )
+
+
+def implementation_unit_budget() -> int:
+    """Maximum serialized size of one file-granular implementation unit."""
+    return _IMPLEMENTATION_UNIT_MAX_CHARS
+
+
+def llm_token_budget_for_design(slot: str | None, *, unit_count: int = 3) -> int | None:
+    """Map the architecture character budget to a conservative token cap.
+
+    Provider tokenization differs by language, so this is intentionally a
+    safety budget, not a byte/token conversion.  Explicit deployment env
+    settings still override it in ``build_llm``.
+    """
+    value = (slot or "").strip()
+    if not value.startswith("implementation-") and value not in {"implementation"}:
+        return None
+    chars = implementation_design_budget(unit_count)
+    return min(24_000, max(4_000, int(chars * 1.5)))
+
+
+def _validate_design_budget(parsed: Any, content: str, slot: str) -> None:
+    if not (slot == "implementation" or slot.startswith("implementation-")):
+        return
+    units = list(getattr(parsed, "implementation_units", ()))
+    total_limit = implementation_design_budget(len(units))
+    if len(content) > total_limit:
+        raise ValueError(
+            f"当前架构实现设计包含 {len(units)} 个 unit，产物超过动态上限 "
+            f"{total_limit} 字符"
+        )
+    for unit in units:
+        serialized = json.dumps(unit.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":"))
+        if len(serialized) > _IMPLEMENTATION_UNIT_MAX_CHARS:
+            raise ValueError(
+                f"实现单元 '{unit.unit_id}' 超过单 unit 上限 "
+                f"{_IMPLEMENTATION_UNIT_MAX_CHARS} 字符"
+            )
 
 
 def _expected_design_tool(slot: str) -> str | None:
@@ -439,7 +563,7 @@ def _render_design_bundle(bundle: ArchitectureDesignBundle) -> str:
             lines.append("依赖：" + "；".join(design.dependencies))
     lines.extend(["", "## Interfaces"])
     for design in bundle.implementations:
-        for interface in design.interfaces:
+        for interface in design.provided_interfaces:
             lines.append(f"- {interface.interface_id}: {interface.name} ({interface.kind})")
     if bundle.blueprint.entrypoints.backend_file or bundle.blueprint.entrypoints.frontend_file:
         lines.extend(["", "## Entrypoints"])

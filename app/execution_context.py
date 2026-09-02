@@ -45,6 +45,10 @@ class ExecutionContext:
     memory: "MemoryStore | None" = None
     progress: Any | None = None
     llm_selection: "LLMSelection | None" = None
+    # Estimated number of implementation units for architecture design
+    # budgeting. This is a prompt/token hint only; the persisted design is
+    # always checked against the exact unit count after parsing.
+    implementation_unit_count: int | None = None
     owned_files: tuple[str, ...] = ()
     # Optional per-attempt narrowing used by the control plane for bounded
     # retries.  Empty means the normal execution-mode tool set.
@@ -61,3 +65,5 @@ class ExecutionContext:
             raise ValueError("分区执行必须包含 slot")
         if self.execution_mode is ExecutionMode.INTEGRATION and not self.publish_target:
             raise ValueError("集成执行必须包含 publish_target")
+        if self.implementation_unit_count is not None and self.implementation_unit_count < 1:
+            raise ValueError("ExecutionContext.implementation_unit_count 必须大于 0")

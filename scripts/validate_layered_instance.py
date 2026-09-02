@@ -43,7 +43,7 @@ class DeterministicArchitectureAgent:
 
     def run(self, task: str, *, context: ExecutionContext | None = None) -> AgentResult:
         assert context is not None
-        slot = context.output_slot
+        slot = context.slot
         if context.execution_mode is ExecutionMode.PARTITIONED:
             if slot == "blueprint":
                 value = ArchitectureBlueprint(
