@@ -179,7 +179,9 @@ class RetryLimits:
         (FailureKind.IMPLEMENTATION_SUMMARY_MISSING, 1),
         (FailureKind.REPAIR_NO_FILE_CHANGE, 1),
         (FailureKind.RUNTIME_PREFLIGHT, 0),
-        (FailureKind.ARCHITECTURE_CONTRACT_MISSING, 1),
+        # Architecture objects contain nested, depth-specific schemas; allow
+        # one extra correction turn after field-level validation feedback.
+        (FailureKind.ARCHITECTURE_CONTRACT_MISSING, 2),
         # A missing ChangeSet is a delivery protocol failure, not a semantic
         # test failure. Give the single-file agent dedicated retries.
         (FailureKind.CODE_DELIVERY_INCOMPLETE, 2),

@@ -16,6 +16,7 @@ from app.domain.architecture.design_contract import (
 from app.domain.architecture.service import ArchitectureArtifactWorkflow
 from app.domain.architecture.service import implementation_design_budget, implementation_unit_budget
 from app.domain.architecture.contract_input import ProjectContractInput
+from app.domain.architecture.contract_input import ConsumedInterfaceRefInput
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.orchestration.trace import TraceContext
 from app.workflow.compiler import TemplateCompiler
@@ -78,6 +79,46 @@ def _implementation(module_id: str) -> ImplementationDesign:
 
 
 class ArchitectureDesignContractTest(unittest.TestCase):
+    def test_consumed_interface_wire_aliases_are_canonicalized(self) -> None:
+        module = ModuleDesign.model_validate(
+            {
+                "schema_version": 1,
+                "design_id": "module-api",
+                "parent_design_id": "blueprint-1",
+                "module_id": "api",
+                "responsibilities": ["HTTP 接口"],
+                "consumed_interfaces": [
+                    {
+                        "interface_id": "inventory.stock",
+                        "direction": "consumed",
+                        "summary": "调用库存查询",
+                        "usage": "调用库存查询",
+                        "required": True,
+                    }
+                ],
+            }
+        )
+        self.assertEqual(
+            module.consumed_interfaces[0].model_dump(),
+            {
+                "interface_id": "inventory.stock",
+                "direction": "consumed",
+                "summary": "调用库存查询",
+            },
+        )
+
+    def test_contract_consumed_interface_legacy_fields_are_canonicalized(self) -> None:
+        value = ConsumedInterfaceRefInput.model_validate(
+            {
+                "interface_id": "inventory.stock",
+                "direction": "consumed",
+                "summary": "调用库存查询",
+                "required": True,
+            }
+        )
+        self.assertEqual(value.usage, "调用库存查询")
+        self.assertTrue(value.required)
+        self.assertNotIn("direction", value.model_dump())
     def test_bundle_enforces_three_level_parent_semantics(self) -> None:
         bundle = ArchitectureDesignBundle(
             schema_version=1,

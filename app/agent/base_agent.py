@@ -137,6 +137,13 @@ class BaseAgent:
             if progress is not None:
                 progress.llm_failed(type("Event", (), {"error": str(error)})())
                 progress.failed(str(error))
+            if isinstance(error, ToolExecutionError):
+                # Preserve typed tool failures across the CrewAI boundary so
+                # GraphRunner can select a domain-specific recovery path.
+                raise
+            architecture_error = _architecture_tool_validation_error(error, context)
+            if architecture_error is not None:
+                raise architecture_error from error
             raise RuntimeError(f"❌ CrewAI Agent 执行失败: {error}") from error
         finally:
             if progress is not None:
@@ -217,15 +224,7 @@ def _replay_structured_architecture_output(
         return None
     if context.agent_id != "architecture_agent" or context.slot is None:
         return None
-    expected = (
-        "write_architecture_blueprint"
-        if context.slot == "blueprint"
-        else "write_module_design"
-        if context.slot.startswith("module-")
-        else "write_implementation_design"
-        if context.slot.startswith("implementation-")
-        else None
-    )
+    expected = _expected_architecture_writer(context)
     if expected is None:
         return None
 
@@ -247,14 +246,17 @@ def _replay_structured_architecture_output(
         return None
     try:
         return str(tool.run(design=payload))
-    except Exception:
-        # Preserve the tool's typed failure semantics for the Runner.  A
-        # malformed object must not be silently promoted to a completed node.
+    except ToolExecutionError:
+        raise
+    except Exception as error:
+        typed = _architecture_tool_validation_error(error, context)
+        if typed is not None:
+            raise typed from error
         raise
 
 
 def _strict_json_object(output: str) -> dict[str, object] | None:
-    """Parse only a complete JSON object, accepting one fenced code block."""
+    """Parse one leading JSON object, accepting a known trailing capability envelope."""
     candidate = output.strip()
     if candidate.startswith("```") and candidate.endswith("```"):
         lines = candidate.splitlines()
@@ -262,9 +264,67 @@ def _strict_json_object(output: str) -> dict[str, object] | None:
             candidate = "\n".join(lines[1:-1]).strip()
     try:
         payload = json.loads(candidate)
+        return payload if isinstance(payload, dict) else None
     except (TypeError, ValueError, json.JSONDecodeError):
+        # A relay may concatenate the intended tool arguments and its textual
+        # capability fallback.  Recover only the first complete object when
+        # the remainder is a capability_request envelope; arbitrary prose is
+        # never treated as structured output.
+        decoder = json.JSONDecoder()
+        try:
+            payload, end = decoder.raw_decode(candidate)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        remainder = candidate[end:].strip()
+        if not remainder:
+            return payload
+        try:
+            trailing = json.loads(remainder)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if isinstance(trailing, dict) and trailing.get("type") == "capability_request":
+            return payload
         return None
-    return payload if isinstance(payload, dict) else None
+
+
+def _expected_architecture_writer(context: ExecutionContext | None) -> str | None:
+    """Return the sole writer allowed for a layered architecture slot."""
+    if context is None or context.agent_id != "architecture_agent":
+        return None
+    if context.execution_mode.value != "partitioned" or context.slot is None:
+        return None
+    if context.slot == "blueprint":
+        return "write_architecture_blueprint"
+    if context.slot.startswith("module-"):
+        return "write_module_design"
+    if context.slot.startswith("implementation-"):
+        return "write_implementation_design"
+    return None
+
+
+def _architecture_tool_validation_error(
+    error: BaseException,
+    context: ExecutionContext | None,
+) -> ToolExecutionError | None:
+    """Convert CrewAI's pre-dispatch argument error into a typed tool failure."""
+    expected = _expected_architecture_writer(context)
+    if expected is None:
+        return None
+    message = str(error)
+    marker = f"Tool '{expected}' arguments validation failed"
+    if marker not in message:
+        return None
+    result = ToolResult(
+        tool_name=expected,
+        status=ToolResultStatus.RETRYABLE,
+        message=message,
+        error_type="tool_validation",
+        retryable=True,
+        expected_tool=expected,
+    )
+    return ToolExecutionError(result, cause=error)
 
 
 def _execute_serialized_local_tools(

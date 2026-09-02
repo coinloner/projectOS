@@ -61,6 +61,19 @@ class ConsumedInterfaceRefInput(_ContractModel):
     usage: str | None = Field(default=None, max_length=1000)
     required: bool = True
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_direction_summary(cls, value: Any) -> Any:
+        """Accept the old shared interface shape only at the wire boundary."""
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "usage" not in data and data.get("summary"):
+            data["usage"] = data["summary"]
+        data.pop("direction", None)
+        data.pop("summary", None)
+        return data
+
 
 class ContractImplementationUnitInput(_ContractModel):
     """One complete-file implementation scope.

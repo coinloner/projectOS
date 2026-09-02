@@ -144,6 +144,25 @@ class ModuleDesign(_DesignModel):
         if "depends_on_modules" not in data and "dependencies" in data:
             data["depends_on_modules"] = data.get("dependencies") or []
         data.pop("dependencies", None)
+        # Older model prompts represented consumed interfaces with the shared
+        # ``direction/summary`` shape.  Normalize that wire alias once while
+        # keeping the canonical ModuleDesign field as InterfaceRef.
+        consumed = data.get("consumed_interfaces")
+        if isinstance(consumed, list):
+            normalized = []
+            for raw in consumed:
+                if not isinstance(raw, dict):
+                    normalized.append(raw)
+                    continue
+                item = dict(raw)
+                if item.get("direction") not in {"provided", "consumed"}:
+                    item["direction"] = "consumed"
+                if not item.get("summary"):
+                    item["summary"] = item.get("usage") or "未声明消费用途"
+                item.pop("usage", None)
+                item.pop("required", None)
+                normalized.append(item)
+            data["consumed_interfaces"] = normalized
         return data
 
     @model_validator(mode="after")

@@ -410,6 +410,43 @@ def _partitioned_code_retry_prompt(
     return "\n".join(lines)
 
 
+def _architecture_retry_contract_prompt(slot: str, required_tool: str) -> str:
+    """Render a compact field-level contract for architecture retries."""
+    if required_tool == "write_architecture_blueprint":
+        return (
+            "\n【Blueprint 字段闸门】design 必须是 depth=0 ArchitectureBlueprint；顶层只允许 "
+            "schema_version、design_id、depth、system_boundary、layers、modules、"
+            "global_constraints、runtime_profile、entrypoints、required_files、requirement_ids。"
+            "不要写 implementation_units、provided_interfaces 或 consumed_interfaces。"
+        )
+    if required_tool == "write_module_design":
+        return (
+            "\n【ModuleDesign 字段闸门】design 必须是 depth=1 ModuleDesign；顶层只允许 "
+            "schema_version、design_id、depth、parent_design_id、module_id、purpose、"
+            "responsibilities、provided_interfaces、consumed_interfaces、entities、"
+            "depends_on_modules、acceptance_criteria、requirement_ids。"
+            "不要写 layers、implementation_units、owned_files、required_paths 或任何 depth=0/2 字段。"
+            "consumed_interfaces 每项只能是 interface_id、usage、required；不得写 direction、summary、owner_unit。"
+        )
+    if required_tool == "write_implementation_design":
+        return (
+            "\n【ImplementationDesign 字段闸门】design 必须是 depth=2 ImplementationDesign；顶层只允许 "
+            "schema_version、design_id、depth、parent_design_id、module_id、provided_interfaces、"
+            "consumed_interfaces、implementation_units、required_test_types、requirement_ids。"
+            "不要写 layers。provided_interfaces 每项必须含 interface_id、kind、name、owner_unit，"
+            "可选 owner_file、signature、input_schema、output_schema、errors、constraints；"
+            "owner_unit 必须精确等于同一 design.implementation_units 中已有的 unit_id；"
+            "如果当前模块没有实现该接口的 unit，就不要把它列入 provided_interfaces。"
+            "consumed_interfaces 每项只能含 interface_id、usage、required，不得含 direction、summary、owner_unit。"
+            "每个 implementation_units 元素必须含 unit_id、layer、objective、allowed_paths、owned_files，"
+            "且 owned_files 恰好一个具体文件；可选 required_paths、forbidden_paths、depends_on、input_refs、"
+            "acceptance_criteria、constraints、non_goals、policy_refs、skill_refs、parallel_group、"
+            "output_key、slot、requirement_ids、wave、provides_interfaces、consumes_interfaces、"
+            "provided_symbols、required_symbols。不要写 consumed_interface_ids、test_boundary 或 required_files。"
+        )
+    return ""
+
+
 class GraphRunner:
     """ExecutionPlan 的通用同步执行器。
 
@@ -1481,6 +1518,7 @@ class GraphRunner:
                         f"\n本轮必须调用当前已注册的本地工具 {required_tool} 完成对象落盘；"
                         "这不是外部能力，不得返回 capability_request。"
                     )
+                    prompt += _architecture_retry_contract_prompt(slot, required_tool)
             if (
                 retry_context
                 and definition.domain == "code"
@@ -1767,13 +1805,30 @@ class GraphRunner:
                 )
             if isinstance(error, ToolExecutionError):
                 tool_result = error.result
+                architecture_validation = (
+                    item.agent_id == "architecture_agent"
+                    and item.execution_mode is ExecutionMode.PARTITIONED
+                    and tool_result.error_type in {"tool_validation", "tool_protocol"}
+                    and _expected_architecture_tool(item) is not None
+                )
+                failure_kind = (
+                    FailureKind.ARCHITECTURE_CONTRACT_MISSING
+                    if architecture_validation
+                    else FailureKind.TOOL_EXECUTION
+                )
                 return NodeResult.needs_replan(
                     work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=str(error),
                     signal=FailureSignal(
-                        FailureKind.TOOL_EXECUTION,
-                        f"工具 {tool_result.tool_name} 未完成（{tool_result.error_type or 'tool_execution'}）：{tool_result.message}",
+                        failure_kind,
+                        (
+                            f"架构工具 {tool_result.tool_name} 参数未通过结构校验；"
+                            f"expected_tool={tool_result.expected_tool or tool_result.tool_name}；"
+                            f"请只提交当前 depth 对应对象并修正字段：{tool_result.message}"
+                            if architecture_validation
+                            else f"工具 {tool_result.tool_name} 未完成（{tool_result.error_type or 'tool_execution'}）：{tool_result.message}"
+                        ),
                     ),
                 )
             if isinstance(error, ToolDiscoveryError):

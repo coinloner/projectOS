@@ -53,9 +53,38 @@ class ArchitectureContractToolSet:
         return _save_contract(self._service, contract)
 
 
+def _module_design_tool_schema() -> dict[str, Any]:
+    """Return the closed ModuleDesign schema with wire-only consumed aliases.
+
+    ``BaseTool`` validates arguments before invoking the domain service, so
+    model validators cannot normalize legacy ``usage/required`` fields by
+    themselves.  Give only ``consumed_interfaces`` a dedicated wire schema;
+    the service immediately converts it to canonical ``direction/summary``.
+    """
+    schema = json.loads(json.dumps(ModuleDesign.model_json_schema()))
+    defs = schema.setdefault("$defs", {})
+    defs["ConsumedInterfaceWire"] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "interface_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "direction": {"type": "string", "enum": ["consumed"]},
+            "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+            "usage": {"anyOf": [{"type": "string", "maxLength": 1000}, {"type": "null"}], "default": None},
+            "required": {"type": "boolean", "default": True},
+        },
+        "required": ["interface_id"],
+    }
+    consumed = schema.get("properties", {}).get("consumed_interfaces")
+    if isinstance(consumed, dict):
+        consumed["items"] = {"$ref": "#/$defs/ConsumedInterfaceWire"}
+    return schema
+
+
 def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None:
     """注册兼容的独占工具和新分区/集成工具。"""
     tools = ArchitectureToolSet(ArchitectureService(project_path))
+    module_design_schema = _module_design_tool_schema()
     gateway.register_toolset(
         domain="architecture",
         name="project_artifacts",
@@ -201,7 +230,7 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                         description="写入 depth=1 的单模块架构设计对象；必须引用总体蓝图 design_id。",
                         parameters={
                             "type": "object",
-                            "properties": {"design": ModuleDesign.model_json_schema()},
+                            "properties": {"design": module_design_schema},
                             "required": ["design"],
                             "additionalProperties": False,
                         },

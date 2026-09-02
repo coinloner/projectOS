@@ -11,12 +11,13 @@ from app.memory.store import MemoryStore
 from app.domain.architecture.service import ArchitectureArtifactWorkflow
 from app.orchestration.retry import FailureKind, FailurePackage, FailureSignal, RecoveryAction, RetryPolicy
 from app.tool_manager.gateway import ToolGateway
-from app.tool_manager.source import MCPToolSource
+from app.tool_manager.source import MCPToolSource, ToolExecutionError, ToolResult, ToolResultStatus
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.runner import (
     GraphRunner,
     GraphRunStatus,
     _architecture_tool_allowlist,
+    _architecture_retry_contract_prompt,
     _expected_architecture_tool,
     _partitioned_code_retry_prompt,
     _refresh_review_quality_section,
@@ -95,6 +96,15 @@ class ReviewQualityRefreshTest(unittest.TestCase):
         self.assertIn("evidence_id=new", summary)
         self.assertNotIn("evidence_id=old", summary)
 
+    def test_architecture_retry_contract_is_depth_specific(self) -> None:
+        prompt = _architecture_retry_contract_prompt(
+            "implementation-frontend", "write_implementation_design"
+        )
+        self.assertIn("schema_version", prompt)
+        self.assertIn("owned_files", prompt)
+        self.assertIn("不要写 layers", prompt)
+        self.assertIn("不要写 consumed_interface_ids", prompt)
+
     def test_provider_transport_failure_is_classified_for_bounded_retry(self) -> None:
         agents = AgentRegistry()
         agents.register(
@@ -111,6 +121,48 @@ class ReviewQualityRefreshTest(unittest.TestCase):
         )
         self.assertEqual(result.status, GraphRunStatus.FAILED)
         self.assertIn("provider_transport", result.error or "")
+
+    def test_architecture_tool_validation_is_retried_with_field_context(self) -> None:
+        agents = AgentRegistry()
+
+        class InvalidArchitectureAgent:
+            def run(self, task: str, *, context: ExecutionContext | None = None) -> AgentResult:
+                raise ToolExecutionError(
+                    ToolResult(
+                        tool_name="write_module_design",
+                        status=ToolResultStatus.RETRYABLE,
+                        message="design.layers Extra inputs are not permitted",
+                        error_type="tool_validation",
+                        retryable=True,
+                        expected_tool="write_module_design",
+                    )
+                )
+
+        agents.register(
+            AgentDefinition("architecture_agent", "architecture", "架构", "architecture"),
+            InvalidArchitectureAgent,
+        )
+        result = GraphRunner(agents, ToolGateway()).run(
+            ExecutionPlan(
+                id="architecture-tool-validation",
+                goal="测试架构工具校验错误",
+                trace=TraceContext.ephemeral(),
+                work_items=(
+                    WorkItem(
+                        id="module-api",
+                        agent_id="architecture_agent",
+                        objective="生成模块设计",
+                        output_key="module-api",
+                        execution_mode=ExecutionMode.PARTITIONED,
+                        slot="module-api",
+                    ),
+                ),
+            )
+        )
+        self.assertEqual(result.status, GraphRunStatus.FAILED)
+        self.assertIn("architecture_contract_missing", result.error or "")
+        self.assertIn("expected_tool=write_module_design", result.error or "")
+        self.assertIn("design.layers", result.error or "")
 
 
 def make_node(
