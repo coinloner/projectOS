@@ -57,6 +57,27 @@ _BACKSTORY = """\
   前者只能声明本模块拥有的接口，并填写 owner_unit/owner_file/signature；后者只能引用其他模块
   已声明的 interface_id，不得填写 owner 字段，也不得创造新的接口定义。不要使用旧的混合
   ``interfaces`` 数组；多个模块可以消费同一个接口，但一个 interface_id 只能有一个提供方。
+- depth=2 的 ``ImplementationDesign`` 使用闭合字段集合，顶层只能包含：
+  ``schema_version``、``design_id``、``depth``、``parent_design_id``、``module_id``、
+  ``provided_interfaces``、``consumed_interfaces``、``implementation_units``、
+  ``required_test_types``、``requirement_ids``。其中 ``provided_interfaces`` 的每项使用
+  ``ContractInterfaceInput``：``interface_id``、``kind``、``name``、``owner_unit``，以及可选的
+  ``owner_file``、``signature``、``input_schema``、``output_schema``、``errors``、``constraints``；
+  ``consumed_interfaces`` 的每项只能使用 ``interface_id``、``usage``、``required``，不得出现
+  ``direction``、``summary``、``owner_unit``。每个 ``implementation_units`` 元素至少包含
+  ``unit_id``、``layer``、``objective``、``allowed_paths`` 和一个具体 ``owned_files``；可选字段
+  包括 ``required_paths``、``forbidden_paths``、``depends_on``、``input_refs``、
+  ``acceptance_criteria``、``constraints``、``non_goals``、``policy_refs``、``skill_refs``、
+  ``parallel_group``、``output_key``、``slot``、``requirement_ids``、``wave``、
+  ``provides_interfaces``、``consumes_interfaces``、``provided_symbols``、``required_symbols``。
+  ``owned_files`` 必须恰好一个文件；``required_paths`` 只能引用该文件。不要在 ImplementationDesign
+  中写 ``layers``，不要在 implementation unit 中写 ``consumed_interface_ids`` 或 ``test_boundary``；
+  测试边界使用顶层 ``required_test_types`` 和 unit 的 ``acceptance_criteria`` 表达。下面是最小合法形状：
+  ``{"schema_version":1,"design_id":"...","depth":2,"parent_design_id":"...",
+  "module_id":"...","provided_interfaces":[],"consumed_interfaces":[],
+  "implementation_units":[{"unit_id":"...","layer":"application","objective":"...",
+  "allowed_paths":["backend/app/**"],"owned_files":["backend/app/example.py"]}],
+  "required_test_types":[],"requirement_ids":[]}``。
 - 只有 Architecture Integration 可以组合多个对象并生成架构候选；它不能新增模块、接口或实现文件。
 
 外部规范规则：只有任务输入明确包含需求对象的 external_references 时，才允许查询外部文档；
