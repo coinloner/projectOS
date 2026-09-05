@@ -5,8 +5,10 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+import json
 import multiprocessing
 import os
+import re
 import time
 import traceback
 from threading import Lock
@@ -18,21 +20,66 @@ from app.application.environment import EnvironmentProvisioner
 from app.agent.result import normalize_capability
 from app.orchestration.runner import GraphRunResult, GraphRunStatus
 from app.orchestration.state import RunState
-from app.orchestration.node_result import NodeResult
+from app.orchestration.node_result import NodeResult, NodeStatus
 from app.artifact.repository import ArtifactRef
+from app.orchestration.retry import (
+    FailureKind,
+    FailureSignal,
+    RecoveryAction,
+    RetryLedger,
+    RetryPolicy,
+    RetryRecord,
+    RetryScope,
+)
+from app.domain.architecture.design_contract import (
+    ArchitectureBlueprint,
+    ImplementationDesign,
+    ModuleDesign,
+    parse_design,
+)
+from app.execution_context import ExecutionMode
 from app.orchestration.trace import TraceStore
 from app.planner.service import PlannerFailure
 from app.orchestration.progress import (
+    ExecutionLifecycle,
+    ExecutionOutcome,
     WorkerHeartbeat,
     WorkerProgressStore,
     heartbeat_for,
-    idle_for,
-    phase_idle_timeout,
+    meaningful_idle_for,
+    semantic_stall_timeout,
+    transport_stall_timeout,
+    transport_idle_for,
 )
 from app.llm.config import LLMSelection
 
 
 ContainerBuilder = Callable[[str], ProjectOSContainer]
+
+
+_ARCHITECTURE_UNDECLARED_INTERFACE = re.compile(
+    r"实现设计\s+([A-Za-z0-9._-]+)\s+引用了未声明的接口:\s*([A-Za-z0-9._-]+)"
+)
+_ARCHITECTURE_REQUIRED_PATH_NOT_OWNED = re.compile(
+    r"实现单元\s+([A-Za-z0-9._-]+)\s+的 required_paths\s+必须属于 owned_files:\s*"
+    r"([A-Za-z0-9._/-]+)"
+)
+_ARCHITECTURE_REQUIRED_FILE_NOT_OWNED = re.compile(
+    r"ArchitectureBlueprint\.required_file_not_owned:\s*([A-Za-z0-9._/-]+)"
+)
+_ARCHITECTURE_MODULE_PARENT_MISMATCH = re.compile(
+    r"模块设计\s+([A-Za-z0-9._-]+)\s+未引用当前总体蓝图"
+)
+_ARCHITECTURE_IMPLEMENTATION_PARENT_MISMATCH = re.compile(
+    r"实现设计\s+([A-Za-z0-9._-]+)\s+未引用已存在的模块设计"
+)
+_ARCHITECTURE_UNKNOWN_IMPLEMENTATION_DEPENDENCY = re.compile(
+    r"实现单元\s+([A-Za-z0-9._-]+)\s+依赖不存在的实现单元:\s*"
+    r"([A-Za-z0-9._,\s-]+)"
+)
+_ARCHITECTURE_MODULE_PURPOSE_MISMATCH = re.compile(
+    r"模块设计\s+([A-Za-z0-9._-]+)\s+的 purpose\s+必须与 Blueprint 一致"
+)
 
 
 def _format_error(error: BaseException) -> str:
@@ -67,10 +114,336 @@ class StartedRun:
     status: str
 
 
+@dataclass(frozen=True)
+class _StallObservation:
+    work_item_id: str
+    activity: str
+    kind: str
+    idle_seconds: float
+    threshold: float
+    progress_marker: str
+
+
+@dataclass(frozen=True)
+class _StallWindow:
+    observed_at: float
+    observation: _StallObservation
+
+
+def _monitor_failure_kind(event: str, details: dict[str, object]) -> FailureKind | None:
+    """Map Worker/watchdog facts to the same taxonomy used by GraphRunner."""
+    if event == "provider_stall_timeout":
+        return FailureKind.PROVIDER_STALL
+    if event == "worker_timed_out":
+        return FailureKind.WORKER_TIMEOUT
+    if event == "worker_failed":
+        source = str(details.get("source", ""))
+        return (
+            FailureKind.WORKER_BOOTSTRAP_FAILURE
+            if source in {"worker_bootstrap", "worker_startup"}
+            else FailureKind.WORKER_CRASH
+        )
+    # Cancellation is a control-plane termination, not a business failure and
+    # must never consume retry budget or create a planner failure package.
+    return None
+
+
+def _record_monitor_retry(
+    project_path: str,
+    trace_id: str,
+    *,
+    event: str,
+    summary: str,
+    error: str,
+    details: dict[str, object],
+    active_batch_id: str | None,
+    active_work_item_ids: tuple[str, ...],
+    root_work_item_id: str | None,
+    retry_policy: RetryPolicy | None = None,
+) -> None:
+    """Persist one normalized watchdog failure and its batch recovery relation."""
+    kind = _monitor_failure_kind(event, details)
+    if kind is None:
+        return
+    work_item_id = str(details.get("work_item_id") or root_work_item_id or "") or None
+    input_digest = str(details.get("contract_digest") or "") or None
+    signal = FailureSignal(
+        kind=kind,
+        summary=f"{summary}: {error}",
+        input_digest=input_digest,
+        retry_hint="resume_from_checkpoint" if kind is not FailureKind.WORKER_BOOTSTRAP_FAILURE else "repair_worker_bootstrap",
+    )
+    ledger = RetryLedger(project_path, trace_id)
+    policy = retry_policy or RetryPolicy()
+    scope = RetryScope.BATCH if active_batch_id else RetryScope.RUN
+    subject_id = active_batch_id or trace_id
+    item_retries = (
+        ledger.budget_count_for_work_item(root_work_item_id)
+        if root_work_item_id
+        else 0
+    )
+    kind_retries = (
+        ledger.budget_count_for_kind(root_work_item_id, kind)
+        if root_work_item_id
+        else 0
+    )
+    action = policy.action_for(
+        signal,
+        total_retries=ledger.budget_count(),
+        item_retries=item_retries,
+        kind_retries=kind_retries,
+    )
+    if scope is RetryScope.BATCH and action is RecoveryAction.RESUME:
+        action = RecoveryAction.RETRY_BATCH
+    interrupted = tuple(
+        item_id
+        for item_id in active_work_item_ids
+        if item_id != root_work_item_id
+    )
+    record = RetryRecord(
+        scope=scope,
+        subject_id=subject_id,
+        attempt=ledger.next_attempt(scope=scope, subject_id=subject_id),
+        max_attempts=policy.max_attempts_for(kind),
+        action=action,
+        failure=signal,
+        root_work_item_id=root_work_item_id,
+        interrupted_work_item_ids=interrupted,
+    )
+    ledger.append(record)
+    try:
+        trace = TraceStore(project_path).load_trace(trace_id)
+        from app.orchestration.trace import TraceContext
+
+        context = TraceContext(
+            requirement_id=str(trace["requirement_id"]),
+            trace_id=trace_id,
+            parent_trace_id=trace.get("parent_trace_id"),
+        )
+        TraceStore(project_path).record_event(
+            context,
+            active_batch_id or root_work_item_id or "worker",
+            "retry_decision_recorded",
+            details={"retry_record": record.as_dict()},
+        )
+    except (FileNotFoundError, KeyError, TypeError, ValueError):
+        # The terminal Trace is still useful even when its audit event cannot
+        # be appended during a process crash; retry-ledger remains authoritative.
+        pass
+
+
+def _finalize_external_run(
+    project_path: str,
+    trace_id: str,
+    *,
+    outcome: ExecutionOutcome,
+    event: str,
+    summary: str,
+    error: str,
+    details: dict[str, object] | None = None,
+    retry_policy: RetryPolicy | None = None,
+) -> tuple[str, ...]:
+    """Close Trace, progress and open WorkItems after a forced Worker stop.
+
+    A killed child cannot execute its normal ``GraphRunner``/tracker cleanup.
+    This helper is deliberately usable from both the API-side watchdog and
+    the child-side exception fallback, so every abnormal termination follows
+    one control-plane protocol.
+    """
+    traces = TraceStore(project_path)
+    try:
+        payload = traces.load_trace(trace_id)
+    except (FileNotFoundError, ValueError):
+        return ()
+    terminal = {
+        GraphRunStatus.COMPLETED.value,
+        GraphRunStatus.BLOCKED.value,
+        GraphRunStatus.FAILED.value,
+        GraphRunStatus.CANCELLED.value,
+    }
+    trace_status = str(payload.get("status", ""))
+    trace_is_terminal = trace_status in terminal
+    if trace_is_terminal:
+        # GraphRunner may have persisted Trace=failed before a later exception
+        # prevented the Worker snapshot from being closed.  Preserve that
+        # authoritative outcome for the monitoring layer instead of trying to
+        # move a completed Trace backwards.
+        try:
+            outcome = ExecutionOutcome(trace_status)
+        except ValueError:
+            trace_is_terminal = False
+
+    store = WorkerProgressStore(project_path)
+    before_progress = store.read(trace_id) or {}
+    before_run = before_progress.get("run") if isinstance(before_progress, dict) else {}
+    before_batch_id = (
+        str(before_run.get("active_batch_id"))
+        if isinstance(before_run, dict) and before_run.get("active_batch_id")
+        else None
+    )
+    before_batch = (
+        before_progress.get("batches", {}).get(before_batch_id, {})
+        if before_batch_id and isinstance(before_progress.get("batches"), dict)
+        else {}
+    )
+    before_items = (
+        tuple(str(item_id) for item_id in before_batch.get("expected_work_item_ids", []))
+        if isinstance(before_batch, dict)
+        else ()
+    )
+    root_work_item_id = None
+    if details:
+        root_work_item_id = str(details.get("work_item_id") or "") or None
+        if root_work_item_id is None:
+            stalled = details.get("stalled_work_items")
+            if isinstance(stalled, (list, tuple)) and stalled:
+                root_work_item_id = str(stalled[0])
+    # A wall-clock Worker timeout may fire before the parent has observed a
+    # per-item stall window. Preserve a deterministic batch root so the retry
+    # ledger can distinguish the causal member from interrupted siblings.
+    if root_work_item_id is None and before_items:
+        root_work_item_id = before_items[0]
+    closed_items = store.finalize_run(
+        trace_id,
+        outcome=outcome,
+        event=event,
+        summary=summary,
+        details=details,
+        root_work_item_id=root_work_item_id,
+    )
+    if not trace_is_terminal and outcome is ExecutionOutcome.FAILED:
+        _record_monitor_retry(
+            project_path,
+            trace_id,
+            event=event,
+            summary=summary,
+            error=error,
+            details=dict(details or {}),
+            active_batch_id=before_batch_id,
+            active_work_item_ids=tuple(closed_items) or before_items,
+            root_work_item_id=root_work_item_id,
+            retry_policy=retry_policy,
+        )
+    if not trace_is_terminal:
+        from app.orchestration.trace import TraceContext
+
+        context = TraceContext(
+            requirement_id=str(payload["requirement_id"]),
+            trace_id=trace_id,
+            parent_trace_id=payload.get("parent_trace_id"),
+        )
+        for work_item_id in closed_items:
+            item_event = (
+                "work_item_completed"
+                if outcome is ExecutionOutcome.COMPLETED
+                else "work_item_blocked"
+                if outcome is ExecutionOutcome.BLOCKED
+                else "work_item_cancelled"
+                if outcome is ExecutionOutcome.CANCELLED
+                else "work_item_interrupted"
+                if root_work_item_id is not None and work_item_id != root_work_item_id
+                else "work_item_failed"
+            )
+            traces.record_event(
+                context,
+                work_item_id,
+                item_event,
+                details={"worker_termination": True, "termination_event": event},
+            )
+        traces.record_event(
+            context,
+            "worker",
+            event,
+            details={**(details or {}), "closed_work_item_ids": list(closed_items)},
+        )
+        traces.finish_trace(context, outcome.value, error=error)
+    return closed_items
+
+
+def _stall_observations(
+    progress: dict[str, object] | None,
+    *,
+    monitor_started_at: datetime,
+) -> tuple[_StallObservation, ...]:
+    """Return independently stalled active WorkItems from one worker snapshot.
+
+    The top-level snapshot is only a compatibility projection of the latest
+    event. Parallel nodes live under ``work_items`` and must be monitored
+    independently, otherwise a fast sibling reaching terminal state can hide
+    a stalled LLM or tool call.
+    """
+    if not progress:
+        return ()
+    work_items = progress.get("work_items")
+    views = [value for value in work_items.values() if isinstance(value, dict)] if isinstance(work_items, dict) else []
+
+    observations: list[_StallObservation] = []
+    for view in views:
+        lifecycle = str(view.get("lifecycle", "running"))
+        activity = str(view.get("activity", "worker"))
+        event = str(view.get("event_type", ""))
+        if lifecycle not in {"running", "retrying"}:
+            continue
+        try:
+            observed = view.get("last_event_at")
+            if datetime.fromisoformat(str(observed or "")) < monitor_started_at:
+                continue
+        except (TypeError, ValueError):
+            continue
+
+        llm = view.get("llm")
+        llm_state = str(llm.get("state", "idle")) if isinstance(llm, dict) else "idle"
+        llm_open = activity == "llm" and llm_state in {"started", "streaming"}
+        operation_open = event in {"tool_started", "file_write_started"}
+        monitorable = llm_open or (
+            activity in {"tool", "artifact", "sandbox", "integration"}
+            and operation_open
+        )
+        if not monitorable:
+            continue
+
+        meaningful_idle_seconds = meaningful_idle_for(view)
+        transport_idle_seconds = transport_idle_for(view)
+        transport_threshold = transport_stall_timeout(activity)
+        semantic_threshold = semantic_stall_timeout(activity)
+        if (
+            llm_open
+            and transport_idle_seconds is not None
+            and transport_idle_seconds >= transport_threshold
+        ):
+            observations.append(
+                _StallObservation(
+                    work_item_id=str(view.get("work_item_id", "worker")),
+                    activity=activity,
+                    kind="provider_transport_stall",
+                    idle_seconds=transport_idle_seconds,
+                    threshold=transport_threshold,
+                    progress_marker=str((view.get("clocks") or {}).get("transport_at", "")),
+                )
+            )
+        elif (
+            meaningful_idle_seconds is not None
+            and meaningful_idle_seconds >= semantic_threshold
+        ):
+            observations.append(
+                _StallObservation(
+                    work_item_id=str(view.get("work_item_id", "worker")),
+                    activity=activity,
+                    kind="semantic_stall",
+                    idle_seconds=meaningful_idle_seconds,
+                    threshold=semantic_threshold,
+                    progress_marker=str(view.get("last_meaningful_at", "")),
+                )
+            )
+    return tuple(observations)
+
+
 def _rebuild_delivery_state(
     container: ProjectOSContainer,
     plan,
     trace_id: str,
+    *,
+    persist: bool = True,
 ) -> RunState:
     """从交付计划和事件日志迁移旧 Trace 的 repair checkpoint。
 
@@ -78,12 +451,38 @@ def _rebuild_delivery_state(
     tests/review 节点。已完成节点的事实来自 Trace 事件，正文按已发布产物
     作为可选摘要恢复；真正的上游正文仍由 ArtifactRef 按需读取。
     """
+    terminal_events: dict[str, dict[str, object]] = {}
+    for event in container.traces.list_events(trace_id):
+        work_item_id = str(event.get("work_item_id", ""))
+        if not work_item_id or plan.work_item(work_item_id) is None:
+            continue
+        if event.get("type") in {
+            "work_item_completed",
+            "work_item_failed",
+            "work_item_needs_replan",
+            "work_item_waiting_capability",
+        }:
+            # events.jsonl is append-only; later events for one WorkItem are
+            # the authoritative attempt outcome after a retry or resume.
+            terminal_events[work_item_id] = event
     completed_ids = {
-        str(event.get("work_item_id", ""))
-        for event in container.traces.list_events(trace_id)
+        work_item_id
+        for work_item_id, event in terminal_events.items()
         if event.get("type") == "work_item_completed"
-        and plan.work_item(str(event.get("work_item_id", ""))) is not None
     }
+    # A downstream completion is not reusable when a dependency later failed
+    # on a retry.  Remove such descendants transitively so integration/tests/
+    # review are re-executed against the newest code instead of being skipped
+    # with stale evidence.
+    changed = True
+    while changed:
+        changed = False
+        for item in plan.work_items:
+            if item.id in completed_ids and any(
+                dependency not in completed_ids for dependency in item.dependency_ids
+            ):
+                completed_ids.remove(item.id)
+                changed = True
     artifacts: dict[str, str] = {}
     for item in plan.work_items:
         if item.id not in completed_ids:
@@ -107,7 +506,96 @@ def _rebuild_delivery_state(
             content=artifacts.get(item.output_key, ""),
         )
     state = RunState(plan=plan, node_results=results, artifacts=artifacts)
-    container.traces.record_delivery_checkpoint(plan.trace, state.as_checkpoint())
+    if persist:
+        container.traces.record_delivery_checkpoint(plan.trace, state.as_checkpoint())
+    return state
+
+
+def _apply_monitor_retry_recovery(
+    container: ProjectOSContainer,
+    trace_id: str,
+    state: RunState,
+) -> RunState:
+    """Apply each unconsumed batch/run retry decision to a resume state.
+
+    The retry ledger names the root cause and interrupted siblings. Completed
+    siblings remain in ``node_results``; only the causal frontier and its
+    dependents are invalidated. This keeps a parallel wave from replaying
+    successful work after a watchdog terminates one Worker process.
+    """
+    try:
+        records = RetryLedger(container.traces.project_path, trace_id).recovery_records()
+    except (OSError, ValueError):
+        return state
+    if not records:
+        return state
+    consumed = {
+        str((event.get("details") or {}).get("retry_record_created_at", ""))
+        for event in container.traces.list_events(trace_id)
+        if event.get("type") == "retry_recovery_applied"
+    }
+    descendants: dict[str, set[str]] = {item.id: set() for item in state.plan.work_items}
+    for item in state.plan.work_items:
+        for dependency in item.dependency_ids:
+            descendants.setdefault(dependency, set()).add(item.id)
+
+    for record in records:
+        if record.created_at in consumed:
+            continue
+        frontier = tuple(
+            item_id
+            for item_id in (record.root_work_item_id, *record.interrupted_work_item_ids)
+            if item_id and state.plan.work_item(item_id) is not None
+        )
+        if not frontier:
+            # The Worker may have died before a WorkItem was announced. The
+            # record is still audit history, but there is no trustworthy node
+            # to invalidate; ordinary checkpoint scheduling remains correct.
+            container.traces.record_event(
+                state.plan.trace,
+                "control",
+                "retry_recovery_applied",
+                details={
+                    "retry_record_created_at": record.created_at,
+                    "affected_work_item_ids": [],
+                    "reason": "no_active_work_item",
+                },
+            )
+            continue
+        invalidated = set(frontier)
+        pending = list(frontier)
+        while pending:
+            current = pending.pop()
+            for child in descendants.get(current, ()):
+                if child not in invalidated:
+                    invalidated.add(child)
+                    pending.append(child)
+        for item_id in invalidated:
+            state.node_results.pop(item_id, None)
+            item = state.plan.work_item(item_id)
+            if item is not None:
+                state.artifacts.pop(item.output_key, None)
+        context = {
+            "scope": record.scope.value,
+            "action": record.action.value,
+            "failure": record.failure.as_dict(),
+            "root_work_item_id": record.root_work_item_id,
+            "interrupted_work_item_ids": list(record.interrupted_work_item_ids),
+        }
+        for item_id in frontier:
+            state.retry_recovery_contexts[item_id] = context
+        container.traces.record_event(
+            state.plan.trace,
+            "control",
+            "retry_recovery_applied",
+            details={
+                "retry_record_created_at": record.created_at,
+                "action": record.action.value,
+                "root_work_item_id": record.root_work_item_id,
+                "interrupted_work_item_ids": list(record.interrupted_work_item_ids),
+                "invalidated_work_item_ids": sorted(invalidated),
+            },
+        )
     return state
 
 
@@ -124,6 +612,11 @@ def _load_delivery_resume(
             )
         except (FileNotFoundError, ValueError):
             state = RunState(plan=latest)
+        # A repair Worker can be interrupted while its repair DAG is active.
+        # This branch must consume the same durable monitor decisions as the
+        # normal delivery branch before returning a resumable state.
+        state = _apply_monitor_retry_recovery(container, trace_id, state)
+        state = _sanitize_resume_state(container, state)
         return latest, state
     try:
         plan = _refresh_repair_plan(container.traces.load_delivery_plan(trace_id), container.traces)
@@ -150,16 +643,27 @@ def _load_delivery_resume(
                 # checkpoint. The event log is append-only and already records
                 # completed WorkItems, so rebuild from those facts instead of
                 # replaying the whole delivery DAG.
-                if not state.node_results:
-                    rebuilt = _rebuild_delivery_state(container, plan, trace_id)
-                    if rebuilt.node_results:
-                        state = rebuilt
+                rebuilt = _rebuild_delivery_state(container, plan, trace_id, persist=False)
+                # A partial checkpoint can be newer than the original
+                # delivery checkpoint but still omit nodes completed before a
+                # Worker interruption.  Prefer the event-derived state when
+                # it contains additional *latest-successful* WorkItems; this
+                # keeps failed nodes pending while preserving prior progress.
+                if (
+                    not state.forced_rerun_work_item_ids
+                    and len(rebuilt.node_results) > len(state.node_results)
+                ):
+                    state = rebuilt
                 break
         except (FileNotFoundError, ValueError):
             continue
     if state is None:
         state = _rebuild_delivery_state(container, plan, trace_id)
-    return plan, _sanitize_resume_state(container, state)
+    state = _apply_monitor_retry_recovery(container, trace_id, state)
+    state = _sanitize_resume_state(container, state)
+    return plan, _prepare_architecture_contract_recovery(
+        container, trace_id, plan, state
+    )
 
 
 def _sanitize_resume_state(container: ProjectOSContainer, state: RunState) -> RunState:
@@ -213,8 +717,569 @@ def _sanitize_resume_state(container: ProjectOSContainer, state: RunState) -> Ru
     return state
 
 
+def _architecture_implementation_owners_for_unit(
+    container: ProjectOSContainer,
+    plan,
+    state: RunState,
+    unit_id: str,
+) -> list:
+    """Return completed implementation work items that define one unit id.
+
+    A WorkItem can produce several implementation units, so its slot alone is
+    not sufficient proof of ownership. Resolve the unit from its staged
+    object. Normally this is a fully validated DTO. For the specific recovery
+    path that exists to repair historical validation failures, retain a
+    narrow raw-JSON fallback: it only reads the unit id after the repository
+    has resolved the manifest-protected staged reference. If evidence is
+    missing or ambiguous, recovery is a deliberate no-op.
+    """
+    owners = []
+    for item in plan.work_items:
+        result = state.node_results.get(item.id)
+        if (
+            item.agent_id != "architecture_agent"
+            or item.execution_mode is not ExecutionMode.PARTITIONED
+            or not (item.slot or "").startswith("implementation-")
+            or result is None
+            or result.status is not NodeStatus.COMPLETED
+        ):
+            continue
+        ref = ArtifactRef.staged(
+            artifact_key="architecture",
+            trace_id=plan.trace.trace_id,
+            work_item_id=item.id,
+            slot=item.slot or "",
+        )
+        try:
+            content = container.artifact_repository.load_ref(ref)
+            design = parse_design(content)
+        except (FileNotFoundError, RuntimeError, TypeError, ValueError):
+            try:
+                raw = json.loads(content)
+            except (UnboundLocalError, TypeError, json.JSONDecodeError):
+                continue
+            units = raw.get("implementation_units") if isinstance(raw, dict) else None
+            if (
+                raw.get("depth") == 2
+                and isinstance(units, list)
+                and any(
+                    isinstance(unit, dict) and unit.get("unit_id") == unit_id
+                    for unit in units
+                )
+            ):
+                owners.append(item)
+            continue
+        if isinstance(design, ImplementationDesign) and any(
+            unit.unit_id == unit_id for unit in design.implementation_units
+        ):
+            owners.append(item)
+    return owners
+
+
+def _architecture_module_design_owners_for_design_id(
+    container: ProjectOSContainer,
+    plan,
+    state: RunState,
+    design_id: str,
+) -> list:
+    """Return completed depth=1 owners whose staged design has ``design_id``."""
+    owners = []
+    for item in plan.work_items:
+        result = state.node_results.get(item.id)
+        if (
+            item.agent_id != "architecture_agent"
+            or item.execution_mode is not ExecutionMode.PARTITIONED
+            or item.stage_id != "architecture_module"
+            or result is None
+            or result.status is not NodeStatus.COMPLETED
+        ):
+            continue
+        ref = ArtifactRef.staged(
+            # Partitioned architecture hand-offs are stored in the shared
+            # ``architecture`` artifact namespace.  WorkItem.artifact_key
+            # defaults to output_key when omitted, which is an orchestration
+            # label (for example ``architecture_module_api``), not a valid
+            # ArtifactStore key.
+            artifact_key="architecture",
+            trace_id=plan.trace.trace_id,
+            work_item_id=item.id,
+            slot=item.slot or "",
+        )
+        try:
+            design = parse_design(container.artifact_repository.load_ref(ref))
+        except (FileNotFoundError, RuntimeError, TypeError, ValueError):
+            continue
+        if isinstance(design, ModuleDesign) and design.design_id == design_id:
+            owners.append(item)
+    return owners
+
+
+def _architecture_implementation_design_owners_for_design_id(
+    container: ProjectOSContainer,
+    plan,
+    state: RunState,
+    design_id: str,
+) -> list:
+    """Return completed depth=2 owners whose staged design has ``design_id``."""
+    owners = []
+    for item in plan.work_items:
+        result = state.node_results.get(item.id)
+        if (
+            item.agent_id != "architecture_agent"
+            or item.execution_mode is not ExecutionMode.PARTITIONED
+            or not (item.slot or "").startswith("implementation-")
+            or result is None
+            or result.status is not NodeStatus.COMPLETED
+        ):
+            continue
+        ref = ArtifactRef.staged(
+            artifact_key="architecture",
+            trace_id=plan.trace.trace_id,
+            work_item_id=item.id,
+            slot=item.slot or "",
+        )
+        try:
+            design = parse_design(container.artifact_repository.load_ref(ref))
+        except (FileNotFoundError, RuntimeError, TypeError, ValueError):
+            continue
+        if isinstance(design, ImplementationDesign) and design.design_id == design_id:
+            owners.append(item)
+    return owners
+
+
+def _architecture_current_module_design_id(
+    container: ProjectOSContainer,
+    trace_id: str,
+    plan,
+    state: RunState,
+    implementation_item,
+) -> str | None:
+    """Return the one verified ModuleDesign parent for an implementation item.
+
+    A generic instruction to read the current module design proved too weak
+    after a module rerun changed its ``design_id``.  Recovery may name a parent
+    ID only when the implementation WorkItem has exactly one completed module
+    dependency whose manifest-protected staged artifact parses as the module
+    declared by its delivery contract.  Ambiguity intentionally yields no
+    value rather than guessing an ID from an old output or prompt.
+    """
+    contract = implementation_item.delivery_contract or {}
+    architecture = contract.get("architecture")
+    module_id = architecture.get("module_id") if isinstance(architecture, dict) else None
+    if not isinstance(module_id, str) or not module_id:
+        return None
+
+    dependency_ids = set(implementation_item.dependency_ids)
+    candidates = []
+    for item in plan.work_items:
+        result = state.node_results.get(item.id)
+        item_contract = item.delivery_contract or {}
+        item_architecture = item_contract.get("architecture")
+        declared_module_id = (
+            item_architecture.get("module_id")
+            if isinstance(item_architecture, dict)
+            else None
+        )
+        if (
+            item.id not in dependency_ids
+            or item.agent_id != "architecture_agent"
+            or item.execution_mode is not ExecutionMode.PARTITIONED
+            or item.stage_id != "architecture_module"
+            or declared_module_id != module_id
+            or result is None
+            or result.status is not NodeStatus.COMPLETED
+        ):
+            continue
+        ref = ArtifactRef.staged(
+            artifact_key="architecture",
+            trace_id=trace_id,
+            work_item_id=item.id,
+            slot=item.slot or "",
+        )
+        try:
+            design = parse_design(container.artifact_repository.load_ref(ref))
+        except (FileNotFoundError, RuntimeError, TypeError, ValueError):
+            continue
+        if isinstance(design, ModuleDesign) and design.module_id == module_id:
+            candidates.append(design.design_id)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _architecture_dependency_interface_catalogs(
+    container: ProjectOSContainer,
+    trace_id: str,
+    plan,
+    state: RunState,
+    implementation_item,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Load formal provider interfaces declared by an implementation's dependencies.
+
+    Recovery diagnostics are advisory, so this helper accepts only evidence that
+    is both unambiguous and manifest-protected: the implementation WorkItem must
+    declare a dependent module in its delivery contract, exactly one completed
+    ModuleDesign WorkItem must represent that module, and its staged output must
+    parse as a ModuleDesign.  Missing evidence deliberately produces no catalog
+    rather than guessing a synonym or reading an untrusted file.
+    """
+    contract = implementation_item.delivery_contract or {}
+    architecture = contract.get("architecture")
+    if not isinstance(architecture, dict):
+        return ()
+    dependencies = architecture.get("depends_on_modules")
+    if not isinstance(dependencies, list) or not all(
+        isinstance(module_id, str) and module_id for module_id in dependencies
+    ):
+        return ()
+
+    catalogs: list[tuple[str, tuple[str, ...]]] = []
+    for module_id in dependencies:
+        candidates = []
+        for item in plan.work_items:
+            result = state.node_results.get(item.id)
+            if (
+                item.agent_id != "architecture_agent"
+                or item.execution_mode is not ExecutionMode.PARTITIONED
+                or result is None
+                or result.status is not NodeStatus.COMPLETED
+            ):
+                continue
+            item_contract = item.delivery_contract or {}
+            item_architecture = item_contract.get("architecture")
+            declared_module_id = (
+                item_architecture.get("module_id")
+                if isinstance(item_architecture, dict)
+                else None
+            )
+            if (
+                item.stage_id == "architecture_module"
+                and declared_module_id == module_id
+            ):
+                candidates.append(item)
+        if len(candidates) != 1:
+            continue
+        module_item = candidates[0]
+        ref = ArtifactRef.staged(
+            artifact_key="architecture",
+            trace_id=trace_id,
+            work_item_id=module_item.id,
+            slot=module_item.slot or "",
+        )
+        try:
+            design = parse_design(container.artifact_repository.load_ref(ref))
+        except (FileNotFoundError, RuntimeError, TypeError, ValueError):
+            continue
+        if not isinstance(design, ModuleDesign) or design.module_id != module_id:
+            continue
+        interface_ids = tuple(
+            sorted({interface.interface_id for interface in design.provided_interfaces})
+        )
+        catalogs.append((module_id, interface_ids))
+    return tuple(catalogs)
+
+
+def _undeclared_interface_recovery_diagnostic(
+    *,
+    invalid_interface_id: str,
+    catalogs: tuple[tuple[str, tuple[str, ...]], ...],
+) -> str:
+    """Explain a rejected interface reference without inventing an alias."""
+    diagnostic = (
+        f"集成校验发现接口 '{invalid_interface_id}' 不在已声明的正式 provider catalog 中。"
+        "consumed_interfaces / consumes_interfaces 只能引用依赖模块 ModuleDesign 的"
+        "正式 provided_interfaces；请按实际依赖选择现有接口，或先在所属模块显式提供新的正式接口。"
+        "不要猜测接口同义词，也不要将 implementation unit ID 写入接口引用字段。"
+    )
+    if not catalogs:
+        return diagnostic
+    catalog_text = "; ".join(
+        f"{module_id}: {', '.join(interface_ids) if interface_ids else '（无）'}"
+        for module_id, interface_ids in catalogs
+    )
+    return f"{diagnostic} 当前依赖模块的正式接口目录：{catalog_text}。"
+
+
+def _architecture_blueprint_module_purpose(
+    container: ProjectOSContainer,
+    trace_id: str,
+    plan,
+    state: RunState,
+    module_id: str,
+) -> str | None:
+    """Return one manifest-protected Blueprint purpose for ``module_id``.
+
+    Recovery diagnostics must not derive business intent from prompt text or a
+    loose Markdown artifact.  Only one completed, staged ArchitectureBlueprint
+    whose repository manifest verifies is safe enough to guide a rerun.
+    """
+    purposes: list[str] = []
+    for item in plan.work_items:
+        result = state.node_results.get(item.id)
+        if (
+            item.agent_id != "architecture_agent"
+            or item.execution_mode is not ExecutionMode.PARTITIONED
+            or item.stage_id != "architecture_blueprint"
+            or result is None
+            or result.status is not NodeStatus.COMPLETED
+        ):
+            continue
+        ref = ArtifactRef.staged(
+            artifact_key=item.artifact_key or "architecture",
+            trace_id=trace_id,
+            work_item_id=item.id,
+            slot=item.slot or "blueprint",
+        )
+        try:
+            design = parse_design(container.artifact_repository.load_ref(ref))
+        except (FileNotFoundError, RuntimeError, TypeError, ValueError):
+            continue
+        if not isinstance(design, ArchitectureBlueprint):
+            continue
+        matches = [module for module in design.modules if module.module_id == module_id]
+        if len(matches) == 1 and matches[0].purpose:
+            purposes.append(matches[0].purpose)
+    return purposes[0] if len(purposes) == 1 else None
+
+
+def _prepare_architecture_contract_recovery(
+    container: ProjectOSContainer,
+    trace_id: str,
+    plan,
+    state: RunState,
+) -> RunState:
+    """Schedule one safe rerun for an unambiguously invalid architecture edge.
+
+    The persisted plan and every WorkItem contract remain unchanged.  This is
+    deliberately narrower than general replanning: it only invalidates the
+    partitioned implementation design named by the integration validator and
+    that design's descendants, then makes the owner execute without accepting
+    its old staged artifact as a durable recovery candidate.
+    """
+    latest_failure = next(
+        (
+            event
+            for event in reversed(container.traces.list_events(trace_id))
+            if event.get("type") == "work_item_failed"
+        ),
+        None,
+    )
+    if latest_failure is None:
+        return state
+    failed_item = plan.work_item(str(latest_failure.get("work_item_id", "")))
+    if (
+        failed_item is None
+        or failed_item.agent_id != "architecture_agent"
+        or failed_item.execution_mode is not ExecutionMode.INTEGRATION
+        or failed_item.publish_target != "architecture"
+    ):
+        return state
+    details = latest_failure.get("details", {})
+    error = str(details.get("error", "")) if isinstance(details, dict) else ""
+    if "architecture_contract_missing" not in error:
+        return state
+    undeclared_interface = _ARCHITECTURE_UNDECLARED_INTERFACE.search(error)
+    required_path_not_owned = _ARCHITECTURE_REQUIRED_PATH_NOT_OWNED.search(error)
+    required_file_not_owned = _ARCHITECTURE_REQUIRED_FILE_NOT_OWNED.search(error)
+    module_parent_mismatch = _ARCHITECTURE_MODULE_PARENT_MISMATCH.search(error)
+    implementation_parent_mismatch = _ARCHITECTURE_IMPLEMENTATION_PARENT_MISMATCH.search(error)
+    unknown_implementation_dependency = _ARCHITECTURE_UNKNOWN_IMPLEMENTATION_DEPENDENCY.search(error)
+    module_purpose_mismatch = _ARCHITECTURE_MODULE_PURPOSE_MISMATCH.search(error)
+    if required_file_not_owned is not None:
+        required_file = required_file_not_owned.group(1)
+        owners = [
+            item
+            for item in plan.work_items
+            if item.agent_id == "architecture_agent"
+            and item.execution_mode is ExecutionMode.PARTITIONED
+            and item.stage_id == "architecture_blueprint"
+        ]
+        diagnostic = (
+            "集成校验发现 Blueprint.required_files 中的文件 "
+            f"'{required_file}' 没有任何 implementation unit 在 owned_files 中声明。"
+            "请重新生成 Blueprint：required_files 只能列出由 implementation units 实际拥有、"
+            "并会在交付中产出的具体文件；不要凭空添加入口或包初始化文件。"
+        )
+    elif module_parent_mismatch is not None:
+        design_id = module_parent_mismatch.group(1)
+        owners = _architecture_module_design_owners_for_design_id(
+            container, plan, state, design_id
+        )
+        diagnostic = (
+            f"集成校验发现模块设计 {design_id} 未引用当前总体蓝图。"
+            "请读取当前已完成的 Blueprint，并将 parent_design_id 逐字设置为其 design_id；"
+            "不要复用旧运行或旧 Blueprint 的 parent_design_id。"
+        )
+    elif implementation_parent_mismatch is not None:
+        design_id = implementation_parent_mismatch.group(1)
+        owners = _architecture_implementation_design_owners_for_design_id(
+            container, plan, state, design_id
+        )
+        expected_parent_design_id = (
+            _architecture_current_module_design_id(
+                container, trace_id, plan, state, owners[0]
+            )
+            if len(owners) == 1
+            else None
+        )
+        diagnostic = (
+            f"集成校验发现实现设计 {design_id} 未引用已存在的模块设计。"
+            "请读取当前已完成的 ModuleDesign，并将 parent_design_id 逐字设置为其 design_id；"
+            "不要复用旧运行或旧模块设计的 parent_design_id。"
+        )
+        if expected_parent_design_id is not None:
+            diagnostic += (
+                " 已由控制面按该 WorkItem 的唯一已完成模块依赖验证："
+                f"本轮 parent_design_id 必须精确为 `{expected_parent_design_id}`。"
+            )
+    elif unknown_implementation_dependency is not None:
+        unit_id, unknown_dependencies = unknown_implementation_dependency.groups()
+        owners = _architecture_implementation_owners_for_unit(
+            container, plan, state, unit_id
+        )
+        catalogs = (
+            _architecture_dependency_interface_catalogs(
+                container, trace_id, plan, state, owners[0]
+            )
+            if len(owners) == 1
+            else ()
+        )
+        diagnostic = (
+            f"集成校验发现 implementation unit '{unit_id}' 的 depends_on 引用了不存在的 "
+            f"implementation unit：{unknown_dependencies.strip()}。"
+            "depends_on 只能引用本次集成架构中实际存在的 unit_id，且只能依赖更早 wave 的单元；"
+            "跨模块业务能力不得写入 depends_on，应在 ImplementationDesign 顶层 "
+            "consumed_interfaces 中引用依赖模块已声明的正式 interface_id。"
+            "请删除不存在的 unit ID；不要把 module_id 或 interface_id 写入 depends_on。"
+        )
+        if catalogs:
+            catalog_text = "; ".join(
+                f"{module_id}: {', '.join(interface_ids) if interface_ids else '（无）'}"
+                for module_id, interface_ids in catalogs
+            )
+            diagnostic += f" 当前依赖模块的正式接口目录：{catalog_text}。"
+    elif undeclared_interface is not None:
+        design_name, invalid_interface_id = undeclared_interface.groups()
+        owners = [
+            item
+            for item in plan.work_items
+            if item.agent_id == "architecture_agent"
+            and item.execution_mode is ExecutionMode.PARTITIONED
+            and (item.slot or "").startswith("implementation-")
+            and (item.slot or "").rsplit("-", 1)[-1] == design_name
+        ]
+        diagnostic = _undeclared_interface_recovery_diagnostic(
+            invalid_interface_id=invalid_interface_id,
+            catalogs=(
+                _architecture_dependency_interface_catalogs(
+                    container, trace_id, plan, state, owners[0]
+                )
+                if len(owners) == 1
+                else ()
+            ),
+        )
+    elif required_path_not_owned is not None:
+        unit_id, required_path = required_path_not_owned.groups()
+        owners = _architecture_implementation_owners_for_unit(
+            container, plan, state, unit_id
+        )
+        diagnostic = (
+            f"集成校验发现 implementation unit '{unit_id}' 将 '{required_path}' 声明为 "
+            "required_paths，但该字段只能列出本单元唯一拥有的输出文件。"
+            "若该文件由另一个 implementation unit 产出，请通过 depends_on、"
+            "required_symbols 或正式接口表达依赖；不要把其他单元的文件写入 required_paths。"
+        )
+    elif module_purpose_mismatch is not None:
+        module_id = module_purpose_mismatch.group(1)
+        owners = [
+            item
+            for item in plan.work_items
+            if item.agent_id == "architecture_agent"
+            and item.execution_mode is ExecutionMode.PARTITIONED
+            and item.stage_id == "architecture_module"
+            and isinstance(item.delivery_contract, dict)
+            and isinstance(item.delivery_contract.get("architecture"), dict)
+            and item.delivery_contract["architecture"].get("depth") == 1
+            and item.delivery_contract["architecture"].get("module_id") == module_id
+        ]
+        purpose = _architecture_blueprint_module_purpose(
+            container, trace_id, plan, state, module_id
+        )
+        if purpose is None:
+            return state
+        diagnostic = (
+            f"集成校验发现模块设计 {module_id} 的 purpose 必须与 Blueprint 完全一致。"
+            f"Blueprint 为 {module_id} 声明的正式 purpose：\n“{purpose}”\n"
+            "请逐字复用该 purpose；不要在 ModuleDesign 中补充、改写或细化 purpose。"
+        )
+    else:
+        return state
+    if len(owners) != 1:
+        return state
+    owner = owners[0]
+    if owner.id in state.forced_rerun_work_item_ids:
+        # The checkpoint already represents this scheduled recovery.  Keeping
+        # it intact is vital in the isolated Worker, where event rebuilding
+        # would otherwise resurrect the pre-recovery durable output.
+        return state
+    owner_result = state.node_results.get(owner.id)
+    if owner_result is None or owner_result.status is not NodeStatus.COMPLETED:
+        return state
+
+    descendants: dict[str, set[str]] = {item.id: set() for item in plan.work_items}
+    for item in plan.work_items:
+        for dependency in item.dependency_ids:
+            descendants[dependency].add(item.id)
+    invalidated = {owner.id}
+    pending = [owner.id]
+    while pending:
+        current = pending.pop()
+        for child in descendants[current]:
+            if child not in invalidated:
+                invalidated.add(child)
+                pending.append(child)
+    for item_id in invalidated:
+        state.node_results.pop(item_id, None)
+        item = plan.work_item(item_id)
+        if item is not None:
+            state.artifacts.pop(item.output_key, None)
+
+    state.forced_rerun_work_item_ids.add(owner.id)
+    state.recovery_diagnostics[owner.id] = diagnostic
+    container.traces.record_event(
+        plan.trace,
+        "control",
+        "architecture_contract_recovery_scheduled",
+        details={
+            "failed_work_item_id": failed_item.id,
+            "rerun_work_item_id": owner.id,
+            "invalidated_work_item_ids": sorted(invalidated),
+            "contract_digests": {
+                item_id: plan.work_item(item_id).contract_digest
+                for item_id in sorted(invalidated)
+                if plan.work_item(item_id) is not None
+            },
+            "diagnostic": diagnostic,
+        },
+    )
+    return state
+
+
 def _repair_execution_pending(traces: TraceStore, trace_id: str) -> bool:
     """Return true while the latest repair plan has not reached its result."""
+    # A Worker may be interrupted after a repair cycle completed but before
+    # ``_run_with_repairs`` restored the original delivery DAG.  In that case
+    # the latest plan is still ``*-repair-*`` and the event log's last repair
+    # status is historical ``needs_replan``; the authoritative checkpoint is
+    # stronger evidence.  Treat a fully completed repair checkpoint as ready
+    # for delivery resume so ``tests -> review`` cannot be skipped.
+    try:
+        latest_plan = traces.load_plan(trace_id)
+        if "-repair-" in latest_plan.id:
+            checkpoint = traces.load_checkpoint(trace_id)
+            state = RunState.from_checkpoint(latest_plan, checkpoint)
+            if state.is_complete():
+                return False
+    except (FileNotFoundError, ValueError, TypeError):
+        pass
     last_started = -1
     last_completed = -1
     last_status = ""
@@ -257,7 +1322,11 @@ def _delivery_resume_pending(container: ProjectOSContainer, trace_id: str) -> bo
         return True
 
 
-def _worker_entry(project_path: str, trace_id: str) -> None:
+def _worker_entry(
+    project_path: str,
+    trace_id: str,
+    retry_policy: RetryPolicy | None = None,
+) -> None:
     """在隔离进程中重建容器并执行一条 Trace。
 
     不把 Container、Agent 或 CrewAI 对象跨进程传递；子进程只接收项目目录和
@@ -268,37 +1337,53 @@ def _worker_entry(project_path: str, trace_id: str) -> None:
     claimed = False
     try:
         trace_store = TraceStore(project_path)
+        # ``spawn`` workers do not inherit the API process' logging handlers.
+        # Point the Responses adapter at a per-Trace JSONL sink before the
+        # container is rebuilt so SSE transport/event diagnostics survive the
+        # process boundary.
+        os.environ["PROJECTOS_SSE_DIAGNOSTICS_PATH"] = str(
+            trace_store.trace_root(trace_id) / "sse-diagnostics.jsonl"
+        )
         selection = trace_store.load_llm_selection(trace_id)
         container = build_container(
             project_path,
             llm_selection=selection,
             llm_overrides=trace_store.load_llm_overrides(trace_id),
+            retry_policy=retry_policy,
         )
         traces = container.traces
         _restore_approved_sources(container, trace_id)
         plan, state = _load_delivery_resume(container, trace_id)
         traces.record_event(plan.trace, "worker", "worker_started", details={"pid": os.getpid()})
-        now = datetime.now(timezone.utc).isoformat()
         progress_store = WorkerProgressStore(project_path)
         if not progress_store.claim_worker(trace_id):
             # Another process already owns this Trace.  This is a normal
             # duplicate-resume race, not a failed delivery.
             raise SystemExit(75)
         claimed = True
+        if progress_store.cancel_requested(trace_id):
+            trace = traces.load_trace(trace_id)
+            from app.orchestration.trace import TraceContext
+            context = TraceContext(
+                requirement_id=str(trace["requirement_id"]),
+                trace_id=trace_id,
+                parent_trace_id=trace.get("parent_trace_id"),
+            )
+            traces.record_event(context, "worker", "worker_cancelled", details={"reason": "cancel_requested_before_start"})
+            traces.finish_trace(context, "cancelled", error="运行在 Worker 启动前已取消")
+            progress_store.start_run(trace_id, event_type="run_cancelled", worker_process_state="terminated")
+            progress_store.finalize_run(
+                trace_id,
+                outcome=ExecutionOutcome.CANCELLED,
+                event="run_cancelled",
+                summary="运行已取消",
+                details={"termination_reason": "cancel_requested_before_start"},
+            )
+            progress_store.release_worker(trace_id)
+            claimed = False
+            return
         progress_store.clear_control(trace_id)
-        progress_store.write(
-            trace_id,
-            {
-                "trace_id": trace_id,
-                "phase": "running",
-                "event": "worker_started",
-                "sequence": 0,
-                "started_at": now,
-                "last_progress_at": now,
-                "heartbeat_at": now,
-                "counters": {"llm_calls": 0, "llm_chunks": 0, "llm_bytes": 0, "tool_calls": 0},
-            },
-        )
+        progress_store.start_run(trace_id, event_type="worker_started", worker_process_state="running")
         progress_store.release_worker(trace_id)
         claimed = False
         heartbeat = WorkerHeartbeat(project_path, trace_id)
@@ -313,50 +1398,85 @@ def _worker_entry(project_path: str, trace_id: str) -> None:
             "worker_completed",
             details={"pid": os.getpid(), "status": result.status.value},
         )
-        progress_store = WorkerProgressStore(project_path)
-        current = progress_store.read(trace_id) or {}
-        now = datetime.now(timezone.utc).isoformat()
-        progress_store.write(
-            trace_id,
-            {
-                **current,
-                "phase": result.status.value,
-                "event": "worker_completed",
-                "last_progress_at": now,
-                "finished_at": now,
-                "details": {"status": result.status.value},
-            },
+        run_lifecycle = (
+            "waiting"
+            if result.status is GraphRunStatus.WAITING_FOR_CAPABILITY_APPROVAL
+            else "retrying"
+            if result.status is GraphRunStatus.NEEDS_REPLAN
+            else "terminal"
         )
+        run_outcome = (
+            result.status.value
+            if result.status in {
+                GraphRunStatus.COMPLETED,
+                GraphRunStatus.BLOCKED,
+                GraphRunStatus.FAILED,
+                GraphRunStatus.CANCELLED,
+            }
+            else None
+        )
+        if run_outcome is not None:
+            progress_store.finalize_run(
+                trace_id,
+                outcome=ExecutionOutcome(run_outcome),
+                event="worker_completed",
+                summary="Worker 已完成运行",
+                details={"status": result.status.value},
+            )
+        else:
+            progress_store.set_run_state(
+                trace_id,
+                lifecycle=ExecutionLifecycle.WAITING if run_lifecycle == "waiting" else ExecutionLifecycle.RETRYING,
+                event_type="worker_completed",
+                activity=ExecutionActivity.WORKER,
+                summary=result.status.value,
+            )
     except BaseException as error:
         if isinstance(error, SystemExit) and error.code == 75:
             # Duplicate Worker lease claimant; the owning process remains the
             # sole writer of Trace terminal state.
             return
-        # GraphRunner normally persists terminal states itself.  This fallback
-        # covers failures during container/bootstrap/import before GraphRunner starts.
-        if traces is not None:
+        # An API cancellation may terminate the child while it is inside a
+        # provider call.  The cancellation request is durable and wins over
+        # the generic bootstrap/worker failure fallback.
+        if progress_store is not None and progress_store.cancel_requested(trace_id):
             try:
-                trace = traces.load_trace(trace_id)
-                from app.orchestration.trace import TraceContext
-
-                context = TraceContext(
-                    requirement_id=str(trace["requirement_id"]),
-                    trace_id=trace_id,
-                    parent_trace_id=trace.get("parent_trace_id"),
-                )
-                traces.record_event(
-                    context,
-                    "worker",
-                    "worker_failed",
-                    details={"pid": os.getpid(), **_error_details(error)},
-                )
-                traces.finish_trace(
-                    context,
-                    "failed",
-                    error=_format_error(error),
+                _finalize_external_run(
+                    project_path,
+                    trace_id,
+                    outcome=ExecutionOutcome.CANCELLED,
+                    event="worker_cancelled",
+                    summary="Worker 收到取消请求，已完成控制面收口",
+                    error="运行已取消",
+                    details={
+                        "reason": "cancel_requested_during_worker",
+                        "source": "worker_exception",
+                    },
                 )
             except Exception:
                 pass
+            if claimed:
+                progress_store.release_worker(trace_id)
+            return
+        # GraphRunner normally persists terminal states itself.  This fallback
+        # covers failures during container/bootstrap/import before GraphRunner starts.
+        try:
+            _finalize_external_run(
+                project_path,
+                trace_id,
+                outcome=ExecutionOutcome.FAILED,
+                event="worker_failed",
+                summary="Worker 异常退出，已完成控制面收口",
+                error=_format_error(error),
+                details={
+                    "pid": os.getpid(),
+                    "source": "worker_exception",
+                    **_error_details(error),
+                },
+                retry_policy=retry_policy,
+            )
+        except Exception:
+            pass
         if claimed and progress_store is not None:
             progress_store.release_worker(trace_id)
         raise
@@ -429,6 +1549,7 @@ class RunCoordinator:
         *,
         max_workers: int = 2,
         worker_timeout_seconds: float | None = None,
+        retry_policy: RetryPolicy | None = None,
     ) -> None:
         if max_workers < 1:
             raise ValueError("RunCoordinator.max_workers 至少为 1")
@@ -444,6 +1565,7 @@ class RunCoordinator:
         self._futures: dict[str, Future[str]] = {}
         self._processes: dict[str, multiprocessing.Process] = {}
         self._worker_timeout_seconds = worker_timeout_seconds
+        self._retry_policy = retry_policy or RetryPolicy()
         self._lock = Lock()
 
     def submit(
@@ -488,6 +1610,53 @@ class RunCoordinator:
         except Exception:
             return "failed"
 
+    def cancel(self, project_path: str, trace_id: str, *, reason: str = "api_request") -> dict[str, str]:
+        """Request cancellation, stop only this Worker, and persist a terminal state."""
+        traces = TraceStore(project_path)
+        try:
+            payload = traces.load_trace(trace_id)
+        except (FileNotFoundError, ValueError):
+            raise FileNotFoundError(trace_id)
+        current_status = str(payload.get("status", ""))
+        terminal_statuses = {
+            GraphRunStatus.COMPLETED.value,
+            GraphRunStatus.BLOCKED.value,
+            GraphRunStatus.FAILED.value,
+            GraphRunStatus.CANCELLED.value,
+        }
+        if current_status in terminal_statuses:
+            return {"trace_id": trace_id, "status": current_status, "worker_process_state": current_status}
+        store = WorkerProgressStore(project_path)
+        store.request_cancel(trace_id, reason=reason)
+        from app.orchestration.trace import TraceContext
+        context = TraceContext(
+            requirement_id=str(payload["requirement_id"]),
+            trace_id=trace_id,
+            parent_trace_id=payload.get("parent_trace_id"),
+        )
+        traces.record_event(context, "worker", "cancel_requested", details={"reason": reason})
+        with self._lock:
+            process = self._processes.get(trace_id)
+            future = self._futures.get(trace_id)
+        if process is not None and process.is_alive():
+            self._stop_process(process, join_timeout=2)
+        try:
+            _finalize_external_run(
+                project_path,
+                trace_id,
+                outcome=ExecutionOutcome.CANCELLED,
+                event="worker_cancelled",
+                summary="运行已取消并完成控制面收口",
+                error="运行已取消",
+                details={"reason": reason, "source": "coordinator.cancel"},
+            )
+        except Exception:
+            pass
+        with self._lock:
+            self._processes.pop(trace_id, None)
+        process_state = "cancelled" if future is None or not future.done() else self.status(trace_id) or "cancelled"
+        return {"trace_id": trace_id, "status": "cancelled", "worker_process_state": "cancelled" if process_state in {"running", "failed"} else process_state}
+
     def shutdown(self) -> None:
         with self._lock:
             processes = tuple(self._processes.values())
@@ -511,7 +1680,7 @@ class RunCoordinator:
         context = multiprocessing.get_context("spawn")
         process = context.Process(
             target=_worker_entry,
-            args=(project_path, trace_id),
+            args=(project_path, trace_id, self._retry_policy),
             name=f"projectos-worker-{trace_id}",
         )
         with self._lock:
@@ -519,10 +1688,7 @@ class RunCoordinator:
         started = datetime.now(timezone.utc)
         process.start()
         progress_store = WorkerProgressStore(project_path)
-        idle_suspected_at: float | None = None
-        idle_phase: str | None = None
-        idle_timeout: float | None = None
-        idle_progress_marker: str | None = None
+        stall_windows: dict[str, _StallWindow] = {}
         try:
             provider_stall_grace_seconds = max(
                 10.0, float(os.environ.get("PROJECTOS_PROVIDER_STALL_GRACE_SECONDS", "120"))
@@ -542,73 +1708,55 @@ class RunCoordinator:
             time.sleep(min(0.5, wait_timeout))
             if not process.is_alive():
                 break
-            progress = progress_store.read(trace_id)
-            phase = str(progress.get("phase", "running")) if progress else "running"
-            idle_seconds = idle_for(progress)
-            if progress:
+            if progress_store.cancel_requested(trace_id):
+                self._stop_process(process)
                 try:
-                    progress_timestamp = datetime.fromisoformat(
-                        str(progress.get("last_progress_at", ""))
+                    _finalize_external_run(
+                        project_path,
+                        trace_id,
+                        outcome=ExecutionOutcome.CANCELLED,
+                        event="worker_cancelled",
+                        summary="监控到取消请求，已完成控制面收口",
+                        error="运行已取消",
+                        details={"source": "coordinator.monitor"},
                     )
-                    if progress_timestamp < monitor_started_at:
-                        # A resumed Trace may contain a stale status snapshot
-                        # from the previous Worker.  Wait for this Worker to
-                        # publish its own startup/progress before judging idle.
-                        idle_seconds = None
-                except (TypeError, ValueError):
-                    idle_seconds = None
-            threshold = phase_idle_timeout(phase)
+                except Exception:
+                    pass
+                with self._lock:
+                    self._processes.pop(trace_id, None)
+                return "cancelled"
+            progress = progress_store.read(trace_id)
             heartbeat_seconds = heartbeat_for(progress)
-            llm_state = (
-                str(progress.get("llm", {}).get("state", "idle"))
-                if progress and isinstance(progress.get("llm"), dict)
-                else "idle"
-            )
-            # A missing chunk is only actionable while an LLM call is
-            # explicitly open.  Startup/cleanup phases and a terminal LLM
-            # state must never be classified as provider silence.
-            monitorable_phase = phase in {
-                "llm_streaming", "llm_request", "running_tool", "running_sandbox"
-            } and (phase not in {"llm_streaming", "llm_request"} or llm_state in {"started", "streaming"})
-            progress_marker = (
-                str(progress.get("last_progress_at", "")) if progress else None
-            )
-            # A provider stall is only a suspicion.  Any real progress after
-            # suspicion starts a fresh observation window; otherwise one slow
-            # call followed by a successful tool/LLM event could still be
-            # killed by the old grace timer.
-            if (
-                idle_suspected_at is not None
-                and progress_marker
-                and progress_marker != idle_progress_marker
-            ):
-                idle_suspected_at = None
-                idle_phase = None
-                idle_timeout = None
-                idle_progress_marker = None
-            elif idle_suspected_at is not None and not monitorable_phase:
-                idle_suspected_at = None
-                idle_phase = None
-                idle_timeout = None
-                idle_progress_marker = None
-            elif idle_suspected_at is not None and idle_seconds is not None and idle_seconds < threshold:
-                idle_suspected_at = None
-                idle_phase = None
-                idle_timeout = None
-                idle_progress_marker = None
-            # Provider silence is diagnostic first. A live Worker may be blocked
-            # inside a slow provider call, and an in-process heartbeat can itself
-            # be paused by that provider/runtime. Only a continuous lack of
-            # real progress through the explicit grace period is terminating;
-            # the heartbeat is never used as proof of progress.
-            if monitorable_phase and idle_suspected_at is None and idle_seconds is not None and idle_seconds >= threshold:
-                idle_suspected_at = elapsed
-                idle_phase = phase
-                idle_timeout = threshold
-                idle_progress_marker = progress_marker
+            observations = {
+                observation.work_item_id: observation
+                for observation in _stall_observations(
+                    progress, monitor_started_at=monitor_started_at
+                )
+            }
+            for work_item_id, window in tuple(stall_windows.items()):
+                observation = observations.get(work_item_id)
+                if observation is None or (
+                    observation.kind != window.observation.kind
+                    or observation.progress_marker
+                    != window.observation.progress_marker
+                ):
+                    # The WorkItem completed, changed activity, or produced a
+                    # signal in the channel that established the suspicion.
+                    stall_windows.pop(work_item_id, None)
+
+            for work_item_id, observation in observations.items():
+                if work_item_id in stall_windows:
+                    continue
+                stall_windows[work_item_id] = _StallWindow(
+                    observed_at=elapsed,
+                    observation=observation,
+                )
                 progress_store.request_provider_stall(
                     trace_id,
-                    reason=f"{phase} 阶段超过 {threshold:g} 秒没有真实进度",
+                    reason=(
+                        f"{observation.kind}: {observation.activity} 活动的 "
+                        f"{work_item_id} 超过 {observation.threshold:g} 秒没有对应进度"
+                    ),
                 )
                 try:
                     trace = TraceStore(project_path).load_trace(trace_id)
@@ -621,32 +1769,38 @@ class RunCoordinator:
                     )
                     TraceStore(project_path).record_event(
                         context_data,
-                        str(progress.get("work_item_id", "worker")) if progress else "worker",
+                        work_item_id,
                         "worker_idle_suspected",
                         details={
-                            "phase": phase,
-                            "idle_seconds": idle_seconds,
-                            "idle_timeout_seconds": threshold,
+                            "activity": observation.activity,
+                            "stall_kind": observation.kind,
+                            "idle_seconds": observation.idle_seconds,
+                            "idle_timeout_seconds": observation.threshold,
                             "grace_seconds": provider_stall_grace_seconds,
                         },
                     )
                     TraceStore(project_path).record_event(
                         context_data,
-                        str(progress.get("work_item_id", "worker")) if progress else "worker",
+                        work_item_id,
                         "provider_stalled",
                         details={
-                            "phase": phase,
-                            "idle_seconds": idle_seconds,
+                            "activity": observation.activity,
+                            "stall_kind": observation.kind,
+                            "idle_seconds": observation.idle_seconds,
                             "heartbeat_seconds": heartbeat_seconds,
                             "action": "provider_stall_recorded_no_worker_cancel",
                         },
                     )
                 except Exception:
                     pass
-            if (
-                idle_suspected_at is not None
-                and elapsed - idle_suspected_at >= provider_stall_grace_seconds
-            ):
+
+            expired = [
+                window
+                for window in stall_windows.values()
+                if elapsed - window.observed_at >= provider_stall_grace_seconds
+            ]
+            if expired:
+                stalled = min(expired, key=lambda window: window.observed_at).observation
                 self._stop_process(process)
                 traces = TraceStore(project_path)
                 try:
@@ -656,15 +1810,27 @@ class RunCoordinator:
                         requirement_id=str(trace["requirement_id"]), trace_id=trace_id,
                         parent_trace_id=trace.get("parent_trace_id"),
                     )
-                    traces.record_event(
-                        context_data, "worker", "provider_stall_timeout",
-                        details={"phase": idle_phase, "idle_timeout_seconds": idle_timeout,
-                                 "grace_seconds": provider_stall_grace_seconds},
+                    error = (
+                        f"WorkItem '{stalled.work_item_id}' 出现 {stalled.kind}，在 "
+                        f"{provider_stall_grace_seconds:g} 秒宽限期内未恢复，"
+                        "已终止当前 Worker，可从 checkpoint 重试"
                     )
-                    traces.finish_trace(
-                        context_data, "failed",
-                        error=(f"Provider 在 {provider_stall_grace_seconds:g} 秒宽限期内无进度，"
-                               "已终止当前 Worker，可从 checkpoint 重试"),
+                    _finalize_external_run(
+                        project_path,
+                        trace_id,
+                        outcome=ExecutionOutcome.FAILED,
+                        event="provider_stall_timeout",
+                        summary="Provider/语义进度超时，已完成控制面收口",
+                        error=error,
+                        details={
+                            "activity": stalled.activity,
+                            "stall_kind": stalled.kind,
+                            "idle_timeout_seconds": stalled.threshold,
+                            "grace_seconds": provider_stall_grace_seconds,
+                            "work_item_id": stalled.work_item_id,
+                            "contract_digest": ((progress_store.read(trace_id) or {}).get("work_items", {}).get(stalled.work_item_id, {}) or {}).get("contract_digest"),
+                        },
+                        retry_policy=self._retry_policy,
                     )
                 except Exception:
                     pass
@@ -672,40 +1838,45 @@ class RunCoordinator:
                     self._processes.pop(trace_id, None)
                 return "failed"
         if process.is_alive():
+            if progress_store.cancel_requested(trace_id):
+                self._stop_process(process)
+                try:
+                    _finalize_external_run(
+                        project_path,
+                        trace_id,
+                        outcome=ExecutionOutcome.CANCELLED,
+                        event="worker_cancelled",
+                        summary="Worker 超时前收到取消请求，已完成控制面收口",
+                        error="运行已取消",
+                        details={"source": "coordinator.timeout_boundary"},
+                    )
+                except Exception:
+                    pass
+                with self._lock:
+                    self._processes.pop(trace_id, None)
+                return "cancelled"
             self._stop_process(process)
-            traces = TraceStore(project_path)
             try:
-                trace = traces.load_trace(trace_id)
-                from app.orchestration.trace import TraceContext
-
-                context_data = TraceContext(
-                    requirement_id=str(trace["requirement_id"]),
-                    trace_id=trace_id,
-                    parent_trace_id=trace.get("parent_trace_id"),
-                )
                 elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-                event_type = "worker_timed_out"
-                traces.record_event(
-                    context_data,
-                    "worker",
-                    event_type,
+                _finalize_external_run(
+                    project_path,
+                    trace_id,
+                    outcome=ExecutionOutcome.FAILED,
+                    event="worker_timed_out",
+                    summary="Worker 超时，已完成控制面收口",
+                    error=f"Worker 执行超过 {self._worker_timeout_seconds:g} 秒，已终止",
                     details={
                         "timeout_seconds": self._worker_timeout_seconds,
                         "elapsed_seconds": elapsed,
-                        "phase": idle_phase,
-                        "idle_timeout_seconds": idle_timeout,
+                        "stalled_work_items": sorted(stall_windows),
+                        "work_item_id": next(iter(sorted(stall_windows)), None),
                     },
-                )
-                traces.finish_trace(
-                    context_data,
-                    "failed",
-                    error=f"Worker 执行超过 {self._worker_timeout_seconds:g} 秒，已终止",
+                    retry_policy=self._retry_policy,
                 )
             except Exception:
                 pass
             result = "failed"
         else:
-            traces = TraceStore(project_path)
             try:
                 if process.exitcode == 75:
                     # A concurrent resume lost the persistent Worker lease;
@@ -714,30 +1885,33 @@ class RunCoordinator:
                     with self._lock:
                         self._processes.pop(trace_id, None)
                     return result
-                payload = traces.load_trace(trace_id)
+                payload = TraceStore(project_path).load_trace(trace_id)
                 result = str(payload.get("status", "failed"))
-                if result in {"planned", "running"}:
-                    from app.orchestration.trace import TraceContext
-
-                    context_data = TraceContext(
-                        requirement_id=str(payload["requirement_id"]),
-                        trace_id=trace_id,
-                        parent_trace_id=payload.get("parent_trace_id"),
+                if progress_store.cancel_requested(trace_id) and result in {"planned", "running"}:
+                    _finalize_external_run(
+                        project_path,
+                        trace_id,
+                        outcome=ExecutionOutcome.CANCELLED,
+                        event="worker_cancelled",
+                        summary="Worker 检测到取消请求，已完成控制面收口",
+                        error="运行已取消",
+                        details={"source": "worker_exit"},
                     )
-                    traces.record_event(
-                        context_data,
-                        "worker",
-                        "worker_failed",
+                    result = "cancelled"
+                if result in {"planned", "running"}:
+                    _finalize_external_run(
+                        project_path,
+                        trace_id,
+                        outcome=ExecutionOutcome.FAILED,
+                        event="worker_failed",
+                        summary="Worker 未写入终态即退出，已完成控制面收口",
+                        error="Worker 在未写入终态前退出",
                         details={
                             "pid": process.pid,
                             "exitcode": process.exitcode,
-                            "error": "Worker 在未写入终态前退出",
+                            "source": "coordinator.process_exit",
                         },
-                    )
-                    traces.finish_trace(
-                        context_data,
-                        "failed",
-                        error="Worker 在未写入终态前退出",
+                        retry_policy=self._retry_policy,
                     )
                     result = "failed"
             except Exception:

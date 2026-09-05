@@ -10,6 +10,7 @@ from app.artifact.repository import ArtifactRepository
 from app.artifact.store import ArtifactStore
 from app.memory.store import MemoryStore
 from app.orchestration.runner import GraphRunner
+from app.orchestration.retry import RetryPolicy
 from app.orchestration.trace import TraceStore
 from app.planner.planner import CrewAIPlannerRuntime, PlannerRuntime
 from app.planner.service import PlannerService
@@ -50,6 +51,7 @@ def build_container(
     planner_runtime: PlannerRuntime | None = None,
     llm_selection: LLMSelection | None = None,
     llm_overrides: dict[str, LLMSelection] | None = None,
+    retry_policy: RetryPolicy | None = None,
 ) -> ProjectOSContainer:
     """组装完整运行时；不创建项目目录，也不发起 LLM 请求。"""
     artifacts = ArtifactStore(project_path)
@@ -94,6 +96,7 @@ def build_container(
         memory=container.memory,
         skills=container.skills,
         policies=container.policies,
+        retry_policy=retry_policy,
         llm_selection=container.llm_selection,
         llm_overrides=container.llm_overrides,
     )

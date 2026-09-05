@@ -88,7 +88,23 @@ class GitCodeStagingService:
                     content = content[:20_000]
                 sections.extend([f"## {relative}", "```text", content, "```", ""])
             return "\n".join(sections)
-        return self._artifacts.load_ref(ref)
+        try:
+            return self._artifacts.load_ref(ref)
+        except (FileNotFoundError, ValueError) as error:
+            # Historical Architecture/Contract outputs occasionally used a
+            # semantic alias (``todo-architecture-module-*``) instead of the
+            # canonical ``architecture`` artifact key.  The compiler now
+            # normalizes new plans, while this bounded fallback keeps already
+            # persisted traces resumable without granting access to arbitrary
+            # artifacts.
+            if (
+                ref.layer == "published"
+                and ref.artifact_key.lower().startswith(
+                    ("todo-architecture-", "architecture-module-")
+                )
+            ):
+                return self._artifacts.load_ref(ArtifactRef.published("architecture"))
+            raise error
 
     @staticmethod
     def _needs_symbol_summary(context: ExecutionContext, relative: str) -> bool:
@@ -457,7 +473,12 @@ class GitCodeIntegrationService:
                         "# 实现摘要\n\n## Git 交付记录\n\n所有代码 ChangeSet 已在前置 Wave 完成确定性合并。\n",
                     )
                 return "当前输入中的 ChangeSet 已全部在前置 Wave 合并，无需重复发布。"
-            report = self._policy.evaluate(outputs, missing_refs=tuple(missing_refs))
+            report = self._policy.evaluate(
+                outputs,
+                missing_refs=tuple(missing_refs),
+                common_baseline=baseline,
+                is_ancestor=self._staging.git.is_ancestor,
+            )
             if not report.passed:
                 raise RuntimeError(self._format_policy_error(report))
             if review is not None and getattr(review, "verdict", "") != "approve":

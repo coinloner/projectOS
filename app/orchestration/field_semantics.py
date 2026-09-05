@@ -57,6 +57,203 @@ class NodeExecutionContract:
         }
 
 
+class SemanticRegistry:
+    """集中维护跨节点字段的业务语义和边界规则。
+
+    Pydantic DTO 负责类型/形状校验，Registry 负责解释字段在流程中的
+    meaning、source、consumer 以及不可变的 value rules。别名仍只在
+    wire boundary 归一化；持久化对象和 Agent 输入始终使用 canonical name。
+    """
+
+    def __init__(
+        self,
+        common_fields: Mapping[str, SemanticFieldSpec] | None = None,
+        node_fields: Mapping[str, Mapping[str, SemanticFieldSpec]] | None = None,
+    ) -> None:
+        self._common: dict[str, SemanticFieldSpec] = dict(common_fields or {})
+        self._node: dict[str, dict[str, SemanticFieldSpec]] = {
+            node_type: dict(fields) for node_type, fields in (node_fields or {}).items()
+        }
+
+    @classmethod
+    def default(cls) -> "SemanticRegistry":
+        """Return the built-in registry used by the control plane."""
+        registry = cls(_COMMON_FIELDS)
+        registry.register_node_fields(
+            "architecture_agent",
+            {
+                "purpose": SemanticFieldSpec(
+                    "模块为用户或业务提供的明确价值及边界",
+                    "ArchitectureBlueprint/ModuleDesign",
+                    "ArchitectureAgent/Planner",
+                    False,
+                    ("必须区别于技术职责；不能凭空增加需求",),
+                ),
+                "depends_on_modules": SemanticFieldSpec(
+                    "模块之间的业务依赖；值只能是 Blueprint 中已声明的 module_id",
+                    "ArchitectureBlueprint",
+                    "DynamicPlanBuilder/ArchitectureIntegration",
+                    False,
+                    ("不得填写 work_item_id、interface_id 或文件路径；依赖图必须无环",),
+                ),
+                "layers": SemanticFieldSpec(
+                    "系统分层及每层允许/禁止依赖",
+                    "Architecture Contract",
+                    "Policy/ContractCompiler",
+                    True,
+                    ("层名必须稳定且依赖图无环",),
+                ),
+                "provided_interfaces": SemanticFieldSpec(
+                    "跨模块交互的唯一接口定义",
+                    "Architecture Contract",
+                    "ImplementationContract/Integration",
+                    False,
+                    ("同 ID 只能有一个定义，冲突必须拒绝",),
+                ),
+                "consumed_interfaces": SemanticFieldSpec(
+                    "对其他模块接口的引用",
+                    "Architecture Contract",
+                    "ImplementationContract/Integration",
+                    False,
+                    ("不得携带 owner_unit；必须匹配已定义接口",),
+                ),
+                "implementation_units": SemanticFieldSpec(
+                    "按层和文件所有权拆分的最小实现单元",
+                    "Architecture Contract",
+                    "TaskCompiler/CodeAgent",
+                    True,
+                    ("一个 CodeAgent 单元只能拥有完整文件",),
+                ),
+            },
+        )
+        registry.register_node_fields(
+            "requirement_agent",
+            {
+                "requirements": SemanticFieldSpec(
+                    "可追踪的业务需求及 AC 编号",
+                    "User goal/Trace",
+                    "Architecture/Review",
+                    True,
+                    ("每项必须有验收标准，闲聊内容不得伪装成需求",),
+                ),
+                "external_documentation": SemanticFieldSpec(
+                    "需求显式声明的外部规范主题",
+                    "Requirement metadata",
+                    "CapabilityGate",
+                    False,
+                    ("未声明时不得自行请求 external_documentation",),
+                ),
+            },
+        )
+        registry.register_node_fields(
+            "code_integration_agent",
+            {
+                "changed_files": SemanticFieldSpec(
+                    "候选合并实际产生的文件变更集合",
+                    "Git/index diff",
+                    "DeliveryValidator/Review",
+                    True,
+                    ("必须从真实 diff 推导，不能由模型声称",),
+                ),
+                "merge_report": SemanticFieldSpec(
+                    "仅描述合并结果、冲突和适配，不新增业务功能",
+                    "Integration tool",
+                    "QualityGate",
+                    True,
+                    ("不得创建未在合同中授权的功能文件",),
+                ),
+            },
+        )
+        return registry
+
+    def register(self, name: str, spec: SemanticFieldSpec) -> None:
+        """Register a shared field; duplicate names are rejected."""
+        self._validate_name(name)
+        if not isinstance(spec, SemanticFieldSpec):
+            raise TypeError("语义字段必须是 SemanticFieldSpec")
+        if name in self._common:
+            raise ValueError(f"语义字段 '{name}' 已注册")
+        self._common[name] = spec
+
+    def register_node_fields(
+        self, node_type: str, fields: Mapping[str, SemanticFieldSpec]
+    ) -> None:
+        self._validate_name(node_type)
+        if not isinstance(fields, Mapping):
+            raise TypeError("节点语义字段必须是 Mapping")
+        target = self._node.get(node_type, {})
+        pending: dict[str, SemanticFieldSpec] = {}
+        for name, spec in fields.items():
+            self._validate_name(name)
+            if not isinstance(spec, SemanticFieldSpec):
+                raise TypeError("语义字段必须是 SemanticFieldSpec")
+            if name in self._common or name in target or name in pending:
+                raise ValueError(f"节点 '{node_type}' 的语义字段 '{name}' 已注册")
+            pending[name] = spec
+        self._node[node_type] = {**target, **pending}
+
+    def get(self, name: str, node_type: str | None = None) -> SemanticFieldSpec | None:
+        if node_type is not None:
+            spec = self._node.get(node_type, {}).get(name)
+            if spec is not None:
+                return spec
+        return self._common.get(name)
+
+    def fields_for(self, node_type: str | None = None) -> dict[str, SemanticFieldSpec]:
+        fields = dict(self._common)
+        if node_type is not None:
+            fields.update(self._node.get(node_type, {}))
+        return fields
+
+    def validate_blueprint(self, blueprint: Any) -> tuple[str, ...]:
+        """Validate Blueprint relationships that a JSON schema cannot express."""
+        errors: list[str] = []
+        modules = tuple(getattr(blueprint, "modules", ()) or ())
+        module_ids = [str(getattr(item, "module_id", "")).strip() for item in modules]
+        if any(not value for value in module_ids):
+            errors.append("Blueprint.modules.module_id 不能为空")
+        if len(module_ids) != len(set(module_ids)):
+            errors.append("Blueprint.modules.module_id 必须唯一")
+        known = set(module_ids)
+        for module in modules:
+            module_id = str(getattr(module, "module_id", "")).strip()
+            purpose = str(getattr(module, "purpose", "") or "").strip()
+            if not purpose:
+                errors.append(f"模块 {module_id or '<unknown>'} 缺少 purpose")
+            dependencies = tuple(getattr(module, "depends_on_modules", ()) or ())
+            unknown = sorted(set(dependencies) - known)
+            if unknown:
+                errors.append(
+                    f"模块 {module_id or '<unknown>'} 依赖未声明 module_id: {', '.join(unknown)}"
+                )
+            if module_id in dependencies:
+                errors.append(f"模块 {module_id} 不能依赖自身")
+        layers = tuple(getattr(blueprint, "layers", ()) or ())
+        layer_ids = [str(getattr(layer, "name", "")).strip() for layer in layers]
+        if len(layer_ids) != len(set(layer_ids)):
+            errors.append("Blueprint.layers.name 必须唯一")
+        known_layers = set(layer_ids)
+        for layer in layers:
+            unknown = sorted(
+                set(getattr(layer, "allowed_dependencies", ()) or ()) - known_layers
+            )
+            if unknown:
+                errors.append(
+                    f"层 {getattr(layer, 'name', '<unknown>')} 依赖未声明层: {', '.join(unknown)}"
+                )
+        return tuple(errors)
+
+    @staticmethod
+    def _validate_name(name: str) -> None:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("语义注册名称不能为空")
+
+
+def default_semantic_registry() -> SemanticRegistry:
+    """Build the control-plane registry with the built-in field catalogue."""
+    return SemanticRegistry.default()
+
+
 _COMMON_FIELDS: dict[str, SemanticFieldSpec] = {
     "goal": SemanticFieldSpec(
         "当前 Trace 的需求目标快照", "TraceContext/ExecutionPlan", "所有节点", True
@@ -104,9 +301,19 @@ _COMMON_FIELDS: dict[str, SemanticFieldSpec] = {
 }
 
 
-def compile_node_contract(state: Any, item: Any) -> NodeExecutionContract:
-    """Compile semantic definitions and immediate lineage for one WorkItem."""
-    fields = dict(_COMMON_FIELDS)
+def compile_node_contract(
+    state: Any,
+    item: Any,
+    registry: SemanticRegistry | None = None,
+) -> NodeExecutionContract:
+    """Compile semantic definitions and immediate lineage for one WorkItem.
+
+    ``registry`` is injectable for tests and future project-specific semantic
+    extensions.  The default remains the immutable built-in registry, so this
+    change does not alter the existing task input wire shape.
+    """
+    semantic_registry = registry or default_semantic_registry()
+    fields = semantic_registry.fields_for(str(getattr(item, "agent_id", "")))
     if getattr(item, "implementation_unit_id", None):
         fields.update({
             "implementation_unit_id": SemanticFieldSpec(
@@ -127,61 +334,6 @@ def compile_node_contract(state: Any, item: Any) -> NodeExecutionContract:
             ),
         })
     agent_id = str(getattr(item, "agent_id", ""))
-    if agent_id == "architecture_agent":
-        fields.update({
-            "purpose": SemanticFieldSpec(
-                "模块为用户或业务提供的明确价值及边界",
-                "ArchitectureBlueprint/ModuleDesign",
-                "ArchitectureAgent/Planner",
-                False,
-                ("必须区别于技术职责；不能凭空增加需求",),
-            ),
-            "depends_on_modules": SemanticFieldSpec(
-                "模块之间的业务依赖；值只能是 Blueprint 中已声明的 module_id",
-                "ArchitectureBlueprint",
-                "DynamicPlanBuilder/ArchitectureIntegration",
-                False,
-                ("不得填写 work_item_id、interface_id 或文件路径；依赖图必须无环",),
-            ),
-            "layers": SemanticFieldSpec(
-                "系统分层及每层允许/禁止依赖", "Architecture Contract", "Policy/ContractCompiler", True,
-                ("层名必须稳定且依赖图无环",),
-            ),
-            "provided_interfaces": SemanticFieldSpec(
-                "跨模块交互的唯一接口定义", "Architecture Contract", "ImplementationContract/Integration", False,
-                ("同 ID 只能有一个定义，冲突必须拒绝",),
-            ),
-            "consumed_interfaces": SemanticFieldSpec(
-                "对其他模块接口的引用", "Architecture Contract", "ImplementationContract/Integration", False,
-                ("不得携带 owner_unit；必须匹配已定义接口",),
-            ),
-            "implementation_units": SemanticFieldSpec(
-                "按层和文件所有权拆分的最小实现单元", "Architecture Contract", "TaskCompiler/CodeAgent", True,
-                ("一个 CodeAgent 单元只能拥有完整文件",),
-            ),
-        })
-    elif agent_id == "requirement_agent":
-        fields.update({
-            "requirements": SemanticFieldSpec(
-                "可追踪的业务需求及 AC 编号", "User goal/Trace", "Architecture/Review", True,
-                ("每项必须有验收标准，闲聊内容不得伪装成需求",),
-            ),
-            "external_documentation": SemanticFieldSpec(
-                "需求显式声明的外部规范主题", "Requirement metadata", "CapabilityGate", False,
-                ("未声明时不得自行请求 external_documentation",),
-            ),
-        })
-    elif agent_id == "code_integration_agent":
-        fields.update({
-            "changed_files": SemanticFieldSpec(
-                "候选合并实际产生的文件变更集合", "Git/index diff", "DeliveryValidator/Review", True,
-                ("必须从真实 diff 推导，不能由模型声称",),
-            ),
-            "merge_report": SemanticFieldSpec(
-                "仅描述合并结果、冲突和适配，不新增业务功能", "Integration tool", "QualityGate", True,
-                ("不得创建未在合同中授权的功能文件",),
-            ),
-        })
     predecessors = []
     successors = []
     plan = getattr(state, "plan", None)
@@ -234,16 +386,6 @@ def validate_task_input_semantics(package: Any) -> tuple[str, ...]:
     return tuple(errors)
 
 
-__all__ = [
-    "coalesce_alias",
-    "normalize_aliases",
-    "SemanticFieldSpec",
-    "NodeExecutionContract",
-    "compile_node_contract",
-    "validate_task_input_semantics",
-]
-
-
 def coalesce_alias(
     payload: dict[str, Any],
     canonical: str,
@@ -287,4 +429,13 @@ def normalize_aliases(
     return data
 
 
-__all__ = ["coalesce_alias", "normalize_aliases"]
+__all__ = [
+    "coalesce_alias",
+    "normalize_aliases",
+    "SemanticFieldSpec",
+    "SemanticRegistry",
+    "default_semantic_registry",
+    "NodeExecutionContract",
+    "compile_node_contract",
+    "validate_task_input_semantics",
+]

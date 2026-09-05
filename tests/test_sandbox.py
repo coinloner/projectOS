@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 from app.runtime.manifest import RuntimeManifest
@@ -109,6 +110,40 @@ class SandboxTest(unittest.TestCase):
         command = executor.commands[1]
         self.assertIn("node:22-alpine", command)
         self.assertEqual(command[-2:], ["node", "--test"])
+
+    def test_runtime_smoke_command_is_derived_from_project_contract(self) -> None:
+        from app.domain.architecture.implementation_contract import ProjectContractStore
+
+        RuntimeManifest(version=1, profile="python-stdlib").save(self.project_path)
+        contract = {
+            "schema_version": 1,
+            "entrypoints": {
+                "backend_file": "backend/app/server.py",
+                "backend_import": "backend.app.server",
+            },
+            "layers": ["runtime"],
+            "allowed_dependencies": {"runtime": []},
+            "path_mapping": {"runtime": ["backend/app/**"]},
+            "implementation_units": [{
+                "unit_id": "runtime",
+                "layer": "runtime",
+                "objective": "启动入口",
+                "allowed_paths": ["backend/app/**"],
+                "owned_files": ["backend/app/server.py"],
+            }],
+        }
+        ProjectContractStore(self.project_path).save(json.dumps(contract))
+
+        spec = SandboxPolicy().create_spec(
+            project_path=self.project_path,
+            manifest=RuntimeManifest.load(self.project_path),
+            check_id="runtime-smoke",
+        )
+
+        self.assertEqual(spec.image, "python:3.12-slim")
+        self.assertIsNotNone(spec.command_override)
+        self.assertIn("backend.app.server", spec.command_override[-1])
+        self.assertNotIn("docker", spec.command_override)
 
     def test_python_pip_selects_pytest_when_declared(self) -> None:
         root = Path(self.project_path)

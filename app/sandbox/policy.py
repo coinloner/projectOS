@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from app.runtime.manifest import RuntimeCatalog, RuntimeManifest, RuntimeProfile
 
@@ -94,6 +95,8 @@ class SandboxPolicy:
                 # file list explicitly so every file accepted by preflight is
                 # actually executed.
                 command_override = ("node", "--test", *web_tests)
+        elif check_id == "runtime-smoke":
+            command_override = _runtime_smoke_command(root)
 
         return SandboxSpec(
             project_path=root,
@@ -154,6 +157,50 @@ def _pytest_unit_command(workspace: Path) -> tuple[str, ...]:
     if unit_root.is_dir() and any(path.is_file() for path in unit_root.rglob("*")):
         return ("python", "-m", "pytest", "-q", "tests/unit")
     return ("python", "-m", "pytest", "-q")
+
+
+def _runtime_smoke_command(project_path: Path) -> tuple[str, ...]:
+    """Build a fixed Python entrypoint composition probe from the contract.
+
+    The module name is validated before it is embedded in the ``-c`` script;
+    no project-provided shell command is accepted.  The probe instantiates a
+    conventional ``create_server`` when available, otherwise verifies a
+    FastAPI/ASGI ``app`` object or imports the declared module.  HTTP readiness
+    remains a separate follow-up check for profiles that expose a port.
+    """
+
+    from app.domain.architecture.implementation_contract import ProjectContractStore
+
+    contract = ProjectContractStore(str(project_path)).load()
+    module = contract.entrypoints.backend_import
+    if not module:
+        backend_file = contract.entrypoints.backend_file
+        if backend_file and backend_file.endswith(".py"):
+            relative = backend_file.removeprefix("workspace/").removeprefix("/")
+            module = relative.removesuffix(".py").replace("/", ".")
+    if not module or not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", module):
+        raise ValueError(
+            "runtime-smoke 需要 Project Contract 提供合法的 Python backend_import"
+        )
+    script = (
+        "import importlib\n"
+        f"module = importlib.import_module({module!r})\n"
+        "if hasattr(module, 'create_server'):\n"
+        "    server = module.create_server('127.0.0.1', 0)\n"
+        "    server.server_close()\n"
+        "elif hasattr(module, 'create_application'):\n"
+        "    application = module.create_application()\n"
+        "    if not callable(application):\n"
+        "        raise RuntimeError('create_application() 返回值不可调用')\n"
+        "elif hasattr(module, 'app'):\n"
+        "    app = getattr(module, 'app')\n"
+        "    if app is None or not callable(app):\n"
+        "        raise RuntimeError('backend app 为空或不可调用')\n"
+        "elif hasattr(module, '_load_application'):\n"
+        "    module._load_application()\n"
+        ""
+    )
+    return ("python", "-c", script)
 
 
 def discover_web_tests(project_path: str | Path) -> tuple[str, ...]:

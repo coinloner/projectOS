@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
+
+# Keep the validation script runnable both as ``python -m`` and directly from
+# the repository root.  Python otherwise places only ``scripts/`` on
+# sys.path, which hides the sibling ``app`` package.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agent.registry import AgentDefinition, AgentRegistry
 from app.agent.result import AgentResult

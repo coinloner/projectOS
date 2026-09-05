@@ -19,6 +19,7 @@ from app.orchestration.trace import TraceContext
 from app.orchestration.trace import TraceStore
 from app.orchestration.node_result import NodeResult
 from app.orchestration.runner import GraphRunner
+from app.orchestration.work_item import DependencySource, WorkItem, WorkItemDependency
 from app.agent.registry import AgentRegistry
 from app.tool_manager.gateway import ToolGateway
 from app.workflow.compiler import ImplementationContractCompiler
@@ -110,6 +111,25 @@ class ImplementationContractTest(unittest.TestCase):
         contract = ImplementationContract.parse(payload)
         self.assertEqual(contract.interfaces[0].kind, "api")
 
+    def test_common_architecture_interface_kinds_are_normalized(self) -> None:
+        for raw_kind, expected in (
+            ("rest_api", "api"),
+            ("http_handler_factory", "api"),
+            ("in_process_repository", "service"),
+            ("python_service", "service"),
+            ("python-callable", "symbol"),
+            ("process-entrypoint", "api"),
+            ("worker", "service"),
+            ("database", "data"),
+        ):
+            interface = InterfaceContract(
+                interface_id=f"i-{raw_kind}",
+                kind=raw_kind,
+                name="interface",
+                owner_unit="unit",
+            )
+            self.assertEqual(interface.kind, expected)
+
     def test_disjoint_owned_files_can_share_a_directory_grant(self) -> None:
         payload = {
             "schema_version": 1,
@@ -181,6 +201,29 @@ class ImplementationContractTest(unittest.TestCase):
         self.assertEqual(contract.entrypoints.backend_import, "app.main:app")
         self.assertEqual(contract.entrypoints.frontend_file, "frontend/src/main.ts")
         self.assertEqual(contract.required_files, ("backend/app/main.py", "frontend/src/main.ts"))
+
+    def test_compiler_omits_control_plane_denies_but_keeps_business_exclusions(self) -> None:
+        payload = {
+            "schema_version": 1,
+            "implementation_units": [{
+                "unit_id": "runtime",
+                "layer": "runtime",
+                "objective": "实现运行时入口",
+                "allowed_paths": ["workspace/backend/app/**"],
+                "forbidden_paths": [
+                    "workspace/**",
+                    ".projectos/**",
+                    "workspace/backend/app/private.py",
+                ],
+                "owned_files": ["backend/app/main.py"],
+                "slot": "backend",
+            }],
+        }
+        plan = ImplementationContractCompiler().compile(
+            ImplementationContract.parse(payload), goal="运行时", plan_id="control-plane-denies",
+            trace=TraceContext(requirement_id="req-control-plane", trace_id="tr-control-plane"),
+        )
+        self.assertEqual(plan.work_items[0].forbidden_paths, ("backend/app/private.py",))
 
     def test_contract_service_reads_published_architecture(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -389,6 +432,21 @@ async def health() -> dict:
         dependent = plan.work_items[1]
         self.assertIn("staged:tr-contract:wi-code-backend-domain:backend", {ref.ref_id for ref in dependent.input_refs})
 
+    def test_compiler_normalizes_legacy_architecture_input_alias(self) -> None:
+        payload = contract_payload()
+        payload["implementation_units"][0]["input_refs"] = [
+            "todo-architecture-module-runtime"
+        ]
+        contract = ImplementationContract.parse(payload)
+        plan = ImplementationContractCompiler().compile(
+            contract,
+            goal="兼容旧架构引用",
+            plan_id="legacy-input-alias",
+            trace=TraceContext(requirement_id="req-alias", trace_id="tr-alias"),
+        )
+        first = plan.work_items[0]
+        self.assertIn("published:architecture:current", {ref.ref_id for ref in first.input_refs})
+
     def test_wave_is_a_barrier_while_same_wave_units_remain_parallel(self) -> None:
         payload = {
             "schema_version": 1,
@@ -537,6 +595,82 @@ async def health() -> dict:
             self.assertEqual({ref.work_item_id for ref in integration.input_refs}, {item.id for item in code_items})
             self.assertEqual(len([item for item in state.plan.work_items if item.id == "implementation"]), 0)
             self.assertEqual([item.implementation_unit_id for item in traces.load_plan(trace.trace_id).work_items if item.agent_id == "code_agent"], ["backend-domain", "frontend-shell"])
+
+            # Phase 6 hand-off: replacing the template's single implementation
+            # placeholder must not detach the fixed downstream delivery stages.
+            tasks = next(item for item in state.plan.work_items if item.id.endswith("-tasks-plan"))
+            environment = next(item for item in state.plan.work_items if item.id.endswith("-environment"))
+            tests = next(item for item in state.plan.work_items if item.id.endswith("-tests"))
+            review = next(item for item in state.plan.work_items if item.id.endswith("-review"))
+            self.assertIsNotNone(tasks)
+            self.assertIsNotNone(environment)
+            self.assertIsNotNone(tests)
+            self.assertIsNotNone(review)
+            assert tasks is not None and environment is not None
+            assert tests is not None and review is not None
+            self.assertIn(contract_item.id, tasks.dependency_ids)
+            quality = next(item for item in state.plan.work_items if item.id.endswith("-tasks-quality-gate"))
+            self.assertIn(quality.id, environment.dependency_ids)
+            self.assertIn(integration.id, tests.dependency_ids)
+            self.assertIn(tests.id, review.dependency_ids)
+
+    def test_dynamic_plan_without_template_id_expands_contract_into_code_items(self) -> None:
+        """Phase 5 must work for a Planner-generated DAG, not only templates."""
+        with tempfile.TemporaryDirectory() as directory:
+            traces = TraceStore(directory)
+            trace = traces.start_trace("动态合同交付")
+            contract = ImplementationContract.parse(contract_payload())
+            ImplementationContractStore(directory).save(contract.as_dict())
+            contract_item = WorkItem(
+                id="wi-contract",
+                agent_id="architecture_contract_agent",
+                objective="保存实现合同",
+                output_key="architecture_contract",
+                artifact_key="architecture_contract",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture_contract",
+            )
+            integration = WorkItem(
+                id="wi-code-integration",
+                agent_id="code_integration_agent",
+                objective="整合代码分区",
+                output_key="implementation_merge",
+                artifact_key="implementation",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="workspace",
+                dependencies=(WorkItemDependency("wi-contract", DependencySource.SYSTEM),),
+            )
+            plan = ExecutionPlan(
+                id="dynamic-contract-plan",
+                goal="动态合同交付",
+                work_items=(contract_item, integration),
+                template_id=None,
+                trace=trace,
+            )
+            state = RunState(plan=plan)
+            state.record(
+                contract_item,
+                NodeResult.completed(
+                    work_item_id=contract_item.id,
+                    agent_id=contract_item.agent_id,
+                    content="合同已发布",
+                ),
+            )
+            runner = GraphRunner(
+                AgentRegistry(),
+                ToolGateway(),
+                traces=traces,
+            )
+            runner._expand_implementation_plan_if_ready(state)
+
+            code_items = [item for item in state.plan.work_items if item.agent_id == "code_agent"]
+            self.assertEqual(
+                {item.implementation_unit_id for item in code_items},
+                {"backend-domain", "frontend-shell"},
+            )
+            merged = state.plan.work_item("wi-code-integration")
+            assert merged is not None
+            self.assertEqual(set(merged.dependency_ids), {item.id for item in code_items})
 
     def test_review_artifact_unit_is_left_to_review_agent(self) -> None:
         payload = contract_payload()

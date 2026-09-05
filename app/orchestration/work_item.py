@@ -99,9 +99,14 @@ class WorkItem:
         if self.allowed_paths and any(path in {"*", "**"} for path in self.forbidden_paths):
             raise ValueError("WorkItem.forbidden_paths 不能使用全局通配符")
         for allowed in self.allowed_paths:
-            if any(_path_patterns_overlap(allowed, forbidden) for forbidden in self.forbidden_paths):
+            # A directory grant may intentionally carry explicit exclusions
+            # (for example ``backend/app/**`` with
+            # ``backend/app/server.py`` denied).  Reject only a deny pattern
+            # that covers the entire grant; file-level ownership checks below
+            # still reject an owned file that falls inside an exclusion.
+            if any(_forbidden_covers_allowed(allowed, forbidden) for forbidden in self.forbidden_paths):
                 raise ValueError(
-                    f"WorkItem.allowed_paths 与 forbidden_paths 重叠: {allowed}"
+                    f"WorkItem.allowed_paths 与 forbidden_paths 重叠：禁止范围覆盖整个授权范围: {allowed}"
                 )
         for owned in self.owned_files:
             normalized = owned.replace("\\", "/").lstrip("/")
@@ -284,14 +289,82 @@ def _default_output_kind(execution_mode: ExecutionMode) -> str:
     }[execution_mode]
 
 
-def _path_patterns_overlap(allowed: str, forbidden: str) -> bool:
-    """Conservative overlap check for workspace glob scopes."""
-    left = allowed.replace("\\", "/").rstrip("/")
-    right = forbidden.replace("\\", "/").rstrip("/")
+def _forbidden_covers_allowed(allowed: str, forbidden: str) -> bool:
+    """Return whether a deny pattern subsumes an allow pattern.
+
+    ``allowed_paths`` is a grant and ``forbidden_paths`` is an optional deny
+    overlay.  They are expected to intersect when a project protects one or
+    more files inside an otherwise writable directory.  The unsafe case is a
+    deny that makes the grant empty: an exact file match, an equal glob, or a
+    broader deny directory/pattern.  A narrower deny (``backend/app/main.py``
+    inside ``backend/app/**``) is therefore valid and is enforced at write
+    time by the normal matcher.
+    """
+    left = _normalize_path_pattern(allowed)
+    right = _normalize_path_pattern(forbidden)
+    if not left or not right:
+        return False
+
+    # An exact grant is covered when the deny matches that exact path.
+    if not _has_glob(left):
+        return _pattern_matches(right, left)
+
+    # Equal patterns (including a directory root normalized to ``/**``) are a
+    # complete deny.  A concrete deny below an allowed glob is only an
+    # exclusion and must remain valid.
     if left == right:
         return True
-    left_prefix = left.split("*", 1)[0].split("?", 1)[0].rstrip("/")
-    right_prefix = right.split("*", 1)[0].split("?", 1)[0].rstrip("/")
-    if left_prefix and right_prefix:
-        return left_prefix == right_prefix or left_prefix.startswith(right_prefix + "/") or right_prefix.startswith(left_prefix + "/")
-    return False
+
+    allowed_prefix = _literal_prefix(left)
+    if not allowed_prefix:
+        # The only safe global grant is rejected elsewhere when a global deny
+        # is present.  Keep this conservative for unusual patterns such as
+        # ``*`` or ``?``.
+        return _has_glob(right) and right in {"*", "**"}
+
+    # A recursive deny can cover the whole grant when its directory prefix is
+    # an ancestor of the grant's literal prefix.  A narrower file/pattern deny
+    # below the grant remains a valid explicit exclusion.
+    if right == "**":
+        return True
+    if not right.endswith("/**"):
+        return False
+    forbidden_root = right[:-3].rstrip("/")
+    if not forbidden_root:
+        return True
+    return allowed_prefix == forbidden_root or allowed_prefix.startswith(forbidden_root + "/")
+
+
+def _normalize_path_pattern(value: str) -> str:
+    raw = value.replace("\\", "/").removeprefix("workspace/").lstrip("/")
+    directory = raw.endswith("/")
+    normalized = raw.rstrip("/")
+    if directory and normalized:
+        normalized += "/**"
+    if normalized and normalized.endswith("/**/**"):
+        normalized = normalized[:-3]
+    return normalized
+
+
+def _has_glob(pattern: str) -> bool:
+    return any(token in pattern for token in ("*", "?", "[", "]"))
+
+
+def _literal_prefix(pattern: str) -> str:
+    """Return the path prefix before the first glob token."""
+    prefix = pattern
+    for token in ("*", "?", "[", "]"):
+        prefix = prefix.split(token, 1)[0]
+    return prefix.rstrip("/")
+
+
+def _pattern_matches(pattern: str, path: str) -> bool:
+    """Match the same normalized path forms used by the Git gateway."""
+    candidates = (path, f"workspace/{path}")
+    normalized = pattern + "**" if pattern.endswith("/") else pattern
+    return any(
+        fnmatch.fnmatch(candidate, current)
+        or fnmatch.fnmatch(candidate, current.replace("**", "*"))
+        for candidate in candidates
+        for current in (normalized,)
+    )

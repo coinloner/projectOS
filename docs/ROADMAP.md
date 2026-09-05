@@ -22,9 +22,9 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 
 1. **固定模板与 ProcessDefinition**：已完成。保留现有固定模板，新增流程阶段、合法转换、
    Agent/工具执行规则和规模限制。
-2. **Semantic Registry 校验 Blueprint**：部分完成。当前由 `field_semantics`、
-   `BlueprintValidator` 和 Pydantic 设计合同提供语义校验；下一步补充正式的
-   `SemanticRegistry` 集中注册入口，避免语义规则分散。
+2. **Semantic Registry 校验 Blueprint**：已完成。`SemanticRegistry` 集中登记字段的
+   meaning/source/consumer/value_rules，`BlueprintValidator` 在动态扩展前执行层依赖、模块
+   purpose、module_id 唯一性和未知依赖校验；Pydantic 仍负责 DTO 形状和类型硬门。
 3. **DynamicPlanBuilder 生成 ModuleDesign**：已完成。Blueprint 的真实模块清单、业务目的、
    模块依赖和执行 wave 会动态生成 depth=1 WorkItem。
 4. **动态生成 ImplementationDesign**：已完成。所有 ModuleDesign 完成后按真实模块清单生成
@@ -39,13 +39,14 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 8. **删除固定项目模板**：未开始。只有阶段 6、7 稳定并完成迁移验证后，才删除固定项目模板；
    在此之前模板只作为受控兼容适配器存在。
 
-## 当前推进目标：阶段五到阶段六
+## 当前推进目标：阶段五到阶段七
 
 1. 验证 `ArchitectureDesignBundle -> Project Contract -> CodeAgent WorkItem` 的真实传递，
    确保每个 unit、interface ownership、文件路径和 wave 语义不丢失。
 2. 将动态编译结果与 Tasks、Environment、Test、Review 的依赖和产物 owner 对齐。
 3. 让失败证据、局部重试、checkpoint 恢复和最终 Review 在同一动态计划中闭环。
-4. 用真实 FHL Agent 连续运行，而不是只用 Fake Agent 或单独的架构探针。
+4. 用确定性 Agent 先完成阶段五到阶段六的完整回归，再用真实 FHL Agent 连续运行多种项目类型，
+   形成阶段七验证矩阵，而不是只用 Fake Agent 或单独的架构探针。
 
 ## MVP 后的扩展顺序
 

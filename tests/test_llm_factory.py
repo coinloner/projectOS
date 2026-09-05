@@ -5,6 +5,7 @@ from unittest.mock import patch
 from app.llm.factory import build_llm
 from app.llm.config import resolve_llm_selection
 from app.llm.config import discover_provider_models
+from app.llm.responses import OpenAIResponsesLLM
 
 
 class LLMFactoryTest(unittest.TestCase):
@@ -123,6 +124,45 @@ class LLMFactoryTest(unittest.TestCase):
         self.assertEqual(llm.model, "gpt-5.6-terra")
         self.assertEqual(llm.provider, "openai")
         self.assertEqual(llm.base_url, "https://www.fhl.mom/v1")
+
+    def test_portdan_defaults_to_streaming(self) -> None:
+        with patch("app.llm.factory.load_dotenv"), patch.dict(
+            os.environ,
+            {"PROJECTOS_LLM_PROVIDER": "portdan", "PORTDAN_API_KEY": "test-key"},
+            clear=True,
+        ):
+            llm = build_llm()
+
+        self.assertEqual(llm.model, "gpt-5.5")
+        self.assertEqual(llm.base_url, "https://portdan.com")
+        self.assertTrue(llm.stream)
+
+    def test_restored_responses_selection_builds_responses_llm(self) -> None:
+        with patch("app.llm.factory.load_dotenv"), patch.dict(
+            os.environ,
+            {"PORTDAN_API_KEY": "test-key"},
+            clear=True,
+        ):
+            selection = resolve_llm_selection("portdan")
+            llm = build_llm(selection=selection)
+
+        self.assertEqual(selection.wire_api, "responses")
+        self.assertIsInstance(llm, OpenAIResponsesLLM)
+        self.assertEqual(llm.base_url, "https://portdan.com")
+
+    def test_stream_environment_override_can_disable_portdan_sse(self) -> None:
+        with patch("app.llm.factory.load_dotenv"), patch.dict(
+            os.environ,
+            {
+                "PROJECTOS_LLM_PROVIDER": "portdan",
+                "PORTDAN_API_KEY": "test-key",
+                "PROJECTOS_LLM_STREAM": "false",
+            },
+            clear=True,
+        ):
+            llm = build_llm()
+
+        self.assertFalse(llm.stream)
 
     def test_explicit_selection_overrides_deployment_defaults(self) -> None:
         with patch("app.llm.factory.load_dotenv"), patch.dict(

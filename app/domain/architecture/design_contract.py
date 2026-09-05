@@ -200,6 +200,17 @@ class ImplementationDesign(_DesignModel):
                 raise ValueError(
                     f"实现单元 {unit.unit_id} 必须且只能负责一个具体 owned_file"
                 )
+            owned_paths = {
+                path.replace("\\", "/").lstrip("/")
+                for path in unit.owned_files
+            }
+            for required in unit.required_paths:
+                normalized = required.replace("\\", "/").lstrip("/")
+                if normalized not in owned_paths:
+                    raise ValueError(
+                        f"实现单元 {unit.unit_id} 的 required_paths "
+                        f"必须属于 owned_files: {required}"
+                    )
         for interface in self.provided_interfaces:
             if interface.owner_unit not in unit_ids:
                 raise ValueError(
@@ -347,6 +358,18 @@ class ArchitectureDesignBundle(_DesignModel):
                 normalized = required.replace("\\", "/").lstrip("/")
                 if normalized not in {p.replace("\\", "/").lstrip("/") for p in unit.owned_files}:
                     raise ValueError(f"实现单元 {unit.unit_id} 的 required_paths 必须属于 owned_files: {required}")
+        # The Project Contract exposes Blueprint.required_files as a delivery
+        # obligation.  Every such file must therefore have one concrete code
+        # owner before the design can be published.  Without this check an
+        # otherwise valid-looking contract reaches runtime preflight with a
+        # required file that no CodeAgent WorkItem is capable of creating.
+        for required_file in self.blueprint.required_files:
+            normalized = required_file.replace("\\", "/").lstrip("/")
+            if normalized not in owned_files:
+                raise ValueError(
+                    "ArchitectureBlueprint.required_file_not_owned: "
+                    f"{required_file}"
+                )
         for unit in units:
             current_wave = unit.wave if unit.wave is not None else 0
             unknown = sorted(set(unit.depends_on) - set(by_id))
@@ -369,6 +392,10 @@ class ArchitectureDesignBundle(_DesignModel):
     def to_project_contract(self) -> dict[str, object]:
         """将三层对象转换成唯一 ProjectContract 的 wire 形态。"""
         layers = [item.name for item in self.blueprint.layers]
+        entrypoints = _derived_entrypoints(
+            self.blueprint.entrypoints.model_dump(exclude_none=True),
+            self.implementations,
+        )
         payload: dict[str, object] = {
             "schema_version": 1,
             "layers": [item.model_dump(mode="json") for item in self.blueprint.layers],
@@ -379,7 +406,7 @@ class ArchitectureDesignBundle(_DesignModel):
                     for test_type in item.required_test_types
                 }
             ),
-            "entrypoints": self.blueprint.entrypoints.model_dump(exclude_none=True),
+            "entrypoints": entrypoints,
             "required_files": list(self.blueprint.required_files),
             "interfaces": [],
             "implementation_units": [],
@@ -399,6 +426,37 @@ class ArchitectureDesignBundle(_DesignModel):
             ):
                 payload["implementation_units"].append(unit.model_dump(mode="json"))  # type: ignore[union-attr]
         return payload
+
+
+def _derived_entrypoints(
+    entrypoints: dict[str, object], implementations: list[ImplementationDesign]
+) -> dict[str, object]:
+    """Fill unambiguous backend entrypoint fields from runtime ownership."""
+    result = dict(entrypoints)
+    if result.get("backend_file") and result.get("backend_import"):
+        return result
+    candidates: list[str] = []
+    for design in implementations:
+        for unit in design.implementation_units:
+            if unit.layer.strip().lower() not in {"runtime", "application", "app"}:
+                continue
+            for path in unit.owned_files:
+                normalized = path.replace("\\", "/").lstrip("/")
+                if not normalized.startswith("backend/") or not normalized.endswith(".py"):
+                    continue
+                if normalized.rsplit("/", 1)[-1] in {"server.py", "main.py"}:
+                    candidates.append(normalized)
+    candidates = sorted(set(candidates))
+    if len(candidates) != 1:
+        return result
+    backend_file = candidates[0]
+    result.setdefault("backend_file", backend_file)
+    if not result.get("backend_import"):
+        module = backend_file.removeprefix("backend/").removesuffix(".py").replace("/", ".")
+        result["backend_import"] = module
+    if not result.get("backend_command"):
+        result["backend_command"] = f"python -m {result['backend_import']}"
+    return result
 
 
 def parse_design(value: dict[str, object] | str) -> ArchitectureBlueprint | ModuleDesign | ImplementationDesign:

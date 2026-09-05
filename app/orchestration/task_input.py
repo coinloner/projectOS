@@ -50,19 +50,17 @@ class InputBinding:
 
 @dataclass(frozen=True)
 class TaskScope:
-    """当前节点的资源边界，明确允许范围和非目标范围。"""
+    """当前节点对模型可见的最小资源授权边界。"""
 
     execution_mode: str
     slot: str | None
     allowed_paths: tuple[str, ...] = ()
-    forbidden_paths: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
             "execution_mode": self.execution_mode,
             "slot": self.slot,
             "allowed_paths": list(self.allowed_paths),
-            "forbidden_paths": list(self.forbidden_paths),
         }
 
 
@@ -333,11 +331,9 @@ def build_task_input(
         )
 
     slot = item.slot
-    allowed_paths, forbidden_paths = _scope_paths(item.execution_mode, slot)
+    allowed_paths = _scope_paths(item.execution_mode, slot)
     if item.allowed_paths:
         allowed_paths = item.allowed_paths
-    if item.forbidden_paths:
-        forbidden_paths = item.forbidden_paths
     constraints = list(item.constraints)
     constraints.extend(_mode_constraints(item.execution_mode, slot))
     package = TaskInputPackage(
@@ -352,7 +348,6 @@ def build_task_input(
             execution_mode=item.execution_mode.value,
             slot=slot,
             allowed_paths=allowed_paths,
-            forbidden_paths=forbidden_paths,
         ),
         inputs=tuple(InputBinding.from_ref(ref) for ref in item.input_refs),
         dependencies=tuple(dependency_summaries),
@@ -376,7 +371,6 @@ def build_task_input(
             {
                 "unit_id": item.implementation_unit_id,
                 "allowed_paths": list(item.allowed_paths),
-                "forbidden_paths": list(item.forbidden_paths),
                 "required_paths": list(item.required_paths),
                 "wave": item.wave,
                 "owned_files": list(item.owned_files),
@@ -401,24 +395,18 @@ def build_task_input(
 
 def _scope_paths(
     execution_mode: ExecutionMode, slot: str | None
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> tuple[str, ...]:
     if execution_mode is ExecutionMode.PARTITIONED and slot:
         if slot in {"backend", "frontend"}:
             allowed = (f"workspace/{slot}/**",)
-            forbidden = (
-                "workspace/frontend/**" if slot == "backend" else "workspace/backend/**",
-                "workspace/tests/**",
-                ".projectos/**",
-            )
         else:
             allowed = (f"staged/{slot}/**",)
-            forbidden = ("workspace/**", ".projectos/**")
-        return allowed, forbidden
+        return allowed
     if execution_mode is ExecutionMode.INTEGRATION:
-        return ("workspace/**",), (".projectos/**", "project.yaml", "runtime.yaml")
+        return ("workspace/**",)
     if execution_mode is ExecutionMode.QUALITY_GATE:
-        return (), ("workspace/**", ".projectos/**")
-    return (), ("任意未声明路径",)
+        return ()
+    return ()
 
 
 def _mode_constraints(execution_mode: ExecutionMode, slot: str | None) -> tuple[str, ...]:

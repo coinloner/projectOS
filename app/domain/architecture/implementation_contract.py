@@ -89,6 +89,8 @@ class InterfaceContract:
             "endpoint": "api",
             "http": "api",
             "http_endpoint": "api",
+            "http_api": "api",
+            "rest_api": "api",
             "api_endpoint": "api",
             "route": "api",
             "class": "symbol",
@@ -100,11 +102,24 @@ class InterfaceContract:
             "topic": "event",
             "repository": "service",
             "repo": "service",
+            "in_process_repository": "service",
+            "repository_port": "service",
+            "port": "service",
+            "use_case": "service",
+            "service_interface": "service",
+            "python_service": "service",
+            "python_callable": "symbol",
+            "python-callable": "symbol",
+            "internal_service": "service",
+            "worker": "service",
             "router": "api",
             "route_handler": "api",
+            "http_handler_factory": "api",
             "controller": "api",
             "dto": "data",
             "model_schema": "data",
+            "database": "data",
+            "orm": "data",
             "queue": "event",
             # Architecture workers sometimes use ``provided``/``consumed``
             # as a direction label in the contract's ``kind`` field.  The
@@ -115,10 +130,13 @@ class InterfaceContract:
             "consumed": "service",
             "exception": "symbol",
             "entrypoint": "api",
+            "process_entrypoint": "api",
+            "process-entrypoint": "api",
             "lifecycle": "service",
             "dependency": "service",
         }
-        normalized_kind = aliases.get(self.kind.strip().lower(), self.kind.strip().lower())
+        raw_kind = self.kind.strip().lower()
+        normalized_kind = aliases.get(raw_kind, aliases.get(raw_kind.replace("-", "_"), raw_kind))
         object.__setattr__(self, "kind", normalized_kind)
         if normalized_kind not in {"symbol", "service", "api", "data", "event"}:
             raise ValueError("InterfaceContract.kind 必须是 symbol/service/api/data/event")

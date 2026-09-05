@@ -2,6 +2,7 @@ import unittest
 from dataclasses import replace
 
 from app.agent.registry import AgentDefinition, AgentRegistry
+from app.execution_context import ExecutionMode
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.trace import TraceContext
 from app.orchestration.work_item import DependencySource, WorkItem, WorkItemDependency
@@ -51,6 +52,24 @@ def plan() -> ExecutionPlan:
 
 
 class PlannerPatchTest(unittest.TestCase):
+    def test_repair_patch_accepts_boundary_zero_width_format_character(self) -> None:
+        patch = RepairPlanPatch.parse(
+            '\u200b{"rationale":"修复","base_plan_id":"plan-patch","operations":['
+            '{"operation":"add","ref":"fix","agent_id":"test_agent",'
+            '"objective":"重新验证","depends_on":[]}]}\ufeff'
+        )
+
+        self.assertEqual(patch.base_plan_id, "plan-patch")
+        self.assertEqual(patch.operations[0].operation, "add")
+
+    def test_plan_patch_accepts_boundary_zero_width_format_character(self) -> None:
+        patch = PlanPatch.parse(
+            '\u200b{"rationale":"调整","base_plan_id":"plan-patch","operations":['
+            '{"operation":"modify","work_item_id":"wi-api","objective":"更新 API"}]}\u2060'
+        )
+
+        self.assertEqual(patch.operations[0].work_item_id, "wi-api")
+
     def test_repair_patch_appends_only_new_work_items(self) -> None:
         patch = RepairPlanPatch.parse(
             '{"rationale":"修复","base_plan_id":"plan-patch","repair_scope":["wi-api"],'
@@ -97,7 +116,37 @@ class PlannerPatchTest(unittest.TestCase):
                 objective="实现",
                 output_key="implementation",
                 allowed_paths=("workspace/**",),
-                forbidden_paths=("workspace/backend/**",),
+                forbidden_paths=("workspace/**",),
+            )
+
+    def test_work_item_allows_file_exclusions_inside_directory_grant(self) -> None:
+        item = WorkItem(
+            id="wi-scope-exclusion",
+            agent_id="code_agent",
+            objective="实现后端模块",
+            output_key="implementation",
+            execution_mode=ExecutionMode.PARTITIONED,
+            slot="backend",
+            implementation_unit_id="backend-module",
+            allowed_paths=("backend/app/**",),
+            forbidden_paths=("backend/app/server.py",),
+            owned_files=("backend/app/routes.py",),
+        )
+        self.assertEqual(item.forbidden_paths, ("backend/app/server.py",))
+
+    def test_work_item_rejects_owned_file_inside_exclusion(self) -> None:
+        with self.assertRaisesRegex(ValueError, "owned_files.*forbidden_paths"):
+            WorkItem(
+                id="wi-scope-owned-exclusion",
+                agent_id="code_agent",
+                objective="实现后端入口",
+                output_key="implementation",
+                execution_mode=ExecutionMode.PARTITIONED,
+                slot="backend",
+                implementation_unit_id="backend-entry",
+                allowed_paths=("backend/app/**",),
+                forbidden_paths=("backend/app/server.py",),
+                owned_files=("backend/app/server.py",),
             )
 
     def test_dependency_changes_are_rejected_by_frozen_contract(self) -> None:

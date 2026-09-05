@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from threading import Lock
+from typing import Any
 
 from app.agent.registry import AgentRegistry
 from app.agent.result import AgentResult, AgentStatus
@@ -23,13 +24,21 @@ from app.orchestration.plan import ExecutionPlan
 from app.orchestration.state import RunState
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.orchestration.trace import TraceStore
-from app.orchestration.progress import ProgressTracker
+from app.orchestration.progress import (
+    ExecutionLifecycle,
+    ExecutionOutcome,
+    ProgressTracker,
+    WorkerProgressStore,
+)
 from app.orchestration.work_item import WorkItem
 from app.orchestration.work_item import DependencySource, WorkItemDependency
 from app.orchestration.retry import (
     FailureKind,
     FailureSignal,
     RecoveryAction,
+    RetryLedger,
+    RetryRecord,
+    RetryScope,
     RetryPolicy,
     sandbox_failure_signal,
     repair_protocol_prompt,
@@ -87,6 +96,67 @@ def _provider_failure_kind(error: BaseException) -> FailureKind | None:
     if any(marker in text for marker in terminal_markers):
         return FailureKind.PROVIDER_TERMINAL_MISSING
     return None
+
+
+def _architecture_validation_signal(
+    error: BaseException | str,
+    *,
+    item: WorkItem,
+    summary_prefix: str,
+) -> FailureSignal:
+    """Turn a schema failure into a repairable, machine-readable signal.
+
+    The provider and pydantic versions used by deployments format validation
+    errors differently, so this deliberately extracts only stable metadata.
+    Plain delivery/provenance failures must stay ``architecture_contract_missing``.
+    """
+    text = str(error)
+    field_path: str | None = None
+    code: str | None = None
+    validator: str | None = type(error).__name__
+    errors = getattr(error, "errors", None)
+    if callable(errors):
+        try:
+            entries = errors()
+            if isinstance(entries, list) and entries and isinstance(entries[0], dict):
+                entry = entries[0]
+                loc = entry.get("loc")
+                if isinstance(loc, (tuple, list)):
+                    field_path = ".".join(str(part) for part in loc)
+                code = str(entry.get("type")) if entry.get("type") else None
+                validator = str(entry.get("title") or validator)
+        except Exception:
+            pass
+    if field_path is None:
+        match = re.search(r"(?:validation error for [^\n]+\n)?([A-Za-z_][\w.\[\]-]+)\s*\n(?:\s*[^\n]*\n)?\s*Input should", text)
+        if match:
+            field_path = match.group(1)
+    if code is None:
+        match = re.search(r"\b([a-z_]+_type|missing|value_error|extra_forbidden)\b", text)
+        if match:
+            code = match.group(1)
+    return FailureSignal(
+        FailureKind.ARCHITECTURE_SCHEMA_VALIDATION,
+        f"{summary_prefix}: {text}",
+        validator=validator,
+        field_path=field_path,
+        code=code,
+        input_digest=item.contract_digest,
+        retry_hint="schema_repair",
+    )
+
+
+def _is_empty_test_evidence(evidence: object) -> bool:
+    """Detect a successful test command that discovered no test cases."""
+    text = "\n".join(
+        str(getattr(evidence, field, "") or "")
+        for field in ("stdout", "stderr", "message")
+    ).lower()
+    return bool(
+        re.search(r"\bno tests? ran\b", text)
+        or re.search(r"ran\s+0\s+tests?\b", text)
+        or re.search(r"collected\s+0\s+items?\b", text)
+    )
 
 
 def _architecture_tool_allowlist(item: WorkItem) -> tuple[str, ...]:
@@ -297,6 +367,7 @@ class GraphRunStatus(str, Enum):
     WAITING_FOR_CAPABILITY_APPROVAL = "waiting_for_capability_approval"
     BLOCKED = "blocked"
     FAILED = "failed"
+    CANCELLED = "cancelled"
     NEEDS_REPLAN = "needs_replan"
 
 
@@ -487,19 +558,33 @@ class GraphRunner:
         self._llm_selection = llm_selection
         self._llm_overrides = dict(llm_overrides or {})
         self._retry_lock = Lock()
+        # Retry history is a control-plane ledger, not a monitor snapshot nor
+        # checkpoint payload. It survives worker restarts and is shared by
+        # parallel WorkItems through this runner-local lock.
+        self._retry_ledger: RetryLedger | None = None
         self._total_retries = 0
 
     def run(
         self, plan: ExecutionPlan, *, state: RunState | None = None
     ) -> GraphRunResult:
         with self._retry_lock:
-            self._total_retries = 0
+            self._retry_ledger = (
+                RetryLedger(self._traces.project_path, plan.trace.trace_id)
+                if self._traces is not None
+                else None
+            )
+            self._total_retries = (
+                self._retry_ledger.budget_count()
+                if self._retry_ledger is not None
+                else 0
+            )
         resumed = state is not None
         state = state or RunState(plan=plan)
         if state.plan.id != plan.id or state.plan.trace.trace_id != plan.trace.trace_id:
             raise ValueError("恢复状态与 ExecutionPlan 不匹配")
         self._set_delivery_state(DeliveryState.IMPLEMENTING, reason="graph_run_started")
         if self._traces is not None:
+            WorkerProgressStore(self._traces.project_path).ensure_run(plan.trace.trace_id)
             if resumed:
                 self._traces.record_event(
                     plan.trace,
@@ -509,6 +594,33 @@ class GraphRunner:
                 )
             else:
                 self._traces.record_plan(plan)
+
+        def cancelled_result() -> GraphRunResult | None:
+            if self._traces is None:
+                return None
+            store = WorkerProgressStore(self._traces.project_path)
+            if not store.cancel_requested(plan.trace.trace_id):
+                return None
+            for pending in plan.work_items:
+                if pending.id in state.node_results:
+                    continue
+                store.record_work_item_state(
+                    plan.trace.trace_id,
+                    pending.id,
+                    pending.agent_id,
+                    lifecycle=ExecutionLifecycle.TERMINAL,
+                    event="work_item_cancelled",
+                    summary="工作项因运行取消而终止",
+                    outcome=ExecutionOutcome.CANCELLED,
+                    details={"reason": "run_cancel_requested"},
+                )
+            result = GraphRunResult(
+                status=GraphRunStatus.CANCELLED,
+                state=state,
+                error="运行已取消",
+            )
+            self._finish_trace(plan, result)
+            return result
 
         # Environment preparation is a control-plane side effect.  If a
         # previous attempt already prepared it successfully, do not ask the
@@ -538,6 +650,9 @@ class GraphRunner:
         # the only node in the initial plan, yet it is precisely its completed
         # artifact that creates the next module wave.
         while True:
+            cancelled = cancelled_result()
+            if cancelled is not None:
+                return cancelled
             architecture_error = self._expand_architecture_modules_if_ready(state)
             if architecture_error is not None:
                 result = GraphRunResult(
@@ -553,6 +668,15 @@ class GraphRunner:
                     status=GraphRunStatus.FAILED,
                     state=state,
                     error=architecture_error,
+                )
+                self._finish_trace(state.plan, result)
+                return result
+            tail_error = self._append_dynamic_delivery_tail_if_ready(state)
+            if tail_error is not None:
+                result = GraphRunResult(
+                    status=GraphRunStatus.FAILED,
+                    state=state,
+                    error=tail_error,
                 )
                 self._finish_trace(state.plan, result)
                 return result
@@ -572,44 +696,46 @@ class GraphRunner:
                 return result
 
             scheduled_items = self._select_schedulable_items(ready_items)
+            batch_id = self._start_monitor_batch(state, scheduled_items)
             for item in scheduled_items:
                 self._record_event(plan, item, "work_item_started")
             results = self._run_ready_items(state, scheduled_items)
+            terminal_graph_result: GraphRunResult | None = None
             for item in scheduled_items:
+                cancelled = cancelled_result()
+                if cancelled is not None:
+                    self._finish_monitor_batch(state, batch_id, results)
+                    return cancelled
                 result = results[item.id]
-                state.record(item, result)
-                self._record_result(plan, item, result)
-                self._record_checkpoint(state)
-
-                if result.status is NodeStatus.FAILED:
-                    graph_result = GraphRunResult(
-                        status=GraphRunStatus.FAILED,
-                        state=state,
-                        node_result=result,
-                        error=result.error,
-                    )
-                    self._finish_trace(plan, graph_result)
-                    return graph_result
                 if result.status is NodeStatus.NEEDS_CAPABILITY:
                     graph_result = self._handle_capability_request(state, result)
-                    # Some local control-plane capability requests (for
-                    # example bootstrap asking to save an already prepared
-                    # environment) are deterministically satisfied by the
-                    # Runner.  That completes only the current WorkItem; it
-                    # must not terminate the entire DAG before downstream
-                    # tasks/code/tests/review are scheduled.
+                    # A local control-plane capability completion replaces the
+                    # transient request. External capability requests still
+                    # terminate the batch only after every sibling result has
+                    # been persisted below.
                     if (
                         graph_result.status is GraphRunStatus.COMPLETED
                         and graph_result.node_result is not None
                         and graph_result.node_result.status is NodeStatus.COMPLETED
                     ):
-                        state.record(item, graph_result.node_result)
-                        self._record_result(plan, item, graph_result.node_result)
-                        self._record_checkpoint(state)
-                        continue
-                    self._finish_trace(plan, graph_result)
-                    return graph_result
-                if result.status is NodeStatus.NEEDS_REPLAN:
+                        self._record_result(plan, item, result)
+                        result = graph_result.node_result
+                        results[item.id] = result
+                    else:
+                        terminal_graph_result = terminal_graph_result or graph_result
+
+                state.record(item, result)
+                self._record_result(plan, item, result)
+                self._record_checkpoint(state)
+
+                if result.status is NodeStatus.FAILED:
+                    terminal_graph_result = terminal_graph_result or GraphRunResult(
+                        status=GraphRunStatus.FAILED,
+                        state=state,
+                        node_result=result,
+                        error=result.error,
+                    )
+                elif result.status is NodeStatus.NEEDS_REPLAN:
                     if (
                         result.failure_signal is not None
                         and result.failure_signal.kind in {
@@ -617,26 +743,28 @@ class GraphRunner:
                             FailureKind.RUNTIME_PREFLIGHT,
                         }
                     ):
-                        graph_result = GraphRunResult(
+                        terminal_graph_result = terminal_graph_result or GraphRunResult(
                             status=GraphRunStatus.BLOCKED,
                             state=state,
                             node_result=result,
                             failure_signal=result.failure_signal,
                             error=result.failure_signal.summary,
                         )
-                        self._finish_trace(plan, graph_result)
-                        return graph_result
-                    graph_result = GraphRunResult(
-                        status=GraphRunStatus.NEEDS_REPLAN,
-                        state=state,
-                        node_result=result,
-                        failure_signal=result.failure_signal,
-                        error=result.failure_signal.summary
-                        if result.failure_signal is not None
-                        else "节点请求重新规划",
-                    )
-                    self._finish_trace(plan, graph_result)
-                    return graph_result
+                    else:
+                        terminal_graph_result = terminal_graph_result or GraphRunResult(
+                            status=GraphRunStatus.NEEDS_REPLAN,
+                            state=state,
+                            node_result=result,
+                            failure_signal=result.failure_signal,
+                            error=result.failure_signal.summary
+                            if result.failure_signal is not None
+                            else "节点请求重新规划",
+                        )
+
+            self._finish_monitor_batch(state, batch_id, results)
+            if terminal_graph_result is not None:
+                self._finish_trace(plan, terminal_graph_result)
+                return terminal_graph_result
 
             wave_error = self._integrate_ready_waves(state)
             if wave_error is not None:
@@ -693,8 +821,13 @@ class GraphRunner:
             # enforce it only when the plan actually contains implementation,
             # test, or review work.
             delivery_nodes = {"code_agent", "test_agent", "review_agent"}
-            requires_delivery_matrix = any(
-                item.agent_id in delivery_nodes for item in state.plan.work_items
+            # Repair plans are append-only diagnostic workflows.  Their test
+            # evidence must be carried back to the original delivery DAG;
+            # enforcing the project-level matrix here would block the repair
+            # before `_run_with_repairs` can restore tests -> review.
+            requires_delivery_matrix = (
+                "-repair-" not in state.plan.id
+                and any(item.agent_id in delivery_nodes for item in state.plan.work_items)
             )
             if requires_delivery_matrix:
                 incomplete = DeliveryStore(self._traces.project_path).load_matrix().incomplete()
@@ -820,6 +953,89 @@ class GraphRunner:
             "control",
             "architecture_modules_expanded",
             details=expansion.as_dict(),
+        )
+        self._record_checkpoint(state)
+        return None
+
+    def _append_dynamic_delivery_tail_if_ready(self, state: RunState) -> str | None:
+        """Append lifecycle delivery stages to a dynamic architecture plan.
+
+        Planner-generated architecture DAGs may intentionally omit the concrete
+        number of task/environment/code/test/review nodes. Once their Project
+        Contract is complete, the control plane materializes the stable process
+        tail and leaves module/file fan-out to the contract compiler. Existing
+        controlled templates bypass this adapter.
+        """
+        if self._traces is None or state.plan.template_id is not None:
+            return None
+        plan = state.plan
+        delivery_agents = {
+            "task_agent",
+            "bootstrap_agent",
+            "code_agent",
+            "code_integration_agent",
+            "test_agent",
+            "review_agent",
+        }
+        # A dynamic architecture-only run has no delivery intent and should
+        # remain allowed to stop after the contract milestone.
+        if not any(item.agent_id in delivery_agents for item in plan.work_items):
+            return None
+        if any(item.id.startswith("wi-dynamic-tail-") for item in plan.work_items):
+            return None
+        contract_item = next(
+            (
+                item
+                for item in plan.work_items
+                if item.output_key == "architecture_contract"
+                or item.stage_id == "contract"
+                or item.agent_id == "architecture_contract_agent"
+            ),
+            None,
+        )
+        if contract_item is None:
+            return None
+        result = state.node_results.get(contract_item.id)
+        if result is None or result.status is not NodeStatus.COMPLETED:
+            return None
+        try:
+            from app.planner.delivery_tail import DynamicDeliveryTailBuilder
+
+            requirement = next(
+                (item for item in plan.work_items if item.agent_id == "requirement_agent"),
+                None,
+            )
+            architecture = next(
+                (
+                    item
+                    for item in plan.work_items
+                    if item.agent_id == "architecture_agent"
+                    and item.publish_target == "architecture"
+                ),
+                None,
+            )
+            expansion = DynamicDeliveryTailBuilder().append(
+                plan,
+                contract_item_id=contract_item.id,
+                requirement_item_id=requirement.id if requirement is not None else None,
+                architecture_item_id=architecture.id if architecture is not None else None,
+            )
+        except (TypeError, ValueError, RuntimeError) as error:
+            self._traces.record_event(
+                plan.trace,
+                "control",
+                "dynamic_delivery_tail_failed",
+                details={"contract_work_item_id": contract_item.id, "error": str(error)},
+            )
+            return f"动态交付尾部无法编译: {error}"
+        state.plan = expansion.plan
+        self._traces.record_plan(state.plan)
+        self._traces.record_plan_baseline(state.plan)
+        self._traces.record_event(
+            state.plan.trace,
+            "control",
+            "dynamic_delivery_tail_appended",
+            details={"work_item_ids": list(expansion.work_item_ids)},
         )
         self._record_checkpoint(state)
         return None
@@ -1037,13 +1253,11 @@ class GraphRunner:
     def _expand_implementation_plan_if_ready(self, state: RunState) -> None:
         """在架构合同完成后，把实现单元展开为并行代码分区。
 
-        ``project_delivery`` 只保留一个集成锚点，避免模板中的单个 CodeAgent
-        抢先消费整个合同。展开后的计划会立即写入 plan.json/checkpoint，Worker
-        重启或断点恢复时直接沿用同一组 WorkItem。
+        受控交付模板和动态 Planner 路线都只保留一个集成锚点，避免任意
+        预置 CodeAgent 抢先消费整个合同。展开后的计划会立即写入
+        plan.json/checkpoint，Worker 重启或断点恢复时直接沿用同一组 WorkItem。
         """
         plan = state.plan
-        if plan.template_id not in {"project_delivery", "project_delivery_layered"}:
-            return
         if any(item.agent_id == "code_agent" for item in plan.work_items):
             return
         contract_item = next(
@@ -1147,10 +1361,14 @@ class GraphRunner:
     def _select_schedulable_items(
         self, ready_items: tuple[WorkItem, ...]
     ) -> tuple[WorkItem, ...]:
-        """在 Agent 合同的并发上限内选择本轮可执行节点。"""
+        """选择同一最早 Wave 内、符合 Agent 并发合同的并行批次。"""
+        if not ready_items:
+            return ()
+        wave = min(item.wave for item in ready_items)
+        candidates = tuple(item for item in ready_items if item.wave == wave)
         selected: list[WorkItem] = []
         running_by_agent: dict[str, int] = {}
-        for item in ready_items:
+        for item in candidates:
             definition = self._agents.definition(item.agent_id)
             limit = definition.max_parallel_instances if definition is not None else 1
             if running_by_agent.get(item.agent_id, 0) >= limit:
@@ -1160,6 +1378,101 @@ class GraphRunner:
             if len(selected) == self._max_workers:
                 break
         return tuple(selected)
+
+    def _start_monitor_batch(
+        self, state: RunState, items: tuple[WorkItem, ...]
+    ) -> str | None:
+        """Open a fan-out/fan-in monitor batch before executing siblings."""
+        if self._traces is None or not items:
+            return None
+        batch_id = "batch-w{}-{}".format(items[0].wave, "-".join(item.id for item in items))
+        WorkerProgressStore(self._traces.project_path).start_batch(
+            state.plan.trace.trace_id,
+            batch_id,
+            wave_index=items[0].wave,
+            work_item_ids=tuple(item.id for item in items),
+        )
+        self._traces.record_event(
+            state.plan.trace,
+            batch_id,
+            "batch_started",
+            details={"wave": items[0].wave, "work_item_ids": [item.id for item in items]},
+        )
+        return batch_id
+
+    def _finish_monitor_batch(
+        self,
+        state: RunState,
+        batch_id: str | None,
+        results: dict[str, NodeResult],
+    ) -> None:
+        """Publish one batch barrier result after all scheduled siblings return."""
+        if self._traces is None or batch_id is None:
+            return
+        completed = tuple(item_id for item_id, result in results.items() if result.status is NodeStatus.COMPLETED)
+        waiting = tuple(item_id for item_id, result in results.items() if result.status is NodeStatus.NEEDS_CAPABILITY)
+        failed = tuple(item_id for item_id, result in results.items() if result.status in {NodeStatus.FAILED, NodeStatus.NEEDS_REPLAN})
+        affected = failed or waiting
+        root = affected[0] if affected else None
+        outcome = (
+            ExecutionOutcome.FAILED
+            if failed
+            else ExecutionOutcome.BLOCKED
+            if waiting
+            else ExecutionOutcome.COMPLETED
+        )
+        WorkerProgressStore(self._traces.project_path).finish_batch(
+            state.plan.trace.trace_id,
+            batch_id,
+            completed=completed,
+            failed=affected,
+            outcome=outcome,
+            root_failure_work_item_id=root,
+            error_code="batch_member_failed" if failed else "batch_waiting_capability" if waiting else None,
+        )
+        # A WorkItem owns its own retry budget. The batch record is a separate
+        # barrier-level fact: it captures the fan-in failure and whether the
+        # next step is replan/fail, without charging a second retry budget.
+        if failed and self._retry_ledger is not None:
+            root_result = results.get(root) if root is not None else None
+            signal = (
+                root_result.failure_signal
+                if root_result is not None and root_result.failure_signal is not None
+                else FailureSignal(
+                    FailureKind.AGENT_RUNTIME,
+                    root_result.error if root_result is not None and root_result.error else "batch member failed",
+                )
+            )
+            batch_action = (
+                RecoveryAction.REQUEST_REPLAN
+                if any(result.status is NodeStatus.NEEDS_REPLAN for result in results.values())
+                else RecoveryAction.FAIL
+            )
+            batch_record = RetryRecord(
+                scope=RetryScope.BATCH,
+                subject_id=batch_id,
+                attempt=self._retry_ledger.next_attempt(
+                    scope=RetryScope.BATCH, subject_id=batch_id
+                ),
+                max_attempts=self._retry_policy.max_attempts_for(signal.kind),
+                action=batch_action,
+                failure=signal,
+                root_work_item_id=root,
+                interrupted_work_item_ids=(),
+            )
+            self._retry_ledger.append(batch_record)
+            self._traces.record_event(
+                state.plan.trace,
+                batch_id,
+                "retry_decision_recorded",
+                details={"retry_record": batch_record.as_dict()},
+            )
+        self._traces.record_event(
+            state.plan.trace,
+            batch_id,
+            "batch_failed" if failed else "batch_waiting_capability" if waiting else "batch_completed",
+            details={"completed_work_item_ids": list(completed), "failed_work_item_ids": list(failed), "waiting_work_item_ids": list(waiting), "root_failure_work_item_id": root},
+        )
 
     def _run_ready_items(
         self, state: RunState, items: tuple[WorkItem, ...]
@@ -1176,18 +1489,84 @@ class GraphRunner:
             return {item.id: futures[item.id].result() for item in items}
 
     def _run_item_with_retries(self, state: RunState, item: WorkItem) -> NodeResult:
-        item_retries = 0
-        retries_by_kind: dict[FailureKind, int] = {}
+        # Existing retry decisions are counted before the first resumed call.
+        # This prevents a new Worker from silently resetting a WorkItem's or
+        # Trace's recovery budget.
+        ledger = self._retry_ledger
+        item_retries = (
+            ledger.budget_count_for_work_item(item.id) if ledger is not None else 0
+        )
+        retries_by_kind: dict[FailureKind, int] = {
+            kind: ledger.budget_count_for_kind(item.id, kind)
+            for kind in FailureKind
+        } if ledger is not None else {}
         retry_context: str | None = None
         while True:
             attempt = item_retries + 1
             result = self._run_item(
                 state, item, attempt=attempt, retry_context=retry_context
             )
-            signal = self._failure_signal_for(result)
+            signal = self._failure_signal_for(state, item, result)
             if signal is None:
                 return result
+            if signal.input_digest is None:
+                signal = replace(signal, input_digest=item.contract_digest)
+            # Only schema failures currently have a stable, field-level
+            # identity and an explicit unchanged-input contract.  Applying
+            # this circuit breaker to broad delivery/runtime categories would
+            # bypass their existing bounded recovery and control-plane
+            # fallbacks, even where an intervening tool write could change the
+            # outcome.
+            if (
+                signal.kind is FailureKind.ARCHITECTURE_SCHEMA_VALIDATION
+                and ledger is not None
+                and ledger.has_same_failure_without_new_evidence(
+                    work_item_id=item.id, signal=signal
+                )
+            ):
+                record = self._record_retry_decision(
+                    state,
+                    item,
+                    signal,
+                    action=RecoveryAction.FAIL,
+                )
+                self._record_event(
+                    state.plan,
+                    item,
+                    "work_item_retry_circuit_open",
+                    details={
+                        "failure": signal.as_dict(),
+                        "input_digest": signal.input_digest,
+                        "failure_fingerprint": signal.failure_fingerprint,
+                        "retry_record": record.as_dict() if record is not None else None,
+                        "delta_evidence": "none",
+                        "circuit_breaker": True,
+                    },
+                )
+                return NodeResult.failed(
+                    work_item_id=item.id,
+                    agent_id=item.agent_id,
+                    error=(
+                        f"工作项 '{item.id}' 在相同输入下重复出现 {signal.kind.value}；"
+                        "熔断已打开，未再次请求模型：" + signal.summary
+                    ),
+                )
+            # Integration review diagnostics identify an implementation owner
+            # and must be routed to the bounded repair planner. Re-running the
+            # reviewer cannot create the missing adapter or fix an importer.
+            if (
+                item.agent_id == "code_integration_agent"
+                and signal.kind is FailureKind.CODE_DELIVERY_INCOMPLETE
+            ):
+                return NodeResult.needs_replan(
+                    work_item_id=item.id,
+                    agent_id=item.agent_id,
+                    content=result.content,
+                    signal=signal,
+                )
             action = self._recovery_action(
+                state,
+                item,
                 signal,
                 item_retries=item_retries,
                 kind_retries=retries_by_kind.get(signal.kind, 0),
@@ -1200,8 +1579,33 @@ class GraphRunner:
                     state.plan,
                     item,
                     "work_item_retrying",
-                    details={"kind": signal.kind.value, "attempt": item_retries + 1},
+                    details={
+                        "failure": signal.as_dict(),
+                        "kind": signal.kind.value,
+                        "attempt": item_retries + 1,
+                        "retry_reason": signal.retry_hint or "bounded_recovery",
+                        "input_digest": signal.input_digest,
+                        "failure_fingerprint": signal.failure_fingerprint,
+                        "delta_evidence": "none",
+                        "circuit_breaker": False,
+                    },
                 )
+                if self._traces is not None:
+                    WorkerProgressStore(self._traces.project_path).record_work_item_state(
+                        state.plan.trace.trace_id,
+                        item.id,
+                        item.agent_id,
+                        lifecycle=ExecutionLifecycle.RETRYING,
+                        event="work_item_retrying",
+                        summary="工作项校验未通过，准备受限重试",
+                        details={
+                            "failure_kind": signal.kind.value,
+                            "attempt": item_retries + 1,
+                            "input_digest": signal.input_digest,
+                            "failure_fingerprint": signal.failure_fingerprint,
+                            "retry_reason": signal.retry_hint or "bounded_recovery",
+                        },
+                    )
                 continue
             if action is RecoveryAction.REQUEST_REPLAN:
                 return NodeResult.needs_replan(
@@ -1236,29 +1640,125 @@ class GraphRunner:
 
     def _recovery_action(
         self,
+        state: RunState,
+        item: WorkItem,
         signal: FailureSignal,
         *,
         item_retries: int,
         kind_retries: int,
     ) -> RecoveryAction:
         with self._retry_lock:
+            ledger = self._retry_ledger
+            total_retries = ledger.budget_count() if ledger is not None else self._total_retries
+            if ledger is not None:
+                item_retries = ledger.budget_count_for_work_item(item.id)
+                kind_retries = ledger.budget_count_for_kind(item.id, signal.kind)
             action = self._retry_policy.action_for(
                 signal,
-                total_retries=self._total_retries,
+                total_retries=total_retries,
                 item_retries=item_retries,
                 kind_retries=kind_retries,
             )
-            if action is RecoveryAction.RETRY_ITEM:
+            self._record_retry_decision(state, item, signal, action=action)
+            if ledger is not None:
+                self._total_retries = ledger.budget_count()
+            elif action is RecoveryAction.RETRY_ITEM:
                 self._total_retries += 1
             return action
 
-    @staticmethod
-    def _failure_signal_for(result: NodeResult) -> FailureSignal | None:
+    def _record_retry_decision(
+        self,
+        state: RunState,
+        item: WorkItem,
+        signal: FailureSignal,
+        *,
+        action: RecoveryAction,
+    ) -> RetryRecord | None:
+        """Persist a WorkItem recovery decision before executing it."""
+        ledger = self._retry_ledger
+        if ledger is None:
+            return None
+        record = RetryRecord(
+            scope=RetryScope.WORK_ITEM,
+            subject_id=item.id,
+            attempt=ledger.next_attempt(scope=RetryScope.WORK_ITEM, subject_id=item.id),
+            max_attempts=self._retry_policy.max_work_item_attempts(),
+            action=action,
+            failure=signal,
+            root_work_item_id=item.id,
+        )
+        ledger.append(record)
+        if self._traces is not None:
+            self._traces.record_event(
+                state.plan.trace,
+                item.id,
+                "retry_decision_recorded",
+                details={"retry_record": record.as_dict()},
+            )
+        return record
+
+    def _failure_signal_for(
+        self, state: RunState, item: WorkItem, result: NodeResult
+    ) -> FailureSignal | None:
+        if result.status is NodeStatus.NEEDS_CAPABILITY:
+            request = result.capability_request
+            if request is not None and self._capability_granted(
+                state.plan.trace.trace_id,
+                item.id,
+                request.capability,
+            ):
+                # An already-approved source must not send the run back to
+                # the approval wait state when a model forgets to call the
+                # newly visible tool. Convert it into one bounded retry with
+                # an explicit instruction to use the granted tools.
+                if (
+                    item.agent_id == "code_agent"
+                    and item.execution_mode is ExecutionMode.PARTITIONED
+                ):
+                    return FailureSignal(
+                        FailureKind.CODE_DELIVERY_INCOMPLETE,
+                        f"能力 '{request.capability}' 已获当前 Trace 授权；"
+                        "这是代码交付重试，不得再次申请能力。"
+                        "如需规范核实请调用已暴露的 search_docs/get_doc，随后必须调用 "
+                        "write_staged_code_file 完成 owned_files 落盘",
+                    )
+                return FailureSignal(
+                    FailureKind.AGENT_RUNTIME,
+                    f"能力 '{request.capability}' 已获当前 Trace 授权；"
+                    "节点未调用已暴露工具，必须在本次重试中完成工具调用和交付",
+                )
+            return None
         if result.status is NodeStatus.NEEDS_REPLAN:
             return result.failure_signal
         if result.status is NodeStatus.FAILED:
             return FailureSignal(FailureKind.AGENT_RUNTIME, result.error or "Agent 执行失败")
         return None
+
+    def _capability_granted(
+        self, trace_id: str, work_item_id: str, capability: str
+    ) -> bool:
+        """Return whether a live grant already covers the current WorkItem."""
+        if self._traces is None:
+            return False
+        try:
+            from app.tool_manager.grants import CapabilityGrantStore
+
+            grants = CapabilityGrantStore(self._traces.project_path, trace_id).list()
+        except (OSError, ValueError, TypeError):
+            return False
+        return any(
+            grant.capability == capability
+            and (
+                grant.scope == "project"
+                or (grant.trace_id == trace_id and grant.scope == "trace")
+                or (
+                    grant.trace_id == trace_id
+                    and grant.scope == "node"
+                    and grant.work_item_id == work_item_id
+                )
+            )
+            for grant in grants
+        )
 
     def _workspace_writes(
         self,
@@ -1309,17 +1809,28 @@ class GraphRunner:
         )
 
     def _has_prior_worker_abort(self, trace_id: str) -> bool:
-        """Return whether this Trace was previously aborted by its Worker monitor."""
+        """Return whether retry history records a prior Worker/watchdog abort."""
         if self._traces is None:
             return False
         try:
+            ledger = RetryLedger(self._traces.project_path, trace_id)
+            if any(
+                record.failure.kind in {
+                    FailureKind.PROVIDER_STALL,
+                    FailureKind.WORKER_TIMEOUT,
+                    FailureKind.WORKER_CRASH,
+                }
+                for record in ledger.records()
+            ):
+                return True
+            # Historical traces predate retry-ledger.json.
             events = self._traces.list_events(trace_id)
+            return any(
+                event.get("type") in {"worker_timed_out", "provider_stall_timeout"}
+                for event in events
+            )
         except Exception:
             return False
-        return any(
-            event.get("type") in {"worker_timed_out", "provider_stall_timeout"}
-            for event in events
-        )
 
     def _workspace_write_marker(self, trace_id: str, work_item_id: str) -> int:
         """返回指定 WorkItem 最近一次 workspace 工具事件的序列号。"""
@@ -1370,6 +1881,16 @@ class GraphRunner:
                 error=f"ExecutionPlan 引用了未注册 Agent: '{item.agent_id}'",
             )
 
+        recovered = self._recover_durable_work_item(state, item)
+        if recovered is not None:
+            self._record_event(
+                state.plan,
+                item,
+                "work_item_recovered_from_durable_output",
+                details={"execution_mode": item.execution_mode.value},
+            )
+            return recovered
+
         # Capture the boundary before the Agent starts.  Repair WorkItems reuse
         # IDs across appended plans, so historical tool events must not satisfy
         # the current attempt's落盘 gate.
@@ -1411,6 +1932,10 @@ class GraphRunner:
                         state.plan.trace.trace_id,
                         item.id,
                         item.agent_id,
+                        objective=item.objective,
+                        attempt=attempt,
+                        contract_digest=item.contract_digest,
+                        recovery_context=state.retry_recovery_contexts.get(item.id),
                     )
                     if self._traces is not None
                     else None
@@ -1480,6 +2005,9 @@ class GraphRunner:
                     f"{expected_architecture_tool} 完成最终写入；"
                     "不要选择其他架构写入工具，不要返回 capability_request。"
                 )
+            recovery_diagnostic = state.recovery_diagnostics.get(item.id)
+            if recovery_diagnostic:
+                prompt += "\n\n【控制面合同恢复诊断】" + recovery_diagnostic
             if retry_context:
                 prompt += "\n\n【控制面重试协议】" + repair_protocol_prompt()
                 prompt += "不得重新设计、扩大权限或重复已满足约束。\n上一轮未通过控制面校验，必须优先处理：" + retry_context
@@ -1575,16 +2103,83 @@ class GraphRunner:
                         else ""
                     ),
                 )
-            self._record_memory(
-                context,
-                role="system",
-                event_type="agent_input",
-                content=prompt,
-                attempt=attempt,
+            if retry_context and (
+                "已获当前 Trace 授权" in retry_context
+                or "external_documentation" in retry_context
+            ):
+                prompt += (
+                    "\n\n【已授权外部文档】当前 Trace 已批准 external_documentation，"
+                    "请直接调用已暴露的 search_docs 和 get_doc 工具核实规范；"
+                    "不得再次返回 capability_request，也不得凭常识编造规范。"
+                )
+            # A resumed partitioned CodeAgent may start directly with the
+            # narrow delivery prompt (``prior_delivery_failure``) and thus
+            # have no retry_context yet. The grant is nevertheless a durable
+            # Trace fact; expose it on every attempt so the model does not
+            # repeat an approval request before writing its owned file.
+            if (
+                definition.domain == "code"
+                and item.execution_mode is ExecutionMode.PARTITIONED
+                and self._capability_granted(
+                    state.plan.trace.trace_id, item.id, "external_documentation"
+                )
+            ):
+                prompt += (
+                    "\n\n【当前 Trace 已授权 external_documentation】"
+                    "如需核实 REST 规范，直接调用已暴露的 search_docs/get_doc；"
+                    "核实结果已经属于当前任务上下文，不得再次返回 external_documentation"
+                    " capability_request。核实后必须调用 write_staged_code_file 写入唯一负责文件。"
+                )
+            recovery_state = (
+                context.progress.resume_prompt()
+                if context.progress is not None
+                and hasattr(context.progress, "resume_prompt")
+                else ""
             )
-            agent_result = self._agents.create(item.agent_id).run(
-                prompt, context=context
+            if recovery_state:
+                prompt += (
+                    "\n\n【控制面恢复状态】以下 JSON 仅包含上一尝试的受限工作摘要和"
+                    "已持久化引用，不是新的需求或约束。必须继续遵守原 WorkItem 合同；"
+                    "先核对 durable_output_refs，再从最小未完成动作继续。禁止把摘要当作"
+                    "已经完成的控制面事实。\n" + recovery_state
+                )
+            test_control_plane_resume = (
+                item.agent_id == "test_agent"
+                and self._traces is not None
+                and self._has_prior_worker_abort(state.plan.trace.trace_id)
             )
+            integration_workspace_resume = (
+                item.agent_id == "code_integration_agent"
+                and self._traces is not None
+                and self._has_completed_workspace_repair(state.plan.trace.trace_id)
+            )
+            if integration_workspace_resume:
+                agent_result = self._complete_integration_from_workspace(context)
+            elif test_control_plane_resume:
+                # Once a Worker has stalled in the test node, retry the
+                # deterministic local evidence protocol instead of spending
+                # another unbounded LLM call on the same step.  The protocol
+                # creates a bounded smoke suite when necessary and persists
+                # the exact Docker output for review.
+                self._record_memory(
+                    context,
+                    role="system",
+                    event_type="test_control_plane_fallback",
+                    content="此前 Worker 在测试节点无进度；改由控制面执行测试证据协议",
+                    attempt=attempt,
+                )
+                agent_result = self._complete_test_with_control_plane(context)
+            else:
+                self._record_memory(
+                    context,
+                    role="system",
+                    event_type="agent_input",
+                    content=prompt,
+                    attempt=attempt,
+                )
+                agent_result = self._agents.create(item.agent_id).run(
+                    prompt, context=context
+                )
             if (
                 item.agent_id == "architecture_contract_agent"
                 and agent_result.status is AgentStatus.NEEDS_CAPABILITY
@@ -1812,7 +2407,7 @@ class GraphRunner:
                     and _expected_architecture_tool(item) is not None
                 )
                 failure_kind = (
-                    FailureKind.ARCHITECTURE_CONTRACT_MISSING
+                    FailureKind.ARCHITECTURE_SCHEMA_VALIDATION
                     if architecture_validation
                     else FailureKind.TOOL_EXECUTION
                 )
@@ -1820,15 +2415,26 @@ class GraphRunner:
                     work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=str(error),
-                    signal=FailureSignal(
-                        failure_kind,
-                        (
-                            f"架构工具 {tool_result.tool_name} 参数未通过结构校验；"
-                            f"expected_tool={tool_result.expected_tool or tool_result.tool_name}；"
-                            f"请只提交当前 depth 对应对象并修正字段：{tool_result.message}"
-                            if architecture_validation
-                            else f"工具 {tool_result.tool_name} 未完成（{tool_result.error_type or 'tool_execution'}）：{tool_result.message}"
-                        ),
+                    signal=(
+                        _architecture_validation_signal(
+                            tool_result.message,
+                            item=item,
+                            summary_prefix=(
+                                f"架构工具 {tool_result.tool_name} 参数未通过结构校验；"
+                                f"expected_tool={tool_result.expected_tool or tool_result.tool_name}；"
+                                "请只提交当前 depth 对应对象并修正字段"
+                            ),
+                        )
+                        if architecture_validation
+                        else FailureSignal(
+                            failure_kind,
+                            (
+                                f"架构工具 {tool_result.tool_name} 参数未通过结构校验；"
+                                f"expected_tool={tool_result.expected_tool or tool_result.tool_name}；"
+                                f"请只提交当前 depth 对应对象并修正字段：{tool_result.message}；"
+                                f"工具 {tool_result.tool_name} 未完成（{tool_result.error_type or 'tool_execution'}）：{tool_result.message}"
+                            ),
+                        )
                     ),
                 )
             if isinstance(error, ToolDiscoveryError):
@@ -1850,6 +2456,28 @@ class GraphRunner:
                     signal=FailureSignal(
                         provider_kind,
                         f"Provider 请求异常（{provider_kind.value}）：{error}",
+                    ),
+                )
+            if (
+                item.agent_id == "code_integration_agent"
+                and any(
+                    marker in str(error)
+                    for marker in (
+                        "Integration Review",
+                        "适配 ChangeSet",
+                        "集成语义检查",
+                        "集成入口契约检查",
+                    )
+                )
+            ):
+                return NodeResult.needs_replan(
+                    work_item_id=item.id,
+                    agent_id=item.agent_id,
+                    content=str(error),
+                    signal=FailureSignal(
+                        FailureKind.CODE_DELIVERY_INCOMPLETE,
+                        "代码集成发现实现适配问题，需由已有 CodeAgent 在其责任文件内修复后重新集成："
+                        + str(error),
                     ),
                 )
             return NodeResult.failed(
@@ -1889,13 +2517,28 @@ class GraphRunner:
                     if blueprint_error:
                         raise ValueError(blueprint_error)
             except (FileNotFoundError, RuntimeError, ValueError) as error:
+                validation_like = isinstance(error, ValueError) and any(
+                    marker in str(error).lower()
+                    for marker in ("validation error", "input should", "string_type", "field required")
+                )
                 return NodeResult.needs_replan(
                     work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=node_result.content,
-                    signal=FailureSignal(
-                        FailureKind.ARCHITECTURE_CONTRACT_MISSING,
-                        f"架构节点未形成必需的 staged 设计对象（{expected_architecture_tool}）：{error}",
+                    signal=(
+                        _architecture_validation_signal(
+                            error,
+                            item=item,
+                            summary_prefix=(
+                                f"架构节点 staged 设计对象未通过结构校验（{expected_architecture_tool}）"
+                            ),
+                        )
+                        if validation_like
+                        else FailureSignal(
+                            FailureKind.ARCHITECTURE_CONTRACT_MISSING,
+                            f"架构节点未形成必需的 staged 设计对象（{expected_architecture_tool}）：{error}",
+                            input_digest=item.contract_digest,
+                        )
                     ),
                 )
         if (
@@ -1911,15 +2554,63 @@ class GraphRunner:
                     work_item_id=item.id,
                 )
             except (FileNotFoundError, RuntimeError, ValueError) as error:
-                return NodeResult.needs_replan(
-                    work_item_id=item.id,
-                    agent_id=item.agent_id,
-                    content=node_result.content,
-                    signal=FailureSignal(
-                        FailureKind.ARCHITECTURE_CONTRACT_MISSING,
-                        f"架构集成节点未形成唯一候选（{expected_architecture_tool}）：{error}",
-                    ),
-                )
+                # Some relays return a terminal natural-language response even
+                # though the model never called the required local integration
+                # tool.  Integration is deterministic and already authorized
+                # by this WorkItem, so recover once from the staged design
+                # objects instead of burning bounded retries on a false
+                # completion.  The workflow performs the same full bundle
+                # validation before creating the candidate.
+                if self._traces is not None and "context" in locals():
+                    fallback_succeeded = False
+                    try:
+                        from app.domain.architecture.service import ArchitectureArtifactWorkflow
+
+                        fallback_content = ArchitectureArtifactWorkflow(
+                            self._traces.project_path
+                        ).integrate_structured_designs(context)
+                        self._traces.record_event(
+                            state.plan.trace,
+                            item.id,
+                            "architecture_integration_control_plane_fallback",
+                            details={
+                                "tool": "integrate_architecture_designs",
+                                "reason": "agent_completed_without_candidate",
+                            },
+                        )
+                        node_result = NodeResult.completed(
+                            work_item_id=item.id,
+                            agent_id=item.agent_id,
+                            content=fallback_content,
+                        )
+                        self._artifacts.candidate_for_work_item(
+                            trace_id=state.plan.trace.trace_id,
+                            artifact_key="architecture",
+                            work_item_id=item.id,
+                        )
+                        fallback_succeeded = True
+                    except Exception as fallback_error:
+                        error = fallback_error
+                    if not fallback_succeeded:
+                        return NodeResult.needs_replan(
+                            work_item_id=item.id,
+                            agent_id=item.agent_id,
+                            content=node_result.content,
+                            signal=FailureSignal(
+                                FailureKind.ARCHITECTURE_CONTRACT_MISSING,
+                                f"架构集成节点未形成唯一候选（{expected_architecture_tool}）：{error}",
+                            ),
+                        )
+                else:
+                    return NodeResult.needs_replan(
+                        work_item_id=item.id,
+                        agent_id=item.agent_id,
+                        content=node_result.content,
+                        signal=FailureSignal(
+                            FailureKind.ARCHITECTURE_CONTRACT_MISSING,
+                            f"架构集成节点未形成唯一候选（{expected_architecture_tool}）：{error}",
+                        ),
+                    )
         if (
             node_result.status is NodeStatus.NEEDS_CAPABILITY
             and item.agent_id == "architecture_agent"
@@ -1937,6 +2628,7 @@ class GraphRunner:
                 "write_architecture_blueprint",
                 "write_module_design",
                 "write_implementation_design",
+                "integrate_architecture_designs",
                 "architecture_write_",
                 "架构设计对象",
                 "架构写入",
@@ -1953,18 +2645,56 @@ class GraphRunner:
                 }
                 or any(marker in capability_text or marker in reason_text for marker in local_architecture_markers)
             ):
-                return NodeResult.needs_replan(
-                    work_item_id=item.id,
-                    agent_id=item.agent_id,
-                    content=request.reason,
-                    signal=FailureSignal(
-                        FailureKind.ARCHITECTURE_CONTRACT_MISSING,
-                        "ArchitectureAgent 将本地结构化写入工具误报为能力缺失；"
-                        "请根据当前 depth 调用对应 write_architecture_blueprint、"
-                        "write_module_design 或 write_implementation_design 完成对象落盘："
-                        + request.reason,
-                    ),
-                )
+                # Structured architecture integration is a deterministic
+                # control-plane operation.  If a relay turns the local tool
+                # call into a capability_request, execute the already
+                # authorized integration directly instead of sending the run
+                # into an external-approval dead end.  The workflow still
+                # reloads and validates every staged object before creating
+                # the candidate, so this fallback cannot bypass the bundle
+                # contract.
+                if (
+                    _expected_architecture_tool(item) == "integrate_architecture_designs"
+                    and self._traces is not None
+                    and "context" in locals()
+                ):
+                    try:
+                        from app.domain.architecture.service import ArchitectureArtifactWorkflow
+
+                        fallback_content = ArchitectureArtifactWorkflow(
+                            self._traces.project_path
+                        ).integrate_structured_designs(context)
+                        self._traces.record_event(
+                            state.plan.trace,
+                            item.id,
+                            "architecture_integration_control_plane_fallback",
+                            details={"tool": "integrate_architecture_designs"},
+                        )
+                        agent_result = AgentResult.completed(fallback_content)
+                    except Exception as error:
+                        return NodeResult.needs_replan(
+                            work_item_id=item.id,
+                            agent_id=item.agent_id,
+                            content=request.reason,
+                            signal=FailureSignal(
+                                FailureKind.ARCHITECTURE_CONTRACT_MISSING,
+                                "架构集成工具误报能力缺失，控制面自动整合也未通过校验："
+                                + str(error),
+                            ),
+                        )
+                else:
+                    return NodeResult.needs_replan(
+                        work_item_id=item.id,
+                        agent_id=item.agent_id,
+                        content=request.reason,
+                        signal=FailureSignal(
+                            FailureKind.ARCHITECTURE_CONTRACT_MISSING,
+                            "ArchitectureAgent 将本地结构化写入工具误报为能力缺失；"
+                            "请根据当前 depth 调用对应 write_architecture_blueprint、"
+                            "write_module_design 或 write_implementation_design 完成对象落盘："
+                            + request.reason,
+                        ),
+                    )
         # Architecture Contract completion is meaningful only when the
         # machine-readable contract was persisted.  Do not let a model's
         # natural-language "done" advance the implementation compiler.
@@ -2047,6 +2777,12 @@ class GraphRunner:
                     ),
                 )
             return node_result
+        # A completed Agent response is not enough to establish test evidence.
+        # If the model forgot either the writer or the sandbox tool, let the
+        # control plane execute the same bounded protocol once.  This also
+        # creates a minimal smoke suite when a repair only added
+        # ``tests/__init__.py`` and the fixed unittest command reports an empty
+        # suite, preventing an endless ImportError -> package-marker loop.
         all_evidence = sorted(
             (
                 evidence
@@ -2055,13 +2791,32 @@ class GraphRunner:
             ),
             key=lambda evidence: evidence.created_at,
         )
-        # Keep only the latest result for each check. Evidence is append-only
-        # across checkpoint resumes; an old setup_failed must not poison a new
-        # attempt after the environment has been repaired.
         latest_by_check: dict[str, object] = {}
         for evidence in all_evidence:
             latest_by_check[evidence.check_id] = evidence
         evidences = tuple(latest_by_check.values())
+        if (
+            node_result.status is NodeStatus.COMPLETED
+            and (
+                not evidences
+                or any(_is_empty_test_evidence(evidence) for evidence in evidences)
+            )
+        ):
+            fallback_result = self._complete_test_with_control_plane(context)
+            if fallback_result.status is AgentStatus.COMPLETED:
+                node_result = fallback_result
+                all_evidence = sorted(
+                    (
+                        evidence
+                        for evidence in self._traces.list_sandbox_evidence(context)
+                        if evidence.work_item_id == context.work_item_id
+                    ),
+                    key=lambda evidence: evidence.created_at,
+                )
+                latest_by_check = {}
+                for evidence in all_evidence:
+                    latest_by_check[evidence.check_id] = evidence
+                evidences = tuple(latest_by_check.values())
         if not evidences:
             return NodeResult.needs_replan(
                 work_item_id=item.id,
@@ -2131,10 +2886,23 @@ class GraphRunner:
         project_path = self._traces.project_path
         service = TestService(project_path)
         normalized_tests = service.normalize_generated_tests()
+        generated_tests = service.ensure_minimum_test_suite()
         evidence_tools = SandboxEvidenceToolSet(service, self._traces)
         files = service.list_workspace_files()
         workspace = Path(project_path) / "workspace"
         checks = ["unit"]
+        # A unit suite can import modules successfully while the declared
+        # backend entrypoint still fails during application composition.  When
+        # a Project Contract declares that entrypoint, run the fixed
+        # runtime-smoke probe inside the same Docker sandbox.
+        try:
+            from app.domain.architecture.implementation_contract import ProjectContractStore
+
+            contract = ProjectContractStore(project_path).load()
+        except (FileNotFoundError, PermissionError, ValueError):
+            contract = None
+        if contract is not None and contract.entrypoints.backend_file:
+            checks.append("runtime-smoke")
         # Frontend JavaScript requires the dedicated Node check whenever JS is
         # present; it is intentionally not silently skipped when no test file
         # exists, because that is a real evidence gap.
@@ -2155,7 +2923,15 @@ class GraphRunner:
             (
                 "已自动修复确定性的生成格式问题：" + ", ".join(normalized_tests)
                 if normalized_tests
-                else "未发现需要规范化的测试源。"
+            else "未发现需要规范化的测试源。"
+            ),
+            "",
+            "## 控制面补救",
+            (
+                "测试节点未产生可执行用例，控制面生成了最小 smoke 测试："
+                + ", ".join(generated_tests)
+                if generated_tests
+                else "未触发最小 smoke 测试补救；优先使用测试节点生成的用例。"
             ),
             "",
             "## 测试文件",
@@ -2177,6 +2953,56 @@ class GraphRunner:
         report = "\n".join(report_lines)
         service.save_tests(report)
         return AgentResult.completed(report)
+
+    def _has_completed_workspace_repair(self, trace_id: str) -> bool:
+        """Whether a code repair already wrote the authorized files to workspace."""
+        if self._traces is None:
+            return False
+        return any(
+            event.get("type") == "work_item_completed"
+            and str(event.get("work_item_id", "")).startswith("wi-repair-01-")
+            for event in self._traces.list_events(trace_id)
+        )
+
+    def _complete_integration_from_workspace(self, context: ExecutionContext) -> AgentResult:
+        """Recover legacy repairs whose exclusive writer bypassed Git staging.
+
+        Exclusive repair WorkItems intentionally write the live workspace.  A
+        subsequent integration node must still be represented as completed,
+        but it cannot require a ChangeSet that the repair contract never
+        produced.  Validate the declared contract files before accepting the
+        already-applied workspace and publish the normal implementation
+        artifact for downstream tests/review.
+        """
+        if self._traces is None or self._artifacts is None:
+            return AgentResult.completed("修复后的 workspace 已存在，跳过重复集成。")
+        from app.domain.architecture.implementation_contract import ProjectContractStore
+
+        try:
+            contract = ProjectContractStore(self._traces.project_path).load()
+        except (FileNotFoundError, PermissionError, ValueError):
+            return AgentResult.completed("修复后的 workspace 已存在，跳过重复集成。")
+        workspace = Path(self._traces.project_path) / "workspace"
+        missing = [
+            path for path in contract.required_files
+            if not (workspace / path.removeprefix("workspace/")).is_file()
+        ]
+        if missing:
+            raise RuntimeError("修复后的 workspace 缺少合同文件: " + ", ".join(missing))
+        summary = (
+            "# 实现摘要\n\n## 集成记录\n\n"
+            "修复节点已将合同声明的文件写入正式 workspace；控制面完成文件存在性校验，"
+            "无需再次合并不存在的分区 ChangeSet。\n"
+        )
+        self._artifacts.save_artifact("implementation", summary)
+        self._record_memory(
+            context,
+            role="control",
+            event_type="integration_recovered_from_workspace",
+            content="修复后的 workspace 文件已通过合同存在性校验，跳过重复 ChangeSet 合并",
+            attempt=1,
+        )
+        return AgentResult.completed(summary)
 
     def _validate_code_delivery(self, state: RunState, item: WorkItem) -> tuple[str, ...]:
         """在 Agent 返回 completed 后验证真实 ChangeSet，而不是相信文字声明。"""
@@ -2256,7 +3082,19 @@ class GraphRunner:
             entrypoints = {}
         expected_symbols: dict[str, tuple[str, ...]] = {}
         backend_file = entrypoints.get("backend_file")
-        if isinstance(backend_file, str) and backend_file:
+        backend_command = entrypoints.get("backend_command")
+        backend_import = entrypoints.get("backend_import")
+        requires_application_object = (
+            isinstance(backend_command, str)
+            and any(token in backend_command.lower() for token in ("uvicorn", "hypercorn"))
+        ) or (
+            isinstance(backend_import, str)
+            and ":app" in backend_import.lower()
+        ) or (
+            isinstance(backend_file, str)
+            and backend_file.replace("\\", "/").endswith("/app/main.py")
+        )
+        if isinstance(backend_file, str) and backend_file and requires_application_object:
             expected_symbols[backend_file.removeprefix("workspace/")] = ("app",)
         provided_symbols = contract.get("provided_symbols", ())
         if isinstance(provided_symbols, str):
@@ -2285,12 +3123,33 @@ class GraphRunner:
                     for node in ast.walk(tree)
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
                 }
+                # A domain contract may expose operations through its
+                # repository class rather than duplicate module-level wrapper
+                # functions. Keep a separate set of public class members so
+                # ``provided_symbols: [create, list_tasks, ...]`` remains a
+                # semantic interface declaration instead of forcing one
+                # Python layout.
+                public_members: set[str] = set()
                 for node in ast.walk(tree):
                     if isinstance(node, ast.ClassDef):
                         names.update(
                             f"{node.name}.{child.name}"
                             for child in node.body
                             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        )
+                        public_members.update(
+                            child.name
+                            for child in node.body
+                            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and not child.name.startswith("_")
+                        )
+                        public_members.update(
+                            target.id
+                            for child in node.body
+                            if isinstance(child, ast.Assign)
+                            for target in child.targets
+                            if isinstance(target, ast.Name)
+                            and not target.id.startswith("_")
                         )
                 names.update(
                     node.targets[0].id
@@ -2310,9 +3169,81 @@ class GraphRunner:
                         continue
                     value = symbol.strip()
                     leaf = value.rsplit(".", 1)[-1].split("(", 1)[0].strip()
-                    if value not in names and leaf not in names:
+                    if value not in names and leaf not in names and leaf not in public_members:
                         issues.append(f"交付文件缺少合同声明符号 {relative}:{value}")
         return tuple(issues)
+
+    def _recover_durable_work_item(
+        self, state: RunState, item: WorkItem
+    ) -> NodeResult | None:
+        """Reuse a validated staged output left by an interrupted Worker.
+
+        Agent text and progress summaries are never sufficient. Recovery is
+        allowed only for the two durable partition protocols already owned by
+        the control plane: staged Architecture artifacts and Git ChangeSets.
+        """
+        if item.id in state.forced_rerun_work_item_ids:
+            return None
+        if self._traces is None:
+            return None
+        if (
+            item.agent_id == "architecture_agent"
+            and item.execution_mode is ExecutionMode.PARTITIONED
+            and self._artifacts is not None
+        ):
+            ref = ArtifactRef.staged(
+                artifact_key=item.artifact_key or "architecture",
+                trace_id=state.plan.trace.trace_id,
+                work_item_id=item.id,
+                slot=item.slot or "",
+            )
+            try:
+                self._artifacts.load_ref(ref)
+            except (FileNotFoundError, RuntimeError, ValueError):
+                return None
+            return NodeResult.completed(
+                work_item_id=item.id,
+                agent_id=item.agent_id,
+                content=f"从已校验暂存产物恢复: {ref.ref_id}",
+            )
+        if (
+            item.agent_id == "architecture_agent"
+            and item.execution_mode is ExecutionMode.INTEGRATION
+            and item.publish_target == "architecture"
+            and self._artifacts is not None
+        ):
+            try:
+                candidate = self._artifacts.candidate_for_work_item(
+                    trace_id=state.plan.trace.trace_id,
+                    artifact_key="architecture",
+                    work_item_id=item.id,
+                )
+            except (FileNotFoundError, RuntimeError, ValueError):
+                return None
+            if candidate.report.issues:
+                return None
+            return NodeResult.completed(
+                work_item_id=item.id,
+                agent_id=item.agent_id,
+                content=f"从已校验架构候选恢复: {candidate.id}",
+            )
+        if item.agent_id == "code_agent" and item.execution_mode is ExecutionMode.PARTITIONED:
+            from app.domain.code.service import CodeStagingService
+
+            try:
+                change = CodeStagingService(self._traces.project_path).load_change_set(
+                    state.plan.trace.trace_id, item.id
+                )
+            except FileNotFoundError:
+                return None
+            if self._validate_code_delivery(state, item):
+                return None
+            return NodeResult.completed(
+                work_item_id=item.id,
+                agent_id=item.agent_id,
+                content=f"从已校验代码 ChangeSet 恢复: {change.commit}",
+            )
+        return None
 
     def _record_memory(
         self,
@@ -2391,6 +3322,61 @@ class GraphRunner:
                 agent_id=item.agent_id,
                 metadata={"status": result.status.value},
             )
+        if self._traces is not None:
+            store = WorkerProgressStore(self._traces.project_path)
+            if result.status is NodeStatus.COMPLETED:
+                store.record_work_item_state(
+                    plan.trace.trace_id,
+                    item.id,
+                    item.agent_id,
+                    lifecycle=ExecutionLifecycle.TERMINAL,
+                    event="work_item_completed",
+                    summary="工作项产物和控制面校验均已通过",
+                    outcome=ExecutionOutcome.COMPLETED,
+                )
+            elif result.status is NodeStatus.NEEDS_CAPABILITY:
+                store.record_work_item_state(
+                    plan.trace.trace_id,
+                    item.id,
+                    item.agent_id,
+                    lifecycle=ExecutionLifecycle.WAITING,
+                    event="work_item_waiting_capability",
+                    summary="工作项等待能力授权",
+                    details={
+                        "capability": (
+                            result.capability_request.capability
+                            if result.capability_request is not None
+                            else None
+                        )
+                    },
+                )
+            elif result.status is NodeStatus.NEEDS_REPLAN:
+                store.record_work_item_state(
+                    plan.trace.trace_id,
+                    item.id,
+                    item.agent_id,
+                    lifecycle=ExecutionLifecycle.RETRYING,
+                    event="work_item_needs_replan",
+                    summary="工作项需要局部重规划",
+                    details={
+                        "failure_kind": (
+                            result.failure_signal.kind.value
+                            if result.failure_signal is not None
+                            else "unknown"
+                        )
+                    },
+                )
+            else:
+                store.record_work_item_state(
+                    plan.trace.trace_id,
+                    item.id,
+                    item.agent_id,
+                    lifecycle=ExecutionLifecycle.TERMINAL,
+                    event="work_item_failed",
+                    summary="工作项执行失败",
+                    outcome=ExecutionOutcome.FAILED,
+                    details={"error_type": "node_failure"},
+                )
         if result.status is NodeStatus.COMPLETED:
             self._record_event(plan, item, "work_item_completed")
             definition = self._agents.definition(item.agent_id)
@@ -2460,6 +3446,7 @@ class GraphRunner:
             GraphRunStatus.NEEDS_REPLAN: DeliveryState.NEEDS_REWORK,
             GraphRunStatus.FAILED: DeliveryState.FAILED,
             GraphRunStatus.WAITING_FOR_CAPABILITY_APPROVAL: DeliveryState.WAITING_FOR_APPROVAL,
+            GraphRunStatus.CANCELLED: DeliveryState.BLOCKED,
         }.get(result.status, DeliveryState.FAILED)
         self._set_delivery_state(target, reason=result.error or result.status.value)
         if self._traces is not None:

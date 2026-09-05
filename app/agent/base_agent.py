@@ -104,7 +104,10 @@ class BaseAgent:
         crew_agent = Agent(
             role=self._role,
             goal=self._goal,
-            backstory=f"{self._backstory}\n\n{_LANGUAGE_PROMPT}\n\n{_CAPABILITY_REQUEST_PROMPT}",
+            backstory=(
+                f"{self._backstory}\n\n{_LANGUAGE_PROMPT}\n\n"
+                f"{_CAPABILITY_REQUEST_PROMPT}\n\n{_PROGRESS_REPORT_PROMPT}"
+            ),
             # Respect the deployment/request-level stream setting.  Forcing SSE
             # here breaks providers whose CrewAI adapter cannot parse streamed
             # responses from some OpenAI-compatible gateways.
@@ -388,6 +391,13 @@ _CAPABILITY_REQUEST_PROMPT = """\
 请只返回以下 JSON，不要使用 Markdown 代码块或附加文字：
 {"type": "capability_request", "capability": "能力标识", "reason": "缺少该能力的原因"}
 若当前工具足以完成任务，则按正常方式回答。
+"""
+
+_PROGRESS_REPORT_PROMPT = """\
+过程状态要求：在开始较长的分析或实现，以及工作阶段发生变化时，可以调用
+report_progress 提交简短、可公开的工作摘要和下一步。摘要不得包含内部思维链、
+prompt、源码正文或工具参数；重复状态不要反复报告。report_progress 只用于可观测性，
+不能代替当前任务要求的写入、集成、测试或保存工具，也不能宣告节点完成。
 """
 
 _LANGUAGE_PROMPT = """\

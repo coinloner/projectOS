@@ -72,6 +72,9 @@ _BACKSTORY = """\
   ``provides_interfaces``、``consumes_interfaces``、``provided_symbols``、``required_symbols``。
   ``owned_files`` 必须恰好一个文件；``required_paths`` 只能引用该文件。不要在 ImplementationDesign
   中写 ``layers``，不要在 implementation unit 中写 ``consumed_interface_ids`` 或 ``test_boundary``；
+  ``depends_on`` 只能引用本次集成架构中真实存在的其他 ``unit_id``，并且只能指向更早的 ``wave``；
+  它不能填写 module_id 或 interface_id。跨模块能力必须在 ImplementationDesign 顶层
+  ``consumed_interfaces`` 中引用依赖模块已声明的正式 interface_id，而不是塞进 ``depends_on``。
   测试边界使用顶层 ``required_test_types`` 和 unit 的 ``acceptance_criteria`` 表达。下面是最小合法形状：
   ``{"schema_version":1,"design_id":"...","depth":2,"parent_design_id":"...",
   "module_id":"...","provided_interfaces":[],"consumed_interfaces":[],

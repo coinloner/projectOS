@@ -25,9 +25,34 @@ class CodeGitIntegrationTest(unittest.TestCase):
             '"adapter_requests":[]}'
         )
         self.assertEqual(structured.findings[0].severity, "warning")
+        without_adapters = IntegrationReview.parse(
+            '{"verdict":"approve","rationale":"无需适配",'
+            '"findings":[],"adapter_requests":null}'
+        )
+        self.assertEqual(without_adapters.adapter_requests, ())
+        with self.assertRaises(ValueError):
+            IntegrationReview.parse(
+                '{"verdict":"needs_adapter","rationale":"需要适配",'
+                '"findings":[],"adapter_requests":null}'
+            )
         with self.assertRaises(ValueError):
             IntegrationReview.parse(
                 '{"verdict":"approve","rationale":"x","code":"print(1)"}'
+            )
+
+    def test_integration_review_accepts_boundary_transport_format_characters(self) -> None:
+        review = IntegrationReview.parse(
+            '\u200b\ufeff {"verdict":"approve","rationale":"ChangeSet 与合同一致",'
+            '"findings":[],"adapter_requests":[]}\u2060\n'
+        )
+
+        self.assertEqual(review.verdict, "approve")
+
+    def test_integration_review_does_not_extract_json_from_natural_language(self) -> None:
+        with self.assertRaisesRegex(ValueError, "必须是 JSON"):
+            IntegrationReview.parse(
+                '审核结论：{"verdict":"approve","rationale":"不应被提取",'
+                '"findings":[],"adapter_requests":[]}'
             )
 
     def test_integration_policy_accepts_required_directory(self) -> None:
@@ -47,6 +72,38 @@ class CodeGitIntegrationTest(unittest.TestCase):
             work_item_id="code-tests", slot="root",
         )
         report = GitCodeIntegrationPolicy().evaluate(((ref, change),))
+        self.assertTrue(report.passed, report.issues)
+
+    def test_integration_policy_accepts_ancestor_baselines_with_control_plane_evidence(self) -> None:
+        first_root = Path(self.project_path) / "staged-first"
+        second_root = Path(self.project_path) / "staged-second"
+        for root, filename in ((first_root, "domain.py"), (second_root, "api.py")):
+            target = root / "workspace" / "backend"
+            target.mkdir(parents=True)
+            (target / filename).write_text("VALUE = 1\n", encoding="utf-8")
+        refs_changes = tuple(
+            (
+                ArtifactRef.staged(
+                    artifact_key="implementation", trace_id="trace-code",
+                    work_item_id=f"code-{filename[:-3]}", slot="backend",
+                ),
+                ChangeSet(
+                    trace_id="trace-code", work_item_id=f"code-{filename[:-3]}",
+                    branch_name="branch", base_commit=base, commit=f"commit-{base}",
+                    changed_files=(f"workspace/backend/{filename}",),
+                    worktree_path=str(root), required_paths=(f"backend/{filename}",),
+                ),
+            )
+            for root, filename, base in (
+                (first_root, "domain.py", "base-0"),
+                (second_root, "api.py", "base-1"),
+            )
+        )
+        report = GitCodeIntegrationPolicy().evaluate(
+            refs_changes,
+            common_baseline="base-2",
+            is_ancestor=lambda ancestor, descendant: ancestor in {"base-0", "base-1", "base-2"},
+        )
         self.assertTrue(report.passed, report.issues)
 
     def test_integration_policy_accepts_directory_contract_without_trailing_slash(self) -> None:

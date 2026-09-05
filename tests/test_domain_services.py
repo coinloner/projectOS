@@ -99,6 +99,28 @@ class DomainServiceTest(unittest.TestCase):
             "# Review",
         )
 
+    def test_test_service_adds_smoke_suite_only_when_no_executable_tests_exist(self) -> None:
+        workspace = Path(self.project_path) / "workspace"
+        (workspace / "backend" / "app").mkdir(parents=True)
+        (workspace / "backend" / "app" / "domain.py").write_text(
+            "class InMemoryTaskRepository:\n"
+            "    def __init__(self): self.items = {}\n"
+            "    def create_task(self, attrs): return type('Task', (), {'id': '1', 'completed': False})()\n"
+            "    def list_tasks(self): return []\n"
+            "    def complete_task(self, task_id): return type('Task', (), {'completed': True})()\n"
+            "    def delete_task(self, task_id): return True\n",
+            encoding="utf-8",
+        )
+        service = TestService(self.project_path)
+
+        generated = service.ensure_minimum_test_suite()
+
+        self.assertEqual(generated, ("tests/test_projectos_smoke.py",))
+        smoke = workspace / "tests" / "test_projectos_smoke.py"
+        self.assertTrue(smoke.is_file())
+        self.assertIn("InMemoryTaskRepository", smoke.read_text(encoding="utf-8"))
+        self.assertEqual(service.ensure_minimum_test_suite(), ())
+
     def test_review_persists_deterministic_quality_report_for_runtime_projects(self) -> None:
         RuntimeManifest(version=1, profile="python-stdlib").save(self.project_path)
         root = Path(self.project_path)

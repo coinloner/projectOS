@@ -338,7 +338,13 @@ class DynamicBuilderTest(unittest.TestCase):
             def run(self, task, *, context=None):
                 workflow = ArchitectureArtifactWorkflow(project_path)
                 if context.execution_mode is ExecutionMode.INTEGRATION:
-                    workflow.integrate_structured_designs(context)
+                    # Simulate an OpenAI-compatible relay returning a local
+                    # integration call as a capability_request. The Runner
+                    # must execute the deterministic integration fallback.
+                    return AgentResult.needs_capability(
+                        "integrate_architecture_designs",
+                        "当前工具集中未提供 integrate_architecture_designs",
+                    )
                 elif context.slot == "blueprint":
                     design = blueprint
                 else:

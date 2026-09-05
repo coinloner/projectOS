@@ -27,6 +27,13 @@ def normalize_capability(value: str) -> str:
     """Normalize model wording without turning a multi-capability list into an id."""
     raw = str(value or "").strip().lower()
     parts = [part.strip() for part in re.split(r"[,，、;；|\s]+", raw) if part.strip()]
+    # A model may combine an always-local input reader with the only genuine
+    # missing capability (for example ``load_code_input_and_external_documentation``).
+    # Local tools are not grantable capabilities; reduce the request to the
+    # canonical external-documentation id so an existing Trace grant can be
+    # reused and the MCP source can be exposed on retry.
+    if "external" in raw and ("document" in raw or "doc" in raw):
+        return "external_documentation"
     if set(parts) >= {"prepare_environment", "save_environment"}:
         return "environment_preparation"
     # Models sometimes collapse the two local environment steps and the
@@ -37,8 +44,8 @@ def normalize_capability(value: str) -> str:
     # see one canonical value.
     if (
         "environment" in raw
-        and ("save" in raw or "prepare" in raw)
-        and ("approval" in raw or "dependency" in raw)
+        and ("save" in raw or "prepare" in raw or "persistence" in raw)
+        and ("approval" in raw or "dependency" in raw or "persistence" in raw)
     ):
         return "environment_preparation"
     aliases = {

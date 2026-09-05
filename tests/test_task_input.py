@@ -65,7 +65,7 @@ class TaskInputPackageTest(unittest.TestCase):
         self.assertNotIn("project_goal", data)
         self.assertNotIn("failure_context", data)
         self.assertEqual(data["scope"]["allowed_paths"], ["workspace/backend/**"])
-        self.assertIn("workspace/frontend/**", data["scope"]["forbidden_paths"])
+        self.assertNotIn("forbidden_paths", data["scope"])
         self.assertEqual(data["dependencies"][0]["status"], "completed")
         self.assertTrue(data["dependencies"][0]["output_available"])
         self.assertIn("architecture", prompt)
@@ -77,6 +77,33 @@ class TaskInputPackageTest(unittest.TestCase):
             data["semantic_contract"]["fields"]["dependencies"]["consumer"],
             "调度器",
         )
+
+    def test_model_visible_implementation_contract_omits_forbidden_paths(self) -> None:
+        item = WorkItem(
+            id="code-api",
+            agent_id="code_agent",
+            objective="实现 API 入口",
+            output_key="implementation_api",
+            execution_mode=ExecutionMode.PARTITIONED,
+            slot="backend",
+            allowed_paths=("backend/app/**",),
+            forbidden_paths=("frontend/**", ".projectos/**"),
+            required_paths=("backend/app/main.py",),
+            owned_files=("backend/app/main.py",),
+            implementation_unit_id="unit-api",
+        )
+        plan = ExecutionPlan(
+            id="plan-model-visible-scope",
+            goal="交付 API",
+            work_items=(item,),
+            trace=TraceContext(requirement_id="req-scope", trace_id="tr-scope"),
+        )
+
+        data = build_task_input(RunState(plan=plan), item).as_dict()
+
+        self.assertEqual(data["scope"]["allowed_paths"], ["backend/app/**"])
+        self.assertNotIn("forbidden_paths", data["scope"])
+        self.assertNotIn("forbidden_paths", data["implementation"])
 
     def test_code_prompt_makes_write_and_required_path_obligations_explicit(self) -> None:
         item = WorkItem(

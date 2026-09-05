@@ -152,12 +152,27 @@ def _compose_yaml(root: Path, project_id: str, application_id: str | None, profi
     services: dict[str, Any] = {}
     volumes: dict[str, Any] = {}
     for service in profile.services:
+        command = service.command
+        # The architecture contract freezes the runnable backend command. For
+        # the stdlib profile, consume the one safe module-form command we
+        # support instead of leaving the catalog's historical ``main.py``
+        # fallback in the generated Compose file. Unknown commands are
+        # deliberately ignored; agent-authored shell is never executed by the
+        # trusted launcher.
+        contract_command = _contract_backend_command(root, application_id, service.id)
+        if contract_command is not None:
+            command = contract_command
         source = "./workspace" if not service.workspace_dir else f"./workspace/{service.workspace_dir}"
+        if service.id == "backend" and command[:3] == ("python", "-m", "backend.app.server"):
+            # ``python -m backend.app.server`` resolves from the workspace
+            # root, so mount the complete workspace rather than only the
+            # backend subdirectory.
+            source = "./workspace"
         if service.mount_dir:
             source = f"./workspace/{service.mount_dir}"
         item: dict[str, Any] = {
             "image": service.image or runtime_image,
-            "command": list(_local_command(service.command, mode=mode)),
+            "command": list(_local_command(command, mode=mode)),
             "working_dir": service.container_workdir,
             "user": service.user,
             "read_only": service.read_only,
@@ -173,7 +188,7 @@ def _compose_yaml(root: Path, project_id: str, application_id: str | None, profi
         }
         if service.mount_workspace:
             item["volumes"] = [f"{source}:/workspace:ro"]
-            if any("PROJECTOS_DEPENDENCY_DIR" in part for part in service.command) and (root / "requirements.in").is_file():
+            if any("PROJECTOS_DEPENDENCY_DIR" in part for part in command) and (root / "requirements.in").is_file():
                 item["volumes"].append("./requirements.in:/input/requirements.in:ro")
         if service.data_volume:
             item.setdefault("volumes", []).append(f"{service.data_volume}:{service.volume_mount_dir}")
@@ -197,6 +212,34 @@ def _compose_yaml(root: Path, project_id: str, application_id: str | None, profi
     if volumes:
         document["volumes"] = volumes
     return yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
+
+
+def _contract_backend_command(
+    root: Path, application_id: str | None, service_id: str
+) -> tuple[str, ...] | None:
+    """Return a catalog-approved backend command from Project Contract.
+
+    The contract is model output, so this function intentionally accepts only
+    the known stdlib entrypoint shape. It also keeps launcher generation
+    deterministic when the contract is absent or malformed.
+    """
+    if application_id != "python-backend" or service_id != "backend":
+        return None
+    path = root / ".projectos" / "architecture" / "project-contract.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        value = payload.get("entrypoints", {}).get("backend_command")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if isinstance(value, str):
+        parts = value.split()
+        if (
+            len(parts) == 3
+            and parts[:2] == ["python", "-m"]
+            and re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", parts[2])
+        ):
+            return tuple(parts)
+    return None
 
 
 def _local_command(command: tuple[str, ...], *, mode: str = "production") -> tuple[str, ...]:

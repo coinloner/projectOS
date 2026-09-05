@@ -11,6 +11,7 @@ from app.planner.dynamic_builder import (
     DynamicPlanBuilder,
     ImplementationExpansion,
 )
+from app.planner.delivery_tail import DeliveryTailExpansion, DynamicDeliveryTailBuilder
 from app.planner.evaluation import (
     PlannerEvaluationReport,
     PlannerEvaluator,
@@ -47,6 +48,8 @@ __all__ = [
     "BlueprintValidator",
     "DynamicPlanBuilder",
     "ImplementationExpansion",
+    "DeliveryTailExpansion",
+    "DynamicDeliveryTailBuilder",
     "PlannerEvaluationReport",
     "PlannerEvaluator",
     "PlannerScenario",

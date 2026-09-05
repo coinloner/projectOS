@@ -764,3 +764,300 @@ FHL 的分层交付 Trace `tr-e4902cf31bba` 在流式架构蓝图节点未收到
 架构集成/质量门、Project Contract、任务集成/质量门和环境准备，并展开 6 个并行代码单元；
 随后因 `runtime-server-composition` 连续两次在 Provider 宽限期内无流式进度而停止，checkpoint
 恢复保持正确，代码/测试/review 尚未形成最终交付。该剩余问题属于 Provider/模型停滞边界，不是工具协议或状态语义误判。
+
+## 35. 2026-09-02：恢复原始八阶段路线并收口语义注册
+
+### 背景
+
+前几轮重构一度把“动态架构稳定性”单独当成新阶段，导致路线图与最初约定的八阶段发生偏差。
+复盘后确认：稳定性、观测、Provider 终态和失败归因都属于阶段三至阶段七的横向验收条件，
+不能替代 ContractCompiler、下游交付节点和多项目 E2E 的阶段性交付。因此恢复原始路线：
+固定模板与 ProcessDefinition、Blueprint 语义校验、动态 ModuleDesign、动态 ImplementationDesign、
+ContractCompiler、Tasks/Environment/Test/Review、多项目 E2E，最后才删除固定模板。
+
+### 本轮改动
+
+- 新增 `SemanticRegistry`，集中登记字段的 `meaning/source/consumer/value_rules`，并提供节点局部投影。
+  `compile_node_contract` 改为从 Registry 编译语义合同，仍保持 canonical 字段和既有任务输入对象不变。
+- `BlueprintValidator` 在规模、依赖和环检查前先执行 Registry 语义校验；层依赖、模块 purpose、
+  module_id 唯一性和未知依赖现在会以统一的 `Blueprint 语义校验失败` 诊断返回。
+- Registry 允许控制面注入自定义节点字段，但拒绝覆盖公共字段或重复注册，避免项目扩展重新引入同义字段。
+- 动态架构的 L0/L1/L2 结构化对象、工具回放、接口 ownership、文件级 unit 和 wave 约束保持硬校验；
+  语义 Registry 只补充解释和关系校验，不放宽 DTO 或权限边界。
+
+### 阶段验收状态
+
+- 阶段一已完成；阶段二的集中注册入口已补齐。
+- 阶段三、阶段四已通过动态计划扩展和真实 FHL 架构探针，模块数量和实现层级由 Blueprint/ModuleDesign
+  决定，而不是由模板预先写死。
+- 阶段五已落地：`ArchitectureDesignBundle -> ProjectContract -> ImplementationContractCompiler`
+  可以确定性生成单文件、按 wave 排序的 CodeAgent WorkItem；正在补充真实 Provider 连续验收。
+- 阶段六的模板依赖已经接入动态代码扩展：Tasks、Environment 作为每个代码 unit 的前置，随后经过
+  Integration、Test、Review；仍需完整真实运行证明这些节点在 Provider 停滞和 checkpoint 恢复后能继续闭环。
+- 阶段七尚未完成，至少需要覆盖简单 Python、前后端+数据库、异步/并发和依赖审批四类项目，并记录
+  节点覆盖率、产物完整率、重试/恢复次数、Review 状态和重复运行稳定性。
+- 阶段八暂不启动。`project_delivery`、`project_delivery_layered` 及旧架构模板继续作为兼容/回退适配器，
+  只有阶段六、七的实测证据稳定后才删除。
+
+### 验证
+
+- 控制面回归：`tests` 目录 `395 passed, 3 skipped`；加入 SemanticRegistry、动态尾部和集成误报回归后仍全部通过。
+- `compileall` 和 `git diff --check` 通过。
+- 真实 FHL Trace `tr-430a6d4b8b78` 的最新可确认进度仍是架构、合同、任务和环境完成，6 个代码 unit 已展开；
+  Provider 在 `runtime-server-composition` 阶段无流式进度后由宽限/ checkpoint 机制停止，未伪造 Code/Test/Review 完成。
+  这次结果把剩余问题明确收敛到 Provider/Agent 终止协议与真实 E2E 验收，不再归因于字段语义或总体 DAG 设计。
+
+### 下一步
+
+先用确定性 Agent 完成阶段五到阶段六的完整计划回归，检查动态代码 unit 与 Tasks/Environment/Integration/Test/Review
+的依赖、输入引用和产物 owner；再在真实 FHL 上做阶段七矩阵验证。固定模板删除必须等矩阵连续通过后再决定。
+
+## 36. 2026-09-03：真实 FHL 集成误报的闭环修复
+
+### 复现
+
+真实 FHL 架构探针 `tr-a2722f1916a3` 已完成 Blueprint、4 个 ModuleDesign 和 4 个
+ImplementationDesign，随后在 Architecture Integration 返回：
+`{"type":"capability_request","capability":"integrate_architecture_designs",...}`。
+该工具其实是 Architecture domain 已注册的本地确定性工具，但 Runner 的误报识别只覆盖了
+三个 `write_*` 工具，没有覆盖集成工具，于是把本地协议错误当成外部能力请求，最终以
+`没有可提供能力 'integrate_architecture_designs' 的来源` 阻塞。
+
+### 修复
+
+- 将 `integrate_architecture_designs` 纳入 Architecture 本地工具误报识别集合。
+- 对 Architecture Integration 的误报增加控制面兜底：使用当前 WorkItem 的授权上下文调用
+  `ArchitectureArtifactWorkflow.integrate_structured_designs`，重新读取全部 staged L0/L1/L2
+  对象并执行同一 `ArchitectureDesignBundle` 硬校验后创建候选；校验失败仍返回
+  `needs_replan`，不会绕过合同或伪造完成。
+- 记录 `architecture_integration_control_plane_fallback` 事件，使 Provider 是否发出原生
+  tool-call 与控制面最终采用的执行路径可审计。
+- 新增回归测试，证明本地集成工具误报不会进入能力审批死路；动态三层测试使用真实 staged
+  对象验证兜底可以发布候选。
+
+### 验证与阶段影响
+
+- 控制面测试更新为 `395 passed, 3 skipped`（含新增集成误报、动态尾部和语义 Registry 回归）。
+- `scripts/validate_layered_instance.py` 完成 10 个架构/合同节点，状态 `completed`。
+- 该修复完成阶段五的一个真实 Provider 边界，并为阶段六的下游 Tasks、Environment、Code、
+  Integration、Test、Review 连续执行消除一个确定性阻塞点。阶段七仍需在真实 FHL 上验证完整
+  交付和多项目矩阵；如果 Provider 在设计节点本身断流，仍按 `provider_transport`/
+  `provider_terminal_missing` 记录并从 checkpoint 恢复。
+
+## 37. 2026-09-03：动态计划接入稳定交付尾部
+
+### 问题
+
+阶段三、四的动态架构只负责根据 Blueprint/ModuleDesign 生成项目专属的模块和实现设计节点。
+如果 Planner 选择了动态架构路线但没有预先枚举 Tasks、Environment、Code Integration、Test、Review，
+原 Runner 只在 `project_delivery`/`project_delivery_layered` 模板中展开 CodeAgent，动态计划会在合同
+发布后停在架构里程碑，无法进入真实交付。
+
+### 设计与实现
+
+- 新增 `DynamicDeliveryTailBuilder`。它以 `ProcessDefinition` 的生命周期角色为依据，在 Project Contract
+  完成且动态计划明确包含交付意图时，追加受控的 Tasks（分区/集成/质量门）、Environment、Code Integration、
+  Test 和 Review 节点。
+- 追加节点只引用当前计划中的 Requirement、Architecture、Contract 和发布产物；不包含任何项目模块、文件
+  数量或技术栈假设。原 Planner 可能生成的宽泛下游占位节点会在未执行前被确定性替换，避免重复写入或权限重叠。
+- ContractCompiler 随后把唯一 Project Contract 展开为单文件、按 wave 排序的 CodeAgent WorkItem，所有代码
+  unit 继承动态尾部的合同/任务/环境前置；集成节点的输入引用由真实 ChangeSet 重新绑定。
+- 固定模板仍保持原有行为，作为兼容和回退适配器；动态尾部是新增路径，不改变现有模板的节点 ID 或授权。
+
+### 验证
+
+- 动态合同计划（`template_id=None`）可以展开为两个并行代码 unit，且 Code Integration 依赖被正确重写。
+- 动态尾部单元测试验证了 7 个受控节点、任务/环境/审查输入引用和占位替换行为。
+- 控制面回归应保持所有 `tests` 目录测试通过；生成项目的测试仍需在项目自身工作目录运行，避免根目录收集历史项目的同名模块。
+
+### 阶段状态
+
+这一步完成了阶段五到阶段六的控制面衔接：动态架构不再依赖固定项目模板才能进入代码和验证阶段。
+阶段七仍以真实 FHL 多项目 E2E 为准，重点观察 Provider 长耗时、代码 ChangeSet 完整率、Sandbox 证据和最终
+Review 是否连续闭环；阶段八删除固定模板继续冻结。
+
+## 38. 2026-09-03：ImplementationDesign 动态预算修复
+
+### 复现
+
+阶段七的真实 FHL 运行在前端模块的 `ImplementationDesign` 节点失败，错误表现为实现设计响应约
+6.5k 字符却被 `artifact_budget` 拒绝。旧规则使用 `5000 + 1500 * (unit_count - 1)` 的总上限：
+它没有为接口、测试类型、依赖和 requirement 元数据预留稳定开销，两个文件级 unit 的合法设计很容易
+在写入前被截断。该失败发生在架构产物预算门，不是字段 schema、工具授权或 Provider 连接故障。
+
+### 修复
+
+- 总预算改为“固定 envelope + 每 unit 规划额度 + 产品最低线”的有界公式：固定预留 2500 字符，
+  每个 unit 3500 字符，最低不低于 5000；第三个 unit 之后仍至少每个增加 1000 字符。
+- 总上限提升到 24000 字符，避免多 unit 模块在元数据齐全时被过早拒绝；单个完整文件 unit 继续
+  硬限制 4500 字符，防止单个 unit 吞噬整个 envelope。
+- `llm_token_budget_for_design` 继续从动态字符预算推导 token 上限，最多 24000；部署环境仍可
+  通过显式 `PROJECTOS_LLM_MAX_TOKENS` 覆盖。
+
+### 验证与影响
+
+架构合同和 CrewAI 适配回归通过。该修复只改变实现设计节点的容量计算，不改变 DAG、对象字段、
+工具白名单或授权范围；下一次真实 FHL 测试应重点确认前端/运行时多 unit 设计可以继续进入
+Architecture Integration，而不是在预算门提前失败。
+
+## 39. 2026-09-03：真实架构集成的接口别名与 Wave 归一化
+
+### 复现
+
+放宽观测阈值后，真实 FHL 运行已经完成 Requirement、Blueprint、三个 ModuleDesign 和三个
+ImplementationDesign，但 Architecture Integration 仍被两个模型表达差异阻塞：
+`domain.todo_operations` 与提供方的 `domain.todo_task_operations`、以及
+`api.todo_request_handler` 与 `api.todo_http` 实际指向同一依赖边界；同时，domain 模块的
+两个 unit 被模型放在同一 wave，却声明了前后依赖，触发“依赖必须更早 wave”的硬校验。
+
+### 修复
+
+- Integration 以 ModuleDesign 的接口目录和模块依赖为 canonical source。对同一依赖命名空间下
+  唯一提供接口的描述性别名做确定性归一化；存在多个候选或无关命名时仍拒绝，避免模糊合并。
+- Integration 在 DTO 硬校验前传播 unit wave：依赖 unit 自动提升到提供方 wave+1；未知 unit 或
+  循环依赖不做修正，继续由硬校验报告。
+
+### 真实验证
+
+针对失败 Trace `tr-ff47b2fcabc0` 的七个真实 staged 架构对象重新执行
+`integrate_structured_designs`，已成功创建唯一架构候选 `cand-23670a5e2ae0`，证明别名和 wave
+归一化可以被真实产物消费。该操作未绕过 DTO、文件 ownership 或权限校验；候选创建后的完整
+下游交付仍需新的 Trace 验证，避免手工候选影响历史运行状态。
+
+## 40. 2026-09-03：目录授权排除与环境能力同义词收敛
+
+### 复现
+
+真实 Trace 在架构合同编译为 CodeAgent WorkItem 时失败：实现单元声明
+`allowed_paths=["backend/app/**"]`，同时用 `forbidden_paths` 排除入口或其他受控文件。
+旧校验只要两个模式前缀相同就报告“重叠”，把合法的目录授权加文件排除误判为权限冲突。
+恢复后 BootstrapAgent 又将本地的 `prepare_environment`/`save_environment` 概括为
+`environment_preparation_and_persistence`，能力归一化遗漏该表达，错误进入外部来源查找。
+
+### 修复
+
+- WorkItem 路径硬门改为拒绝“禁止范围覆盖整个授权范围”（相同文件、相同递归 glob 或更宽的
+  递归目录）；目录内的明确文件/子模式排除允许存在，并在写入时继续由 Git Gateway 拒绝命中路径。
+- `owned_files` 命中禁止范围仍在合同构造阶段拒绝；全局 `*`/`**` 禁止模式和授权越界规则保持不变。
+- Agent capability 归一化把包含 environment + prepare/save/persistence 的复合表达统一为
+  `environment_preparation`，由控制面已有环境准备和保存逻辑直接处理，不请求不存在的 MCP 来源。
+
+### 验证
+
+- 路径合同回归覆盖：目录内文件排除可用、完整覆盖仍拒绝、owned file 命中排除仍拒绝。
+- 相关回归测试 `54 passed`；真实 FHL Trace 已从架构 checkpoint 恢复并完成 Tasks，下一次恢复将
+  继续验证环境、Code、Integration、Test 和 Review 的连续闭环。
+
+## 41. 2026-09-03：FHL 动态交付尾部真实闭环复测
+
+### 运行范围
+
+使用真实 FHL `gpt-5.6-terra` 和 Docker sandbox 恢复 Trace
+`tr-260a2bed5b5d`（项目 `todo-fhl-budget-20260903c`）。本次没有替换 Agent 为
+Fake 实现，也没有跳过控制面节点；恢复从架构合同 checkpoint 继续，完整经过：
+
+```text
+Requirement → Architecture Blueprint/ModuleDesign/ImplementationDesign
+→ Architecture Integration → Quality Gate → Project Contract
+→ Tasks → Environment → 3 个分层 CodeAgent → Code Integration
+→ Test → Review
+```
+
+### 结果
+
+- Trace 状态：`completed`。
+- 三个代码 unit 均产生真实 ChangeSet，Integration 完成并发布实现摘要。
+- Docker sandbox 的 `unit` 证据 `ev-80308e21ac14` 为 `passed`，实际输出为 `Ran 2 tests`、`OK`。
+- `review.md` 已落盘，Review 结论为 `PASS`；`project.quality.v1` 报告 `issues=0`。
+- 受控 Test/Review 兜底正确处理了模型把本地工具描述成缺失能力的情况，没有进入无意义的 MCP 审批死路。
+
+### 真实启动探针暴露的边界
+
+对生成项目直接执行合同声明的 `python -m backend.app.server` 后，入口因
+`api.py` 没有提供 `create_application`、`create_app` 或 `handle` 而退出。也就是说，
+当前 TestAgent 的固定 `unit` 检查能够证明导入和领域 smoke 行为，却不能证明 HTTP 服务已经
+真正组装并监听端口；Review 的确定性结构策略同样不会替模型补写缺失的运行时适配。
+
+这不是本次 Trace 的控制面失败：需求只声明了标准库 REST 适配边界，模型产物在既有测试覆盖下
+被判定为合格，但它揭示了阶段七必须补充的质量门：对合同声明的 backend entrypoint 执行受信
+runtime smoke（至少验证入口可组装并能响应 health/readiness），并将失败证据标记为
+`runtime_preflight`/`SANDBOX_SETUP`，禁止生成 PASS Review。
+
+### 控制面回归
+
+- `.venv/bin/pytest -q tests`：`407 passed, 3 skipped`。
+- `compileall` 和 `git diff --check` 通过。
+- 旧测试 `test_test_agent_cannot_complete_without_sandbox_evidence` 已按当前语义改为验证
+  可恢复的 `BLOCKED`，并确认前置检查失败时不会重复调用 Agent。
+
+### 阶段影响
+
+本次完成阶段五到阶段六在真实 Provider 上的连续验证，并为阶段七提供第一条完整 Trace 证据。
+阶段七尚未完成：除了当前标准库 Todo 形态，还需要至少一个前后端/数据库或异步项目，并将
+runtime smoke、跨层接口可达性和业务 API 行为纳入验证矩阵；阶段八删除固定模板继续冻结。
+
+## 42. 2026-09-03：运行入口组装静态质量门
+
+### 触发原因
+
+`tr-260a2bed5b5d` 的生成项目通过了模块导入和领域 smoke，但直接执行合同声明的
+`python -m backend.app.server` 时才发现 `api.py` 没有
+`create_application`、`create_app` 或 `handle`。这说明“可导入”与“可启动”是两个不同的
+交付事实，不能只依赖固定 unittest discovery。
+
+### 改动
+
+- `ProjectRuntimePreflight` 新增 `runtime.application_assembly_missing` 检查：当合同声明的
+  Python 入口包含动态 `_load_application` 组装逻辑时，静态解析相邻 `api.py` 是否提供一个
+  受约定的应用组装函数。
+- 检查使用 Python AST，不在宿主机执行生成代码；入口缺失或 API 组装函数缺失会在 TestAgent
+  前返回 `RUNTIME_PREFLIGHT` 阻塞，后续可从 checkpoint 修复，不会伪造测试或 Review 通过。
+- `RuntimeCatalog`/`SandboxPolicy` 增加受信 `runtime-smoke` 检查；当合同声明 backend 入口时，
+  TestAgent 会在 Docker sandbox 内导入该模块，并优先实例化 `create_server(..., 0)` 或校验
+  ASGI `app`，从执行层再次验证应用组装，而不是只依赖静态分析。
+- 增加正/反例回归测试；现有项目合同、FastAPI 结构检查和 Sandbox 行为保持不变。
+
+### 验证
+
+- 当前生成项目重新执行前置检查得到：
+  `runtime.application_assembly_missing`（与手工启动探针一致）。
+- 直接执行该项目的 `runtime-smoke` 时，当前主机 Docker credential helper 返回 `(-50)`，
+  因而得到 `setup_failed`；这次环境故障没有覆盖此前已通过的 `unit` sandbox 证据，也没有被
+  误判为应用代码失败。
+- `.venv/bin/pytest -q tests`：`410 passed, 3 skipped`。
+- `compileall` 与 `git diff --check` 通过。
+
+### 后续边界
+
+静态门与 `runtime-smoke` 组合可以确认入口可导入/组装，但尚不能证明 HTTP 路由、健康检查和
+真实端口监听可用。阶段七仍需把合同的 `health_path` 纳入受信启动探测，并把响应级证据纳入
+Review；历史 Trace 的 PASS 结论不会被事后重写，后续新运行会在 Test 阶段应用这些检查。
+
+## 43. 2026-09-03：结构化执行进度与逐节点恢复参考
+
+### 背景
+
+旧 Worker 快照使用单一 `phase/last_progress_at`：LLM chunk、Agent 摘要、工具执行和落盘事实
+会互相刷新同一个时钟。并行批次又只把最后写入事件投影到顶层，快速完成的兄弟节点可能掩盖
+另一个已停滞的节点。恢复时只能重放宽泛 Prompt，缺少受限、可核验的当前工作状态。
+
+### 收敛结果
+
+- 编排层统一维护 `lifecycle/activity/outcome` 三轴状态，并将事件分为
+  `transport/semantic/control/heartbeat` 四类信号。LLM chunk 不再刷新业务进展时钟。
+- 所有领域获得受限 `report_progress` 工具，只允许短摘要、下一步和当前 WorkItem 已授权引用；
+  重复摘要不会制造假活跃，也不能宣告节点完成。
+- Worker 快照保留每个 WorkItem 的独立状态、时钟和有限事件历史；watchdog 为每个活动节点
+  建立独立宽限窗口，区分 Provider 传输停滞与语义停滞。
+- `WorkingState` 只记录成功工具动作、staged/candidate/ChangeSet/Sandbox/正式产物引用、
+  下一步和错误类型。重试 Prompt 明确把它标记为恢复参考，不回放模型正文或思维链。
+- `/progress` 在兼容旧快照的同时提供 `overall_state`、活动/等待/完成/失败计数和 `current` 列表；
+  Worker 终态优先于尚未解决节点的过程投影。
+- 工具和 Sandbox 的旧空闲环境变量继续兼容，新部署可按 activity 使用
+  `PROJECTOS_SEMANTIC_STALL_*_SECONDS` 覆盖。
+
+### 验证与边界
+
+- 全量测试 `425 passed`，`compileall` 和 `git diff --check` 通过。
+- 当前恢复仍以单机 Trace、checkpoint、ArtifactRepository 和 Git ChangeSet 为基础；没有跨主机
+  队列租约。模型在首次持久化动作之前断线时，不存在可靠的内部生成续传，只能重试最小 WorkItem。

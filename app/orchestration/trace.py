@@ -46,6 +46,15 @@ class TraceStore:
     def project_path(self) -> str:
         return str(self._project_path)
 
+    def trace_root(self, trace_id: str) -> Path:
+        """Return the validated on-disk directory for a trace.
+
+        Callers outside TraceStore should use this public accessor instead of
+        reaching into the private path helper when placing per-trace logs.
+        """
+        self._validate_trace_id(trace_id)
+        return self._trace_root(trace_id)
+
     def load_progress(self, trace_id: str) -> dict[str, object] | None:
         """读取 Worker 最近一次真实进度快照。"""
         from app.orchestration.progress import WorkerProgressStore
@@ -59,7 +68,24 @@ class TraceStore:
         for event in events:
             kind = str(event.get("type", "unknown"))
             counts[kind] = counts.get(kind, 0) + 1
-        retries = counts.get("work_item_retrying", 0)
+        # ``retry-ledger.json`` is the durable source of retry decisions;
+        # event counts remain audit metrics only and may contain legacy
+        # retrying events from before the ledger existed.
+        from app.orchestration.retry import RetryLedger
+        try:
+            retry_records = RetryLedger(self.project_path, trace_id).records()
+            if retry_records:
+                retries = sum(
+                    record.action.value in {"retry_item", "retry_batch", "resume"}
+                    for record in retry_records
+                )
+            else:
+                # Traces created before retry-ledger.json only have the
+                # append-only retrying events. Keep that read-only metric
+                # visible without treating event history as new retry state.
+                retries = counts.get("work_item_retrying", 0)
+        except (OSError, ValueError):
+            retries = counts.get("work_item_retrying", 0)
         completed = counts.get("work_item_completed", 0)
         failed = counts.get("work_item_failed", 0)
         terminal = completed + failed
@@ -235,7 +261,14 @@ class TraceStore:
         required = ("provider", "model", "base_url", "api_key_env", "crewai_provider")
         if any(not str(raw.get(key, "")).strip() for key in required):
             return None
-        return LLMSelection(**{key: str(raw[key]) for key in required})
+        # ``wire_api`` was added after the first persisted trace format.  Keep
+        # old traces readable by retaining the dataclass' Chat Completions
+        # default, while preserving the explicit Responses route on new runs.
+        wire_api = str(raw.get("wire_api", "chat_completions")).strip() or "chat_completions"
+        return LLMSelection(
+            **{key: str(raw[key]) for key in required},
+            wire_api=wire_api,
+        )
 
     def load_llm_overrides(self, trace_id: str) -> dict[str, LLMSelection]:
         payload = self.load_trace(trace_id)
@@ -250,8 +283,10 @@ class TraceStore:
             required = ("provider", "model", "base_url", "api_key_env", "crewai_provider")
             if any(not str(raw.get(key, "")).strip() for key in required):
                 continue
+            wire_api = str(raw.get("wire_api", "chat_completions")).strip() or "chat_completions"
             result[str(agent_id)] = LLMSelection(
-                **{key: str(raw[key]) for key in required}
+                **{key: str(raw[key]) for key in required},
+                wire_api=wire_api,
             )
         return result
 
@@ -343,6 +378,24 @@ class TraceStore:
         payload = self.load_trace(trace_id)
         payload["status"] = "running"
         payload["started_at"] = self._now()
+        payload.pop("finished_at", None)
+        payload.pop("error", None)
+        self._write_json(self._trace_root(trace_id) / "trace.json", payload)
+
+    def mark_planning(self, trace_id: str) -> None:
+        """Mark a Trace as actively planning before an ExecutionPlan exists."""
+        payload = self.load_trace(trace_id)
+        payload["status"] = "planning"
+        payload["planning_started_at"] = self._now()
+        payload.pop("finished_at", None)
+        payload.pop("error", None)
+        self._write_json(self._trace_root(trace_id) / "trace.json", payload)
+
+    def mark_planned(self, trace_id: str) -> None:
+        """Mark planning complete while the run is waiting for Worker submit."""
+        payload = self.load_trace(trace_id)
+        payload["status"] = "planned"
+        payload["planning_finished_at"] = self._now()
         payload.pop("finished_at", None)
         payload.pop("error", None)
         self._write_json(self._trace_root(trace_id) / "trace.json", payload)
@@ -696,8 +749,13 @@ class TraceStore:
             plan = self.load_plan(context.trace_id)
             item = plan.work_item(context.work_item_id)
             if item is not None:
+                requirement_ids = item.requirement_ids
+                if not requirement_ids and item.agent_id == "test_agent":
+                    requirement_ids = tuple(
+                        self._delivery_requirements(context.trace_id)
+                    )
                 DeliveryStore(self.project_path).bind_evidence(
-                    item.requirement_ids, evidence_id=evidence.id, runtime=False
+                    requirement_ids, evidence_id=evidence.id, runtime=False
                 )
         except (FileNotFoundError, ValueError):
             pass
@@ -712,12 +770,20 @@ class TraceStore:
             plan = self.load_plan(evidence.trace_id)
             item = plan.work_item(evidence.work_item_id) if evidence.work_item_id else None
             if item is not None:
+                requirement_ids = item.requirement_ids
+                if not requirement_ids and item.agent_id == "test_agent":
+                    requirement_ids = tuple(self._delivery_requirements(evidence.trace_id))
                 DeliveryStore(self.project_path).bind_evidence(
-                    item.requirement_ids, evidence_id=evidence.id, runtime=True
+                    requirement_ids, evidence_id=evidence.id, runtime=True
                 )
         except (FileNotFoundError, ValueError):
             pass
         return evidence
+
+    def _delivery_requirements(self, trace_id: str) -> tuple[str, ...]:
+        """Return the current project's AC ids for generic test WorkItems."""
+        del trace_id  # reserved for future per-trace matrix isolation
+        return tuple(DeliveryStore(self.project_path).load_matrix().requirements)
 
     def list_sandbox_evidence(
         self, context: ExecutionContext
@@ -745,7 +811,12 @@ class TraceStore:
     ) -> FailurePackage:
         """从当前 Trace 组装可交给修复节点的受限诊断包。"""
         if signal.evidence_id is None:
-            return FailurePackage(signal=signal)
+            # Integration and contract failures may have no SandboxEvidence,
+            # but their bounded error text can still name concrete workspace
+            # files. Preserve those paths as repair hints without widening
+            # authority to a directory or arbitrary generated file.
+            paths = tuple(sorted({match.group(1).replace("\\", "/") for match in _WORKSPACE_PATH.finditer(signal.summary)}))
+            return FailurePackage(signal=signal, repair_paths=paths, owner_files=paths)
         path = self._evidence_path(trace.trace_id, signal.evidence_id)
         if not path.is_file():
             return FailurePackage(signal=signal)

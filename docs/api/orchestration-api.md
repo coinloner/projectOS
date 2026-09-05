@@ -31,6 +31,21 @@ TraceStore.list_sandbox_evidence(context) -> tuple[SandboxEvidence, ...]
 TraceStore.load_sandbox_evidence(context, evidence_id) -> SandboxEvidence
 ```
 
+`GET /api/v1/projects/{project_id}/runs/{trace_id}/progress` 返回监控快照 v3。
+它只有三个当前状态层级：
+
+```text
+run         Trace 总体生命周期、Worker 进程观察和当前 batch
+batches     同一 wave 内一轮 fan-out/fan-in 的屏障状态
+work_items  单节点的 lifecycle/outcome/activity、LLM、时钟和证据引用
+```
+
+快照不保存事件历史，不复制某个当前 WorkItem 到顶层，也没有 `phase`、
+`last_progress_at`、`overall_state` 或 `current` 兼容字段。历史审计仅从
+`events.jsonl` 的 `/runs/{trace_id}/events` 读取。API 额外生成只读 `summary`，其中仅包含
+active/waiting/completed/failed WorkItem ID、当前 batch 和 `worker_process_state`。
+`heartbeat_at` 仅表示 Worker 进程观察，`last_meaningful_at` 才能代表语义或控制面推进。
+
 运行指标可通过 `GET /api/v1/projects/{project_id}/runs/{trace_id}/metrics` 查询。指标由
 Trace 追加事件确定性计算，包含事件总数、完成/失败 WorkItem 数、重试次数、重试收敛率和
 事件类型计数，不依赖进程内缓存。

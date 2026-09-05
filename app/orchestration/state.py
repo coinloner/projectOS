@@ -14,6 +14,14 @@ class RunState:
     plan: ExecutionPlan
     node_results: dict[str, NodeResult] = field(default_factory=dict)
     artifacts: dict[str, str] = field(default_factory=dict)
+    # A narrowly scoped control-plane recovery may require one completed
+    # WorkItem to execute again instead of reusing its durable staged output.
+    # This never changes the plan or its sealed contracts.
+    forced_rerun_work_item_ids: set[str] = field(default_factory=set)
+    recovery_diagnostics: dict[str, str] = field(default_factory=dict)
+    # Derived from RetryLedger at resume time. This stays out of checkpoints:
+    # it is advisory guidance for the next attempt, not a completed fact.
+    retry_recovery_contexts: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def as_checkpoint(self) -> dict[str, object]:
         """序列化可恢复状态；产物正文由 ArtifactRepository 唯一持有。"""
@@ -55,6 +63,8 @@ class RunState:
                 for item in self.plan.work_items
                 if item.id not in self.node_results
             ],
+            "forced_rerun_work_item_ids": sorted(self.forced_rerun_work_item_ids),
+            "recovery_diagnostics": dict(self.recovery_diagnostics),
         }
 
     @classmethod
@@ -134,7 +144,40 @@ class RunState:
         }
         if not set(artifacts).issubset(completed_output_keys):
             raise ValueError("checkpoint.artifacts 包含未完成节点或未知产物")
-        state = cls(plan=plan, node_results=results, artifacts=artifacts)
+        raw_forced_ids = checkpoint.get("forced_rerun_work_item_ids", [])
+        if not isinstance(raw_forced_ids, list) or any(
+            not isinstance(item_id, str) or not item_id.strip()
+            for item_id in raw_forced_ids
+        ):
+            raise ValueError("checkpoint.forced_rerun_work_item_ids 格式无效")
+        forced_rerun_work_item_ids = set(raw_forced_ids)
+        known_item_ids = {item.id for item in plan.work_items}
+        unknown_forced_ids = forced_rerun_work_item_ids - known_item_ids
+        if unknown_forced_ids:
+            raise ValueError("checkpoint.forced_rerun_work_item_ids 包含未知 WorkItem")
+        if forced_rerun_work_item_ids & set(results):
+            raise ValueError("checkpoint.forced_rerun_work_item_ids 不能包含已完成 WorkItem")
+        raw_diagnostics = checkpoint.get("recovery_diagnostics", {})
+        if not isinstance(raw_diagnostics, dict) or any(
+            not isinstance(item_id, str)
+            or item_id not in forced_rerun_work_item_ids
+            or not isinstance(diagnostic, str)
+            or not diagnostic.strip()
+            for item_id, diagnostic in raw_diagnostics.items()
+        ):
+            raise ValueError("checkpoint.recovery_diagnostics 格式无效")
+        if set(raw_diagnostics) != forced_rerun_work_item_ids:
+            raise ValueError("checkpoint.recovery_diagnostics 与 forced_rerun_work_item_ids 不一致")
+        state = cls(
+            plan=plan,
+            node_results=results,
+            artifacts=artifacts,
+            forced_rerun_work_item_ids=forced_rerun_work_item_ids,
+            recovery_diagnostics={
+                item_id: str(diagnostic)
+                for item_id, diagnostic in raw_diagnostics.items()
+            },
+        )
         for item_id in results:
             item = plan.work_item(item_id)
             if item is not None and item.output_key not in state.artifacts:
@@ -168,6 +211,9 @@ class RunState:
             raise ValueError(f"工作项 '{item.id}' 已有运行结果")
 
         self.node_results[item.id] = result
+        self.forced_rerun_work_item_ids.discard(item.id)
+        self.recovery_diagnostics.pop(item.id, None)
+        self.retry_recovery_contexts.pop(item.id, None)
         if result.status is NodeStatus.COMPLETED and result.content is not None:
             self.artifacts[item.output_key] = result.content
 

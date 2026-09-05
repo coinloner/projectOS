@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.json_transport import strip_json_transport_noise
+
 
 class PlannedStep(BaseModel):
     """Planner 选择 Agent，并用临时 ref 描述本次工作项图。"""
@@ -47,8 +49,9 @@ class PlanDraft(BaseModel):
 
     @classmethod
     def parse(cls, content: str) -> PlanDraft:
+        normalized = strip_json_transport_noise(content)
         try:
-            return cls.model_validate_json(content)
+            return cls.model_validate_json(normalized)
         except ValidationError as error:
             raise PlanDraftError(f"计划草案不符合 JSON schema: {error}") from error
 

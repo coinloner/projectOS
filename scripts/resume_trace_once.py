@@ -14,6 +14,11 @@ def main() -> int:
     parser.add_argument("project")
     parser.add_argument("trace_id")
     parser.add_argument("--timeout", type=int, default=1200)
+    parser.add_argument(
+        "--source-name",
+        default=None,
+        help="在恢复动作中批准一个待授权来源（例如 docs-mcp）",
+    )
     args = parser.parse_args()
 
     coordinator = RunCoordinator(max_workers=2)
@@ -21,6 +26,7 @@ def main() -> int:
         started = RunService(coordinator=coordinator).resume_run(
             project_path=args.project,
             trace_id=args.trace_id,
+            source_name=args.source_name,
         )
         print(f"resumed {started}", flush=True)
         traces = TraceStore(args.project)

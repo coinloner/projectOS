@@ -25,6 +25,7 @@ from app.orchestration.work_item import (
 )
 from app.process import ProcessDefinition, default_process_registry
 from app.execution_context import ExecutionMode
+from app.orchestration.field_semantics import SemanticRegistry, default_semantic_registry
 
 
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -99,12 +100,20 @@ class ImplementationExpansion:
 class BlueprintValidator:
     """验证 Blueprint 中由业务侧决定的模块语义和依赖关系。"""
 
-    def __init__(self, process: ProcessDefinition | None = None) -> None:
+    def __init__(
+        self,
+        process: ProcessDefinition | None = None,
+        semantic_registry: SemanticRegistry | None = None,
+    ) -> None:
         self._process = process or default_process_registry().get("software_delivery")
         if self._process is None:  # pragma: no cover - defensive registry guard
             raise RuntimeError("software_delivery 流程未注册")
+        self._semantic_registry = semantic_registry or default_semantic_registry()
 
     def validate(self, blueprint: ArchitectureBlueprint) -> None:
+        semantic_errors = self._semantic_registry.validate_blueprint(blueprint)
+        if semantic_errors:
+            raise BlueprintValidationError("Blueprint 语义校验失败: " + "; ".join(semantic_errors))
         limits = self._process.limits
         if blueprint.depth != 0:
             raise BlueprintValidationError("动态模块扩展要求 depth=0 的 ArchitectureBlueprint")
@@ -143,11 +152,16 @@ class BlueprintValidator:
 class DynamicPlanBuilder:
     """根据 Blueprint 真实模块清单生成 depth=1 执行节点。"""
 
-    def __init__(self, process: ProcessDefinition | None = None) -> None:
+    def __init__(
+        self,
+        process: ProcessDefinition | None = None,
+        semantic_registry: SemanticRegistry | None = None,
+    ) -> None:
         self._process = process or default_process_registry().get("software_delivery")
         if self._process is None:  # pragma: no cover - defensive registry guard
             raise RuntimeError("software_delivery 流程未注册")
-        self._validator = BlueprintValidator(self._process)
+        self._semantic_registry = semantic_registry or default_semantic_registry()
+        self._validator = BlueprintValidator(self._process, self._semantic_registry)
 
     def expand_modules(
         self,

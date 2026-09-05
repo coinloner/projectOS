@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.agent.registry import AgentRegistry
 from app.execution_context import ExecutionMode
+from app.json_transport import strip_json_transport_noise
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.work_item import DependencySource, WorkItem, WorkItemDependency
 
@@ -59,7 +60,7 @@ class RepairPlanPatch(BaseModel):
         repair_scope: tuple[str, ...] = (),
     ) -> "RepairPlanPatch":
         try:
-            raw = json.loads(content)
+            raw = json.loads(strip_json_transport_noise(content))
         except (TypeError, json.JSONDecodeError) as error:
             raise PlanPatchError(f"RepairPlanPatch 不是合法 JSON: {error}") from error
         if not isinstance(raw, dict):
@@ -101,7 +102,7 @@ class PlanPatch(BaseModel):
     @classmethod
     def parse(cls, content: str) -> "PlanPatch":
         try:
-            return cls.model_validate_json(content)
+            return cls.model_validate_json(strip_json_transport_noise(content))
         except ValidationError as error:
             raise PlanPatchError(f"PlanPatch 不符合 JSON schema: {error}") from error
 

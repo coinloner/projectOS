@@ -8,6 +8,12 @@ from fastapi.testclient import TestClient
 from app.api.app import create_app
 from app.application.runs import StartedRun
 from app.memory.store import MemoryStore
+from app.orchestration.progress import (
+    ExecutionActivity,
+    ExecutionLifecycle,
+    ProgressSignalKind,
+    WorkerProgressStore,
+)
 from app.orchestration.trace import TraceStore
 from app.project.project import Project
 
@@ -233,21 +239,57 @@ class ApiTest(unittest.TestCase):
         trace = TraceStore(str(project_path)).start_trace("进度查询")
         from app.orchestration.progress import WorkerProgressStore
 
-        WorkerProgressStore(str(project_path)).write(
+        store = WorkerProgressStore(str(project_path))
+        store.start_run(trace.trace_id)
+        store.record_work_item_activity(
             trace.trace_id,
-            {
-                "trace_id": trace.trace_id,
-                "phase": "llm_streaming",
-                "event": "llm_chunk_received",
-                "last_progress_at": "2026-08-22T00:00:00+00:00",
-                "counters": {"llm_chunks": 3},
-            },
+            "wi-code",
+            "code_agent",
+            lifecycle=ExecutionLifecycle.RUNNING,
+            activity=ExecutionActivity.LLM,
+            event_type="llm_chunk_batch",
+            signal=ProgressSignalKind.TRANSPORT,
+            counters={"llm_chunks": 3},
+            llm={"state": "streaming", "call_id": "call-1", "terminal_at": None},
         )
         response = self.client.get(
             f"/api/v1/projects/demo/runs/{trace.trace_id}/progress"
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["progress"]["phase"], "llm_streaming")
+        progress = response.json()["progress"]
+        self.assertEqual(progress["schema_version"], 3)
+        self.assertEqual(progress["run"]["lifecycle"], "running")
+        self.assertIn("meaningful_idle_seconds", progress["run"])
+        self.assertEqual(progress["summary"]["active_work_item_ids"], ["wi-code"])
+        self.assertEqual(progress["work_items"]["wi-code"]["activity"], "llm")
+        self.assertNotIn("phase", progress)
+
+    def test_run_cancel_endpoint_persists_cancelled_terminal_state(self) -> None:
+        self.client.post("/api/v1/projects", json={"name": "demo"})
+        project_path = Path(self._directory.name) / "demo"
+        trace = TraceStore(str(project_path)).start_trace("取消测试")
+
+        response = self.client.post(
+            f"/api/v1/projects/demo/runs/{trace.trace_id}/cancel",
+            json={"reason": "测试停止"},
+        )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["status"], "cancelled")
+        self.assertEqual(
+            TraceStore(str(project_path)).load_trace(trace.trace_id)["status"],
+            "cancelled",
+        )
+
+    def test_run_cancel_endpoint_returns_404_for_unknown_trace(self) -> None:
+        self.client.post("/api/v1/projects", json={"name": "demo"})
+
+        response = self.client.post(
+            "/api/v1/projects/demo/runs/missing-trace/cancel",
+            json={"reason": "测试停止"},
+        )
+
+        self.assertEqual(response.status_code, 404)
 
     def test_resume_accepts_empty_json_body(self) -> None:
         self.client.post("/api/v1/projects", json={"name": "demo"})

@@ -203,6 +203,13 @@ class ImplementationContractCompiler:
                 )
             if len(parts) == 3 and parts[0] == "published":
                 return ArtifactRef.published(parts[1], revision_id=None if parts[2] == "current" else parts[2])
+            # Early architecture agents emitted semantic aliases such as
+            # ``todo-architecture-module-runtime`` instead of the canonical
+            # published artifact key.  Keep the persisted contract strict at
+            # the boundary, but normalize this known alias family while
+            # compiling so CodeAgent receives a usable, auditable reference.
+            if text.lower().startswith(("todo-architecture-", "architecture-module-")):
+                return ArtifactRef.published("architecture")
             return ArtifactRef.published(text)
         original_children: dict[str, tuple[str, ...]] = {}
         for original in contract.units:
@@ -266,7 +273,7 @@ class ImplementationContractCompiler:
                 unit.allowed_paths, layer=unit.layer, unit_id=unit.unit_id
             )
             allowed_paths = self._normalize_paths(unit.allowed_paths, slot)
-            forbidden_paths = self._normalize_paths(unit.forbidden_paths, slot)
+            forbidden_paths = self._project_forbidden_paths(unit.forbidden_paths, slot)
             required_paths = self._normalize_paths(unit.required_paths, slot)
             # 项目文档单元位于代码集成之前，只能要求它自己负责的规划文档。
             # environment/implementation/tests/review 是后续节点的证据产物，
@@ -531,3 +538,35 @@ class ImplementationContractCompiler:
                 value = f"frontend/{value}"
             normalized.append(value)
         return tuple(dict.fromkeys(normalized))
+
+    @classmethod
+    def _project_forbidden_paths(cls, paths: tuple[str, ...], slot: str) -> tuple[str, ...]:
+        """Project unit-level denies without duplicating control-plane policy.
+
+        Architecture agents commonly include ``workspace/**`` and
+        ``.projectos/**`` in every implementation unit.  The former normalizes
+        to ``**`` at the physical-partition boundary, which is a global deny
+        and is correctly rejected by :class:`WorkItem`.  Both patterns describe
+        the runner's control plane, already protected by workspace staging and
+        sandbox policy, rather than an implementation-unit exclusion.  Remove
+        only these canonical control-plane grants; retain all business-path
+        exclusions for the CodeAgent contract.
+        """
+        business_paths = tuple(
+            path
+            for path in paths
+            if not cls._is_control_plane_forbidden_path(path)
+        )
+        return cls._normalize_paths(business_paths, slot)
+
+    @staticmethod
+    def _is_control_plane_forbidden_path(path: str) -> bool:
+        normalized = path.replace("\\", "/").lstrip("/").rstrip("/")
+        return normalized in {
+            "workspace",
+            "workspace/*",
+            "workspace/**",
+            ".projectos",
+            ".projectos/*",
+            ".projectos/**",
+        }

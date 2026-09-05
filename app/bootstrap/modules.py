@@ -47,6 +47,12 @@ MODULES: tuple[Callable[["ProjectOSContainer"], None], ...] = (
 def install_modules(container: "ProjectOSContainer") -> None:
     for install in MODULES:
         install(container)
+    from app.orchestration.progress_tools import register_progress_tools
+
+    register_progress_tools(
+        container.gateway,
+        tuple(definition.domain for definition in container.agents.definitions()),
+    )
     container.templates.register(architecture_compact_template())
     container.templates.register(architecture_parallel_template())
     container.templates.register(architecture_layered_template())

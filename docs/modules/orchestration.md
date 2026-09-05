@@ -65,11 +65,20 @@ Docker 失败会按测试失败、超时、环境配置失败和 Agent 运行异
 每个节点结果后都会写入版本化 checkpoint；恢复时只信任已完成节点，失败、等待和 replan 节点重新调度，
 避免把中断时的半成品副作用误当成完成结果。
 
-Worker 监管同时使用硬截止、阶段级空闲阈值和独立 heartbeat。默认 LLM 120 秒、工具 300 秒、Sandbox 600 秒；
-发现 LLM 无 chunk 时先写入 `worker_idle_suspected`/`provider_stalled`，并进入可配置的
-`PROJECTOS_PROVIDER_STALL_GRACE_SECONDS` 宽限期；只有 `last_progress_at` 在整个宽限期内
-没有变化才终止 Worker，真实进度恢复会重置计时。API 可通过
-`/runs/{trace_id}/progress` 查询 `last_progress_at` 与 `heartbeat_at` 两类时间戳。
+Worker 监管使用硬截止、活动级 transport stall 阈值、语义停滞阈值和独立 heartbeat。
+监控快照使用 v3 分层对象，而不是一个平面状态：
+
+```text
+run         运行生命周期和 Worker 进程观察；子节点执行期间保持 running
+batches     同一最早 wave 的并行 fan-out/fan-in 屏障；所有成员返回后才汇聚
+work_items  单节点 LLM、工具、产物或 Sandbox 活动
+```
+
+Watchdog 只读取 `work_items[*].clocks.transport_at`、`last_meaningful_at` 和
+`run.heartbeat_at`；它写审计事件并收口 run/batch/work item，不把 heartbeat 或传输分片当作
+业务完成。强制终止时根因节点记录为 `failed`，同 batch 的其他开放节点记录为 `interrupted`。
+并行节点分别计时，不会因某个兄弟节点完成而停止监管。API 可通过
+`/runs/{trace_id}/progress` 查询三类时间戳和聚合进度。
 
 `FailurePackage` 是编排层由 Trace evidence 生成的受控输入。Planner 只看到失败种类、摘要、证据 ID、check/runtime/exit code；修复用 Code/Test WorkItem 可看到受长度限制的 stdout/stderr，并且该文本被标记为不可信程序输出。TestAgent 必须产生当前 WorkItem 的 SandboxEvidence，否则不会被记为完成；代码分区先提交 ChangeSet，`CodeIntegrationAgent` 合并成功后生成实现摘要（implementation.md）。
 

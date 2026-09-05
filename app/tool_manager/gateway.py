@@ -126,6 +126,8 @@ def _visible_in_tool_allowlist(
     definition: "ToolDef", context: ExecutionContext | None
 ) -> bool:
     """Apply an optional control-plane narrowing for a single retry attempt."""
+    if definition.name == "report_progress":
+        return True
     if context is None or not context.tool_allowlist:
         return True
     return definition.name in context.tool_allowlist

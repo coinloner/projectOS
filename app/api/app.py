@@ -25,7 +25,7 @@ from app.memory.store import MemoryStore
 from app.sandbox.application_runner import ApplicationRunError
 from app.sandbox.controller import SandboxController
 from app.orchestration.trace import TraceStore
-from app.orchestration.progress import idle_for
+from app.orchestration.progress import canonical_progress
 from app.planner.service import PlannerFailure
 from app.project.project import Project
 from app.project.paths import ProjectPathRegistry
@@ -43,6 +43,23 @@ from app.llm.config import (
 
 _PROJECT_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _AGENT_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+
+
+def _planner_failure_detail(error: PlannerFailure) -> object:
+    """Expose structured diagnostics when a planning Trace exists.
+
+    Preflight/control-plane PlannerFailure instances (for example an unknown
+    workflow) have no Trace or signal yet, so retain the legacy string detail
+    contract for those callers.
+    """
+    if error.trace_id is None and error.signal is None:
+        return str(error)
+    payload: dict[str, object] = {"message": str(error)}
+    if error.trace_id:
+        payload["trace_id"] = error.trace_id
+    if error.signal is not None:
+        payload["failure"] = error.signal.as_dict()
+    return payload
 
 
 class ProjectCreateRequest(BaseModel):
@@ -89,6 +106,10 @@ class CapabilityApprovalRequest(BaseModel):
 
 class ResumeRequest(BaseModel):
     source_name: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class CancelRunRequest(BaseModel):
+    reason: str = Field(default="api_request", min_length=1, max_length=500)
 
 
 class AgentSkillRequest(BaseModel):
@@ -334,7 +355,11 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
                 llm_selection=selection,
                 llm_overrides=overrides,
             )
-        except (PlannerFailure, RuntimeError, ValueError) as error:
+        except PlannerFailure as error:
+            raise HTTPException(
+                status_code=422, detail=_planner_failure_detail(error)
+            ) from error
+        except (RuntimeError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {
             "trace_id": started.trace_id,
@@ -397,7 +422,11 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ConversationBusy as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
-        except (PlannerFailure, RuntimeError, ValueError) as error:
+        except PlannerFailure as error:
+            raise HTTPException(
+                status_code=422, detail=_planner_failure_detail(error)
+            ) from error
+        except (RuntimeError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {
             "intent": action.intent.value,
@@ -435,11 +464,10 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             raise HTTPException(status_code=404, detail=str(error)) from error
         coordinator: RunCoordinator = request.app.state.coordinator
         progress = traces.load_progress(trace_id)
-        if progress is not None:
-            progress = {**progress, "idle_for_seconds": idle_for(progress)}
+        progress = canonical_progress(progress)
         return {
             **trace,
-            "runtime_status": coordinator.status(trace_id) or trace["status"],
+            "worker_process_state": coordinator.status(trace_id) or "not_observed",
             "progress": progress,
         }
 
@@ -484,6 +512,26 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             "workflow_id": resumed.workflow_id,
             "status": resumed.status,
         }
+
+    @app.post(
+        "/api/v1/projects/{project_id}/runs/{trace_id}/cancel",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def cancel_run(
+        project_id: str,
+        trace_id: str,
+        request: Request,
+        payload: CancelRunRequest | None = Body(default=None),
+    ) -> dict[str, str]:
+        project_path = _project_path(root, project_id)
+        try:
+            return request.app.state.coordinator.cancel(
+                str(project_path),
+                trace_id,
+                reason=payload.reason if payload else "api_request",
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
 
     @app.post(
         "/api/v1/projects/{project_id}/runs/{trace_id}/capabilities/approve",
@@ -592,8 +640,7 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
         except (FileNotFoundError, ValueError) as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         progress = traces.load_progress(trace_id)
-        if progress is not None:
-            progress = {**progress, "idle_for_seconds": idle_for(progress)}
+        progress = canonical_progress(progress)
         return {
             "trace_id": trace_id,
             "status": trace.get("status"),

@@ -11,6 +11,7 @@ from crewai import Agent, Task
 
 from app.llm.factory import build_llm
 from app.llm.config import LLMSelection
+from app.llm.responses import OpenAIResponsesLLM
 
 
 class PlannerRuntime(Protocol):
@@ -48,10 +49,25 @@ class CrewAIPlannerRuntime:
                 return cached
         with self._lock:
             if self._llm is None:
-                kwargs = {"temperature": 0.0, "seed": 0}
+                # Responses does not accept the Chat Completions ``seed``
+                # parameter.  Keep Planner deterministic through its prompt
+                # and cache policy, while leaving protocol-specific sampling
+                # fields to the selected LLM adapter.
+                kwargs = {"temperature": 0.0}
                 if self._llm_selection is not None:
                     kwargs["selection"] = self._llm_selection
                 self._llm = build_llm(**kwargs)
+        # Portdan declares the OpenAI Responses wire protocol.  CrewAI's
+        # Agent executor wraps prompts in its ReAct/flow loop and may issue
+        # follow-up turns that this text-only adapter cannot represent.  The
+        # Planner has no tools or delegation needs, so send the prompt through
+        # the validated streaming Responses adapter directly.
+        if isinstance(self._llm, OpenAIResponsesLLM):
+            result = self._llm.call(prompt)
+            if self._cache_enabled:
+                with self._lock:
+                    self._cache[cache_key] = result
+            return result
         agent = Agent(
             role="执行计划编排者",
             goal="在已注册 Agent 合同范围内生成最小、可执行的任务计划",
@@ -77,9 +93,13 @@ class CrewAIPlannerRuntime:
 _BACKSTORY = """\
 你是 ProjectOS 的 Planner，不是领域业务执行者。
 
-你只能根据输入中的 goal、artifact 元数据、可用 Agent 合同、已注册 process 定义和模板节点/默认依赖进行编排。
+你只能根据输入中的 goal、artifact 元数据、可用 Agent 合同、已注册 process 定义和模板候选/默认依赖摘要进行编排。
 你不能调用工具、不能读取业务文件内容、不能创建未提供的 Agent，也不能生成 node id、
 output key、文件路径或 Python 代码。
+
+Planner 只有一个输出协议。严禁输出任何旧 envelope 或执行控制字段：
+kind、type、version、template_id、nodes、execution_mode、slot、publish_target、
+capability、tool_call。模板只能通过 template_hint_id 引用，步骤只能放在 steps 中。
 
 必须只输出如下 JSON：
 {

@@ -51,7 +51,8 @@ class ProjectOSTool(BaseTool):
             )
         progress = getattr(self._context, "progress", None)
         tool_name = self._registration.definition.name
-        if progress is not None:
+        track_tool_boundary = tool_name != "report_progress"
+        if progress is not None and track_tool_boundary:
             progress.tool_started(tool_name)
         try:
             result = str(
@@ -63,11 +64,13 @@ class ProjectOSTool(BaseTool):
             if not tool_result.ok:
                 raise ToolExecutionError(tool_result)
         except Exception:
-            if progress is not None:
+            if progress is not None and track_tool_boundary:
                 progress.tool_completed(tool_name, success=False)
             raise
-        if progress is not None:
-            progress.tool_completed(tool_name)
+        if progress is not None and track_tool_boundary:
+            # The tracker only extracts identifiers for a closed list of
+            # durable-output tools; it never persists the result body.
+            progress.tool_completed(tool_name, result=result)
         return result
 
 

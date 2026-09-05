@@ -8,7 +8,7 @@ from app.agent.result import AgentResult
 from app.tool_manager.gateway import ToolGateway
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.runner import GraphRunner, GraphRunStatus
-from app.execution_context import ExecutionContext
+from app.execution_context import ExecutionContext, ExecutionMode
 from app.orchestration.trace import TraceStore
 from app.orchestration.trace import _infer_repair_paths
 from app.orchestration.delivery import DeliveryStore
@@ -103,11 +103,28 @@ class TraceStoreTest(unittest.TestCase):
             overrides = traces.load_llm_overrides(context.trace_id)
             self.assertIsNotNone(loaded)
             self.assertEqual(loaded.model, "zai-org/GLM-5.2")
+            self.assertEqual(loaded.wire_api, "chat_completions")
             self.assertEqual(overrides["review_agent"].provider, "openai")
+            self.assertEqual(overrides["review_agent"].wire_api, "chat_completions")
             payload = json.loads(
                 (Path(project_path) / ".projectos" / "runs" / context.trace_id / "trace.json").read_text()
             )
             self.assertNotIn('"api_key":', json.dumps(payload))
+
+    def test_trace_restores_responses_wire_api_for_selection_and_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            context = traces.start_trace("恢复 Responses 路由")
+            responses = resolve_llm_selection("portdan")
+
+            traces.set_llm_selection(context.trace_id, responses)
+            traces.set_llm_overrides(context.trace_id, {"requirement_agent": responses})
+
+            loaded = traces.load_llm_selection(context.trace_id)
+            overrides = traces.load_llm_overrides(context.trace_id)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.wire_api, "responses")
+            self.assertEqual(overrides["requirement_agent"].wire_api, "responses")
 
     def test_trace_records_plan_events_and_requirement_revision(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
@@ -165,9 +182,11 @@ class TraceStoreTest(unittest.TestCase):
                 [event["type"] for event in events],
                 [
                     "work_item_planned",
+                    "batch_started",
                     "work_item_started",
                     "work_item_completed",
                     "requirement_snapshot",
+                    "batch_completed",
                 ],
             )
 
@@ -255,6 +274,39 @@ class TraceStoreTest(unittest.TestCase):
                 event["type"] for event in traces.list_events(context.trace_id)
             ]
             self.assertIn("run_resumed", event_types)
+
+    def test_checkpoint_preserves_forced_rerun_recovery_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            context = traces.start_trace("合同恢复 checkpoint")
+            plan = ExecutionPlan(
+                id="plan-forced-rerun",
+                goal="合同恢复 checkpoint",
+                trace=context,
+                work_items=(
+                    WorkItem(
+                        id="wi-rerun",
+                        agent_id="architecture_agent",
+                        objective="重算架构实现设计",
+                        output_key="architecture_implementation",
+                        execution_mode=ExecutionMode.PARTITIONED,
+                        slot="implementation-runtime",
+                    ),
+                ),
+            )
+            state = RunState(
+                plan=plan,
+                forced_rerun_work_item_ids={"wi-rerun"},
+                recovery_diagnostics={"wi-rerun": "接口引用必须使用正式接口 ID"},
+            )
+
+            restored = RunState.from_checkpoint(plan, state.as_checkpoint())
+
+            self.assertEqual(restored.forced_rerun_work_item_ids, {"wi-rerun"})
+            self.assertEqual(
+                restored.recovery_diagnostics,
+                {"wi-rerun": "接口引用必须使用正式接口 ID"},
+            )
 
     def test_plan_baseline_is_versioned_without_changing_trace_plan_schema(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:

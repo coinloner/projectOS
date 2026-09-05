@@ -10,6 +10,7 @@ from app.agent.base_agent import BaseAgent
 from app.agent.result import AgentResult
 from app.domain.code.service import CodeIntegrationService
 from app.execution_context import ExecutionContext, ExecutionMode
+from app.json_transport import strip_json_transport_noise
 from app.tool_manager.gateway import ToolGateway
 
 
@@ -43,7 +44,7 @@ class IntegrationReview:
     @classmethod
     def parse(cls, content: str) -> "IntegrationReview":
         try:
-            payload = json.loads(content)
+            payload = json.loads(strip_json_transport_noise(content))
         except json.JSONDecodeError as error:
             raise ValueError(f"Integration Review 必须是 JSON: {error}") from error
         if not isinstance(payload, dict):
@@ -57,7 +58,10 @@ class IntegrationReview:
         if not rationale:
             raise ValueError("Integration Review.rationale 不能为空")
         findings = _findings(payload.get("findings", []))
-        adapter_requests = _strings(payload.get("adapter_requests", []), "adapter_requests", allow_empty=True)
+        raw_adapter_requests = payload.get("adapter_requests", [])
+        if raw_adapter_requests is None and verdict != "needs_adapter":
+            raw_adapter_requests = []
+        adapter_requests = _strings(raw_adapter_requests, "adapter_requests", allow_empty=True)
         if verdict == "needs_adapter" and not adapter_requests:
             raise ValueError("needs_adapter 必须列出 adapter_requests")
         return cls(verdict, rationale, findings, adapter_requests)
