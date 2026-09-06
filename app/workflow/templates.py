@@ -2,7 +2,23 @@ from app.execution_context import ExecutionMode
 from app.workflow.template import TaskBlueprint, WorkflowTemplate
 
 def project_delivery_template() -> WorkflowTemplate:
-    """从需求澄清到代码、测试和审查的默认交付流程经验。"""
+    """从需求澄清到代码、测试和审查的默认交付流程经验。
+
+    **已废弃:** 该模板已被 delivery_default 替代。
+
+    该模板预设了固定的模块结构,不适合新项目使用。保留此函数仅供历史 Trace 恢复。
+    新项目应使用 delivery_default_template()。
+
+    废弃日期: 2026-09-07
+    替代方案: delivery_default_template()
+    """
+    import warnings
+    warnings.warn(
+        "project_delivery_template 已废弃,请使用 delivery_default_template。"
+        "该模板仅供历史 Trace 兼容。",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return WorkflowTemplate(
         id="project_delivery",
         name="项目交付草案",
@@ -113,11 +129,26 @@ def project_delivery_template() -> WorkflowTemplate:
 def project_delivery_dynamic_template() -> WorkflowTemplate:
     """Project delivery lifecycle with project-shaped architecture expansion.
 
+    **已废弃:** 该模板已被 delivery_default 替代。
+
+    该模板的动态展开能力已整合到 delivery_default 中。保留此函数仅供历史 Trace 恢复。
+    新项目应使用 delivery_default_template()。
+
+    废弃日期: 2026-09-07
+    替代方案: delivery_default_template()
+
     The template owns only the stable control-plane milestones.  Module and
     file WorkItems are added later from the validated ArchitectureBlueprint,
     ModuleDesigns and ProjectContract; no domain/api/runtime assumptions are
     encoded here.
     """
+    import warnings
+    warnings.warn(
+        "project_delivery_dynamic_template 已废弃,请使用 delivery_default_template。"
+        "该模板仅供历史 Trace 兼容。",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return WorkflowTemplate(
         id="project_delivery_dynamic",
         name="动态项目交付",
@@ -186,9 +217,24 @@ def project_delivery_dynamic_template() -> WorkflowTemplate:
 def project_delivery_layered_template() -> WorkflowTemplate:
     """复杂项目的完整交付流程，使用三层结构化架构作为前置屏障。
 
+    **已废弃 - 实验性模板:** 该模板已被 delivery_default 替代。
+
+    该模板预设了固定的分层架构结构,不适合新项目使用。保留此函数仅供历史 Trace 恢复。
+    新项目应使用 delivery_default_template()。
+
+    废弃日期: 2026-09-07
+    替代方案: delivery_default_template()
+
     需求、架构和合同仍是同一条交付 DAG；与 ``project_delivery`` 的差别仅在
     架构阶段改为 L0/L1/L2 对象协议，Contract 节点由控制面确定性编译。
     """
+    import warnings
+    warnings.warn(
+        "project_delivery_layered_template 已废弃(实验性模板),请使用 delivery_default_template。"
+        "该模板仅供历史 Trace 兼容。",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     layered = architecture_layered_template()
     base = project_delivery_template()
     requirement_node = next(node for node in base.nodes if node.id == "requirement")
@@ -548,7 +594,24 @@ def architecture_compact_template() -> WorkflowTemplate:
 
 
 def project_delivery_minimal_template() -> WorkflowTemplate:
-    """从已有需求和架构进入代码、测试、审查的最小完整交付模板。"""
+    """从已有需求和架构进入代码、测试、审查的最小完整交付模板。
+
+    **已废弃 - 实验性模板:** 该模板已被 delivery_default 或 delivery_incremental 替代。
+
+    该模板用于跳过需求和架构阶段的场景。新项目应使用:
+    - delivery_default_template() (完整流程)
+    - delivery_incremental_template() (已有基线的增量开发,待实现)
+
+    废弃日期: 2026-09-07
+    替代方案: delivery_default_template() 或 delivery_incremental_template()
+    """
+    import warnings
+    warnings.warn(
+        "project_delivery_minimal_template 已废弃(实验性模板),请使用 delivery_default_template 或 delivery_incremental_template。"
+        "该模板仅供历史 Trace 兼容。",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return WorkflowTemplate(
         id="project_delivery_minimal",
         name="最小项目交付",
@@ -890,6 +953,202 @@ def delivery_default_template() -> WorkflowTemplate:
                 acceptance_criteria=(
                     "使用简体中文;区分已验证事实、风险和未覆盖项。",
                     "只能根据实际文件和 SandboxEvidence 下结论。",
+                ),
+            ),
+        ),
+    )
+
+
+def delivery_incremental_template() -> WorkflowTemplate:
+    """增量开发模板 - 用于已有项目基线的场景。
+
+    适用场景:
+    - 项目已有 project-contract.json (架构基线已确定)
+    - 只需要增量开发新功能或修复 bug
+    - 跳过需求和架构阶段,直接从任务规划开始
+
+    生命周期阶段:
+    1. Tasks - 任务规划
+    2. Environment - 环境准备
+    3. Implementation - 代码实现
+    4. Test - 测试验证
+    5. Review - 交付审查
+    """
+    return WorkflowTemplate(
+        id="delivery_incremental",
+        name="增量项目交付",
+        description="基于已有架构基线的增量开发,跳过需求和架构阶段。",
+        nodes=(
+            # 1. Tasks 阶段
+            TaskBlueprint(
+                id="tasks-plan",
+                agent_id="task_agent",
+                objective="根据已有架构和合同生成增量任务决策包。",
+                output_key="tasks_plan",
+                artifact_key="tasks",
+                execution_mode=ExecutionMode.PARTITIONED,
+                slot="plan",
+                stage_id="tasks_plan",
+                input_refs=("architecture_contract",),
+                acceptance_criteria=(
+                    "使用简体中文;只列本次迭代必需任务,最多 8 项。",
+                    "每项包含依赖、产出和可验证验收条件。",
+                ),
+            ),
+            TaskBlueprint(
+                id="tasks-integration",
+                agent_id="task_agent",
+                objective="整合任务决策包并生成紧凑的 tasks 候选。",
+                output_key="tasks_candidate",
+                artifact_key="tasks",
+                depends_on=("tasks-plan",),
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="tasks",
+                stage_id="tasks_integration",
+                input_from=("tasks-plan",),
+                acceptance_criteria=(
+                    "保留任务依赖、产出和验收条件;不得加入未被需求支持的功能。",
+                ),
+            ),
+            TaskBlueprint(
+                id="tasks-quality-gate",
+                agent_id="task_agent",
+                objective="检查任务候选并发布通过质量门的 tasks.md。",
+                output_key="tasks_published",
+                artifact_key="tasks",
+                depends_on=("tasks-integration",),
+                execution_mode=ExecutionMode.QUALITY_GATE,
+                publish_target="tasks",
+                stage_id="tasks_quality_gate",
+                candidate_from="tasks-integration",
+            ),
+
+            # 2. Environment 阶段
+            TaskBlueprint(
+                id="environment",
+                agent_id="bootstrap_agent",
+                objective="根据已有合同和任务声明运行环境。",
+                output_key="environment",
+                depends_on=("tasks-quality-gate",),
+                stage_id="environment",
+                input_refs=("architecture_contract", "tasks"),
+                acceptance_criteria=(
+                    "声明 runtime profile、依赖来源和应用启动方式。",
+                    "依赖审批未通过时不得伪造 ready 状态。",
+                ),
+            ),
+
+            # 3. Implementation 阶段
+            TaskBlueprint(
+                id="implementation-anchor",
+                agent_id="integration_agent",
+                objective="代码实现动态展开锚点 - 由控制面从 Contract 生成文件级 WorkItem。",
+                output_key="implementation",
+                artifact_key="implementation",
+                depends_on=("environment",),
+                stage_id="implementation",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="implementation",
+                acceptance_criteria=(
+                    "所有 Contract 声明的文件已实现。",
+                    "代码通过分层检查和接口完整性验证。",
+                ),
+            ),
+
+            # 4. Test 阶段
+            TaskBlueprint(
+                id="tests",
+                agent_id="test_agent",
+                objective="在 sandbox 中执行全部测试,报告通过/失败/覆盖情况及真实证据。",
+                output_key="tests",
+                artifact_key="tests",
+                depends_on=("implementation-anchor",),
+                stage_id="test",
+                input_refs=("architecture_contract", "implementation"),
+                acceptance_criteria=(
+                    "真实执行 unit/integration/web-unit 测试;提供 stdout/stderr/exit_code。",
+                    "不得将没有证据的测试声明为通过。",
+                ),
+            ),
+
+            # 5. Review 阶段
+            TaskBlueprint(
+                id="review",
+                agent_id="review_agent",
+                objective="审查任务、代码、测试证据和运行环境,给出中文交付结论。",
+                output_key="review",
+                artifact_key="review",
+                depends_on=("tests",),
+                stage_id="review",
+                input_refs=("tasks", "environment", "implementation", "tests"),
+                acceptance_criteria=(
+                    "使用简体中文;区分已验证事实、风险和未覆盖项。",
+                    "只能根据实际文件和 SandboxEvidence 下结论。",
+                ),
+            ),
+        ),
+    )
+
+
+def architecture_only_template() -> WorkflowTemplate:
+    """仅架构设计模板 - 只做架构设计,不生成代码。
+
+    适用场景:
+    - 用户明确表示"只要架构设计"
+    - 需要先评审架构,再决定是否实施
+    - 架构探索和原型设计
+
+    生命周期阶段:
+    1. Requirement - 需求澄清
+    2. Architecture - 架构设计 (Blueprint + 可选的详细设计)
+    3. Quality Gate - 架构质量门
+    """
+    return WorkflowTemplate(
+        id="architecture_only",
+        name="仅架构设计",
+        description="只完成需求澄清和架构设计,不生成代码和测试。",
+        nodes=(
+            # 1. Requirement 阶段
+            TaskBlueprint(
+                id="requirement",
+                agent_id="requirement_agent",
+                objective="将用户目标整理为结构化需求文档并保存到项目目录。",
+                output_key="requirement",
+                stage_id="requirement",
+            ),
+
+            # 2. Architecture 阶段 - Blueprint 锚点
+            TaskBlueprint(
+                id="architecture-blueprint",
+                agent_id="architecture_agent",
+                objective="根据需求设计系统架构蓝图,定义层次、模块和职责边界。",
+                output_key="architecture",
+                artifact_key="architecture",
+                depends_on=("requirement",),
+                stage_id="architecture_blueprint",
+                slot="blueprint",
+                execution_mode=ExecutionMode.PARTITIONED,
+                acceptance_criteria=(
+                    "定义清晰的层次结构和模块职责。",
+                    "模块依赖无环,层次依赖符合架构原则。",
+                ),
+            ),
+
+            # 3. Architecture Quality Gate
+            TaskBlueprint(
+                id="architecture-quality-gate",
+                agent_id="architecture_agent",
+                objective="检查架构设计质量,确保满足需求并符合架构原则。",
+                output_key="architecture_quality_gate",
+                artifact_key="architecture",
+                depends_on=("architecture-blueprint",),
+                stage_id="architecture_quality_gate",
+                execution_mode=ExecutionMode.QUALITY_GATE,
+                publish_target="architecture",
+                candidate_from="architecture-blueprint",
+                acceptance_criteria=(
+                    "架构满足所有功能需求和非功能需求。",
+                    "层次清晰,职责分离,依赖关系合理。",
                 ),
             ),
         ),
