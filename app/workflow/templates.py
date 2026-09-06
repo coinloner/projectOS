@@ -714,3 +714,183 @@ def project_delivery_minimal_template() -> WorkflowTemplate:
             ),
         ),
     )
+
+
+def delivery_default_template() -> WorkflowTemplate:
+    """通用项目交付模板 - 只定义生命周期骨架,内部动态展开。
+
+    这是新项目的标准入口,只包含 8 个顶层阶段:
+    1. Requirement - 需求澄清
+    2. Architecture - 架构设计 (动态展开: Blueprint → ModuleDesign → ImplementationDesign)
+    3. Contract - 架构合同编译 (控制面确定性编译)
+    4. Tasks - 任务规划
+    5. Environment - 环境准备
+    6. Implementation - 代码实现 (动态展开: Contract → 文件级 WorkItem)
+    7. Test - 测试验证
+    8. Review - 交付审查
+
+    模块数量、模块名称、文件结构都由 Blueprint 和 Contract 决定,
+    不再预设 domain/api/runtime 等固定结构。
+    """
+    return WorkflowTemplate(
+        id="delivery_default",
+        name="通用项目交付",
+        description="从需求到交付的完整生命周期,内部动态展开模块和文件。",
+        nodes=(
+            # 1. Requirement 阶段
+            TaskBlueprint(
+                id="requirement",
+                agent_id="requirement_agent",
+                objective="将用户目标整理为结构化需求文档并保存到项目目录。",
+                output_key="requirement",
+                stage_id="requirement",
+            ),
+
+            # 2. Architecture 阶段 - 单个 Blueprint 锚点
+            # 内部会动态展开为: Blueprint → (可选) ModuleDesign → (可选) ImplementationDesign
+            TaskBlueprint(
+                id="architecture-blueprint",
+                agent_id="architecture_agent",
+                objective="根据需求设计系统架构蓝图,定义层次、模块和职责边界。",
+                output_key="architecture",
+                artifact_key="architecture",
+                depends_on=("requirement",),
+                stage_id="architecture_blueprint",
+                slot="blueprint",
+                execution_mode=ExecutionMode.PARTITIONED,
+                acceptance_criteria=(
+                    "定义清晰的层次结构和模块职责。",
+                    "模块依赖无环,层次依赖符合架构原则。",
+                ),
+            ),
+
+            # 3. Contract 阶段 - 确定性编译锚点
+            # 由控制面从 Blueprint/ModuleDesign/ImplementationDesign 编译得到
+            TaskBlueprint(
+                id="contract",
+                agent_id="architecture_contract_agent",
+                objective="编译架构设计为可执行的项目合同,定义文件所有权和接口。",
+                output_key="architecture_contract",
+                depends_on=("architecture-blueprint",),
+                stage_id="contract",
+                acceptance_criteria=(
+                    "合同包含实现单元、文件所有权、wave 和接口定义。",
+                    "允许路径不重叠,依赖图无环。",
+                ),
+            ),
+
+            # 4. Tasks 阶段
+            TaskBlueprint(
+                id="tasks-plan",
+                agent_id="task_agent",
+                objective="根据需求和架构交付可验收的实施任务决策包。",
+                output_key="tasks_plan",
+                artifact_key="tasks",
+                depends_on=("requirement", "architecture-blueprint", "contract"),
+                execution_mode=ExecutionMode.PARTITIONED,
+                slot="plan",
+                stage_id="tasks_plan",
+                input_refs=("requirement", "architecture", "architecture_contract"),
+                acceptance_criteria=(
+                    "使用简体中文;只列 MVP 必需任务,最多 8 项。",
+                    "每项包含依赖、产出和可验证验收条件。",
+                ),
+            ),
+            TaskBlueprint(
+                id="tasks-integration",
+                agent_id="task_agent",
+                objective="整合任务决策包并生成紧凑的 tasks 候选。",
+                output_key="tasks_candidate",
+                artifact_key="tasks",
+                depends_on=("tasks-plan",),
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="tasks",
+                stage_id="tasks_integration",
+                input_from=("tasks-plan",),
+                acceptance_criteria=(
+                    "保留任务依赖、产出和验收条件;不得加入未被需求支持的功能。",
+                ),
+            ),
+            TaskBlueprint(
+                id="tasks-quality-gate",
+                agent_id="task_agent",
+                objective="检查任务候选并发布通过质量门的 tasks.md。",
+                output_key="tasks_published",
+                artifact_key="tasks",
+                depends_on=("tasks-integration",),
+                execution_mode=ExecutionMode.QUALITY_GATE,
+                publish_target="tasks",
+                stage_id="tasks_quality_gate",
+                candidate_from="tasks-integration",
+            ),
+
+            # 5. Environment 阶段
+            TaskBlueprint(
+                id="environment",
+                agent_id="bootstrap_agent",
+                objective="根据架构和任务声明项目 runtime、依赖意图和 sandbox 环境报告。",
+                output_key="environment",
+                depends_on=("requirement", "architecture-blueprint", "contract", "tasks-quality-gate"),
+                stage_id="environment",
+                input_refs=("requirement", "architecture", "architecture_contract", "tasks"),
+                acceptance_criteria=(
+                    "声明 runtime profile、依赖来源和应用启动方式。",
+                    "依赖审批未通过时不得伪造 ready 状态。",
+                ),
+            ),
+
+            # 6. Implementation 阶段 - 动态展开锚点
+            # Runner 会从 Contract 的 implementation_units 动态生成文件级 CodeAgent WorkItem
+            # 这里只放一个占位符,表示"代码实现阶段存在"
+            TaskBlueprint(
+                id="implementation-anchor",
+                agent_id="integration_agent",
+                objective="代码实现动态展开锚点 - 由控制面从 Contract 生成文件级 WorkItem。",
+                output_key="implementation",
+                artifact_key="implementation",
+                depends_on=("contract", "environment"),
+                stage_id="implementation",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="implementation",
+                acceptance_criteria=(
+                    "所有 Contract 声明的文件已实现。",
+                    "代码通过分层检查和接口完整性验证。",
+                ),
+            ),
+
+            # 7. Test 阶段
+            TaskBlueprint(
+                id="tests",
+                agent_id="test_agent",
+                objective="在 sandbox 中执行全部测试,报告通过/失败/覆盖情况及真实证据。",
+                output_key="tests",
+                artifact_key="tests",
+                depends_on=("implementation-anchor",),
+                stage_id="test",
+                input_refs=("architecture_contract", "implementation"),
+                acceptance_criteria=(
+                    "真实执行 unit/integration/web-unit 测试;提供 stdout/stderr/exit_code。",
+                    "不得将没有证据的测试声明为通过。",
+                ),
+            ),
+
+            # 8. Review 阶段
+            TaskBlueprint(
+                id="review",
+                agent_id="review_agent",
+                objective="审查需求、架构、任务、代码、测试证据和运行环境,给出中文交付结论。",
+                output_key="review",
+                artifact_key="review",
+                depends_on=("tests",),
+                stage_id="review",
+                input_refs=(
+                    "requirement", "architecture", "tasks", "environment",
+                    "implementation", "tests",
+                ),
+                acceptance_criteria=(
+                    "使用简体中文;区分已验证事实、风险和未覆盖项。",
+                    "只能根据实际文件和 SandboxEvidence 下结论。",
+                ),
+            ),
+        ),
+    )
