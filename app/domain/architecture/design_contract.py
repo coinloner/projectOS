@@ -109,6 +109,18 @@ class ArchitectureBlueprint(_DesignModel):
             normalized = path.replace("\\", "/").strip()
             if not normalized or normalized.endswith("/") or any(token in normalized for token in ("*", "?", "[", "]")):
                 raise ValueError("ArchitectureBlueprint.required_files 必须是具体文件路径")
+
+        # Validate layer dependencies reference only declared layers
+        known_layers = set(layer_ids)
+        for layer in self.layers:
+            for dep in layer.allowed_dependencies:
+                if dep == layer.name:
+                    raise ValueError(f"层 {layer.name} 不能依赖自身")
+                if dep not in known_layers:
+                    raise ValueError(
+                        f"层 {layer.name} 的 allowed_dependencies 引用了未声明的层: {dep}。"
+                        f"已声明的层: {', '.join(sorted(known_layers))}"
+                    )
         return self
 
 

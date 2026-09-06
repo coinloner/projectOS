@@ -150,18 +150,19 @@ class PlanningContextTest(unittest.TestCase):
                 ']}'
             )
 
-    def test_complex_delivery_upgrades_legacy_template_to_layered_route(self) -> None:
+    def test_empty_complex_delivery_uses_coarse_controlled_route_before_llm(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
             runtime = FakePlannerRuntime([
-                '{"rationale":"完整交付","template_hint_id":"project_delivery","steps":[]}'
+                '{"rationale":"should not be called","template_hint_id":null,"steps":[]}'
             ])
             container = build_container(project_path, planner_runtime=runtime)
             result = container.planner.plan(
                 goal="生产级前后端系统，包含数据库、异步任务和并发交互页面",
                 plan_id="complex-delivery",
             )
-            self.assertEqual(result.plan.template_id, "project_delivery_layered")
-            self.assertEqual(result.plan.work_items[1].id, "wi-02-architecture-blueprint")
+            self.assertEqual(result.plan.template_id, "project_delivery_dynamic")
+            self.assertEqual(result.attempts, 0)
+            self.assertEqual(runtime.prompts, [])
 
     def test_context_exposes_artifact_existence_not_contents(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
@@ -672,7 +673,7 @@ class PlannerServiceTest(unittest.TestCase):
             self.assertIn(forbidden, retry_prompt)
         self.assertIn('"kind":"PlanDraft"', retry_prompt)
 
-    def test_empty_delivery_cannot_skip_baseline_and_repairs_to_controlled_template(self) -> None:
+    def test_empty_delivery_uses_controlled_template_before_dynamic_planner(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
             container = build_container(project_path)
             runtime = FakePlannerRuntime(
@@ -693,14 +694,14 @@ class PlannerServiceTest(unittest.TestCase):
 
             result = service.plan(goal="实现 Todo 并完成测试和交付审查", plan_id="full-delivery")
 
-            self.assertEqual(result.attempts, 2)
-            self.assertEqual(result.plan.template_id, "project_delivery")
-            self.assertEqual(len(result.plan.work_items), 10)
+            self.assertEqual(result.attempts, 0)
+            self.assertEqual(result.plan.template_id, "project_delivery_dynamic")
+            self.assertEqual(len(result.plan.work_items), 4)
             self.assertEqual(
                 {item.artifact_key for item in result.plan.work_items},
-                {"requirement", "architecture", "architecture_contract", "tasks", "environment", "implementation", "tests", "review"},
+                {"requirement", "architecture", "architecture_contract"},
             )
-            self.assertIn("必须选择受控模板 'project_delivery'", runtime.prompts[1])
+            self.assertEqual(runtime.prompts, [])
 
     def test_planner_fails_after_one_unsuccessful_repair(self) -> None:
         runtime = FakePlannerRuntime(

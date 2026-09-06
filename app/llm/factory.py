@@ -73,6 +73,7 @@ def build_llm(
         stream=stream,
         max_tokens=resolved_max_tokens,
         timeout=_positive_float("PROJECTOS_LLM_TIMEOUT_SECONDS", 600.0),
+        default_headers=dict(selected.http_headers) or None,
     )
     if selected.wire_api == "responses":
         return OpenAIResponsesLLM(**llm_kwargs)

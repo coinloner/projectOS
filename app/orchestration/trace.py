@@ -268,6 +268,7 @@ class TraceStore:
         return LLMSelection(
             **{key: str(raw[key]) for key in required},
             wire_api=wire_api,
+            http_headers=_trace_http_headers(raw.get("http_headers")),
         )
 
     def load_llm_overrides(self, trace_id: str) -> dict[str, LLMSelection]:
@@ -287,9 +288,9 @@ class TraceStore:
             result[str(agent_id)] = LLMSelection(
                 **{key: str(raw[key]) for key in required},
                 wire_api=wire_api,
+                http_headers=_trace_http_headers(raw.get("http_headers")),
             )
         return result
-
     def record_plan_baseline(self, plan: "ExecutionPlan", *, revision: int | None = None) -> dict[str, object]:
         """保存可用于局部修改的计划基线，不改变 ExecutionPlan 执行格式。"""
         from app.planner.patch import PlanBaseline
@@ -978,6 +979,19 @@ def _excerpt(content: str, limit: int) -> str:
     if len(content) <= limit:
         return content
     return "[...已截断]\n" + content[-limit:]
+
+
+def _trace_http_headers(value: object) -> tuple[tuple[str, str], ...]:
+    """Load bounded non-secret provider headers from a persisted selection."""
+    if not isinstance(value, dict):
+        return ()
+    return tuple(
+        sorted(
+            (str(key), str(header_value))
+            for key, header_value in value.items()
+            if str(key).strip() and header_value is not None
+        )
+    )
 
 
 _WORKSPACE_PATH = re.compile(

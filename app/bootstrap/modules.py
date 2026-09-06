@@ -26,6 +26,7 @@ from app.workflow.templates import (
     architecture_compact_template,
     architecture_parallel_template,
     project_delivery_template,
+    project_delivery_dynamic_template,
     project_delivery_layered_template,
     project_delivery_minimal_template,
 )
@@ -57,6 +58,7 @@ def install_modules(container: "ProjectOSContainer") -> None:
     container.templates.register(architecture_parallel_template())
     container.templates.register(architecture_layered_template())
     container.templates.register(project_delivery_template())
+    container.templates.register(project_delivery_dynamic_template())
     container.templates.register(project_delivery_layered_template())
     container.templates.register(project_delivery_minimal_template())
     _install_external_sources(container)

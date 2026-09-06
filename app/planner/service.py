@@ -113,6 +113,17 @@ class PlannerService:
             templates=self._templates,
             artifacts=self._artifacts,
         )
+        preflight_template = self._validator.preflight_controlled_template(context)
+        if preflight_template is not None:
+            # The project state already proves that a full delivery baseline is
+            # required.  Compile the coarse controlled lifecycle directly
+            # instead of asking the LLM to emit a DAG that will be rejected by
+            # the same deterministic rule after the call.
+            return self.plan_controlled_workflow(
+                goal=goal,
+                plan_id=plan_id,
+                workflow_id=preflight_template,
+            )
         prompt = _planning_prompt(context)
         trace = self._traces.start_trace(goal)
         # Planner runs in the API process (before the spawned delivery Worker),

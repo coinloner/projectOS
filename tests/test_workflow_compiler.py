@@ -14,11 +14,28 @@ from app.workflow.template import TaskBlueprint, WorkflowTemplate, WorkflowTempl
 from app.workflow.templates import (
     architecture_compact_template,
     architecture_parallel_template,
+    project_delivery_dynamic_template,
     project_delivery_layered_template,
 )
 
 
 class WorkflowCompilerTest(unittest.TestCase):
+    def test_dynamic_delivery_template_is_a_small_lifecycle_anchor(self) -> None:
+        template = project_delivery_dynamic_template()
+        self.assertEqual(
+            [node.id for node in template.nodes],
+            [
+                "requirement",
+                "architecture-blueprint",
+                "architecture-integration",
+                "architecture-contract",
+            ],
+        )
+        self.assertTrue(template.has_controlled_execution)
+        self.assertEqual(template.nodes[1].stage_id, "architecture_blueprint")
+        self.assertEqual(template.nodes[2].stage_id, "architecture_integration")
+        self.assertEqual(template.nodes[3].stage_id, "contract")
+
     def test_layered_delivery_template_contains_architecture_barrier(self) -> None:
         template = project_delivery_layered_template()
         self.assertEqual(template.nodes[0].id, "requirement")

@@ -115,12 +115,15 @@ class DomainToolContractTest(unittest.TestCase):
         })
         save = next(item for item in wire if item["function"]["name"] == "save_implementation_contract")
         self.assertTrue(save["function"]["strict"])
-        self.assertEqual(save["function"]["parameters"]["required"], ["contract"])
-        self.assertFalse(save["function"]["parameters"]["additionalProperties"])
-        contract_schema = save["function"]["parameters"]["properties"]["contract"]
-        self.assertEqual(contract_schema["type"], "object")
-        self.assertIn("layers", contract_schema["properties"])
-        self.assertIn("implementation_units", contract_schema["properties"])
+        parameters = save["function"]["parameters"]
+        self.assertFalse(parameters["additionalProperties"])
+        self.assertIn("schema_version", parameters["properties"])
+        self.assertIn("layers", parameters["properties"])
+        self.assertIn("implementation_units", parameters["properties"])
+        self.assertNotIn("contract", parameters["properties"])
+        unit_schema = parameters["properties"]["implementation_units"]["items"]
+        self.assertIn("required_paths", unit_schema["properties"])
+        self.assertNotIn("required_files", unit_schema["properties"])
 
     def test_structured_contract_tool_persists_one_canonical_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -133,7 +136,7 @@ class DomainToolContractTest(unittest.TestCase):
                 "required_test_types": [], "entrypoints": {}, "required_files": [], "interfaces": [],
                 "implementation_units": [{
                     "unit_id": "domain-model", "layer": "domain", "objective": "实现领域模型",
-                    "allowed_paths": ["backend/domain/**"], "required_files": ["backend/domain/model.py"],
+                    "allowed_paths": ["backend/domain/**"], "required_paths": ["backend/domain/model.py"],
                     "owned_files": ["backend/domain/model.py"], "depends_on": [], "input_refs": [],
                     "acceptance_criteria": [], "constraints": [], "non_goals": [], "policy_refs": [],
                     "skill_refs": [], "requirement_ids": [], "provides_interfaces": [],
@@ -141,7 +144,7 @@ class DomainToolContractTest(unittest.TestCase):
                     "forbidden_paths": [], "slot": "backend",
                 }],
             }
-            result = json.loads(tool.run(contract=contract))
+            result = json.loads(tool.run(**contract))
             self.assertTrue(result["ok"])
             path = Path(directory) / ".projectos/architecture/project-contract.json"
             self.assertTrue(path.is_file())
@@ -160,7 +163,7 @@ class DomainToolContractTest(unittest.TestCase):
                 "interfaces": [{"interface_id": "missing-owner", "kind": "service", "name": "Missing.owner", "owner_unit": "does-not-exist"}],
             }
             with self.assertRaisesRegex(ValueError, r"interfaces\[0\]\.owner_unit"):
-                tool.run(contract=contract)
+                tool.run(**contract)
             self.assertFalse((Path(directory) / ".projectos/architecture/project-contract.json").exists())
 
     def test_only_code_domain_can_write_general_workspace_files(self) -> None:

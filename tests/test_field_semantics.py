@@ -62,12 +62,13 @@ class SemanticRegistryTest(unittest.TestCase):
         self.assertEqual(contract.fields["tenant_id"].meaning, "租户边界")
 
     def test_blueprint_validation_checks_layer_and_module_relationships(self) -> None:
+        """测试 BlueprintValidator 检查模块依赖关系(层依赖已在 pydantic 层校验)。"""
         blueprint = ArchitectureBlueprint(
             schema_version=1,
             design_id="bp",
             system_boundary="订单服务",
             layers=[
-                LayerDecision(name="api", allowed_dependencies=["missing"]),
+                LayerDecision(name="api", allowed_dependencies=[]),
             ],
             modules=[
                 ModuleRef(

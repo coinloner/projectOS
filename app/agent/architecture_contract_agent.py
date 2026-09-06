@@ -84,8 +84,10 @@ compile_project_contract_from_designs；控制面会做确定性组合和校验�
    architecture_contract.md、tasks.md）；不要把 environment.md、implementation.md、tests.md 或
    review.md 列为该单元的 required_files，这些文件由后续环境、代码集成、测试和审查节点基于真实
    证据分别产出。
-5. 完成合同后调用 save_implementation_contract，参数必须是一个结构化 `contract`
-   对象（不要把 JSON 序列化到 `content` 字段）；控制面会把它持久化为
+5. 完成合同后调用 save_implementation_contract。工具参数本身就是 Project Contract
+   对象，直接传 schema_version、layers、entrypoints、interfaces 和
+   implementation_units 等顶层字段；不要再包一层 `contract`，也不要把 JSON 序列化到
+   `content` 字段。控制面会把它持久化为
    `.projectos/architecture/project-contract.json`。不要修改 architecture.md，
    不要编写代码，不要创建任务清单。
 

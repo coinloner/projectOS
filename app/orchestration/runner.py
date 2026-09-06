@@ -265,6 +265,12 @@ def _tool_allowlist_for_attempt(
     if architecture_tools:
         return architecture_tools
     if (
+        attempt > 1
+        and item.agent_id == "architecture_contract_agent"
+        and item.execution_mode is ExecutionMode.EXCLUSIVE
+    ):
+        return ("save_implementation_contract",)
+    if (
         (attempt > 2 or prior_delivery_failure or prior_worker_abort)
         and item.agent_id == "code_agent"
         and item.execution_mode is ExecutionMode.PARTITIONED
@@ -843,7 +849,12 @@ class GraphRunner:
                 # after a lost tool call or a partial Worker restart.
                 agent_ids = {item.agent_id for item in state.plan.work_items}
                 full_delivery_plan = (
-                    state.plan.template_id in {"project_delivery", "project_delivery_layered", "implementation-contract"}
+                    state.plan.template_id in {
+                        "project_delivery",
+                        "project_delivery_dynamic",
+                        "project_delivery_layered",
+                        "implementation-contract",
+                    }
                     or {"requirement_agent", "review_agent"}.issubset(agent_ids)
                 )
                 if full_delivery_plan and graph_result.status is GraphRunStatus.COMPLETED and self._artifacts is not None:
@@ -966,7 +977,10 @@ class GraphRunner:
         tail and leaves module/file fan-out to the contract compiler. Existing
         controlled templates bypass this adapter.
         """
-        if self._traces is None or state.plan.template_id is not None:
+        if self._traces is None or state.plan.template_id not in {
+            None,
+            "project_delivery_dynamic",
+        }:
             return None
         plan = state.plan
         delivery_agents = {
@@ -2028,7 +2042,7 @@ class GraphRunner:
                 elif definition.domain == "architecture_contract":
                     prompt += (
                         "\n本轮仍然只处理结构化 Project Contract 对象。请根据上面的校验错误中的"
-                        "JSON path 和 message 修正 contract 后，再次调用 save_implementation_contract；"
+                        "JSON path 和 message 修正 Project Contract 顶层字段后，再次调用 save_implementation_contract；"
                         "不要把对象序列化到 content 字段，不要调用代码写入工具，也不要返回 capability_request。"
                     )
                 elif definition.domain == "architecture":

@@ -16,8 +16,11 @@ from app.domain.architecture.design_contract import (
 from app.domain.architecture.service import ArchitectureArtifactWorkflow
 from app.domain.architecture.service import implementation_design_budget, implementation_unit_budget
 from app.domain.architecture.service import _normalize_unit_waves
-from app.domain.architecture.contract_input import ProjectContractInput
-from app.domain.architecture.contract_input import ConsumedInterfaceRefInput
+from app.domain.architecture.contract_input import (
+    ConsumedInterfaceRefInput,
+    ContractEntrypointInput,
+    ProjectContractInput,
+)
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.orchestration.trace import TraceContext
 from app.workflow.compiler import TemplateCompiler
@@ -180,6 +183,40 @@ class ArchitectureDesignContractTest(unittest.TestCase):
         self.assertEqual(value.usage, "调用库存查询")
         self.assertTrue(value.required)
         self.assertNotIn("direction", value.model_dump())
+
+    def test_contract_entrypoint_health_path_null_is_normalized(self) -> None:
+        base = {
+            "schema_version": 1,
+            "layers": [{"name": "api"}],
+            "required_test_types": [],
+            "entrypoints": {
+                "backend_file": "backend/app/main.py",
+                "health_path": None,
+            },
+            "required_files": [],
+            "interfaces": [],
+            "implementation_units": [
+                {
+                    "unit_id": "unit-api",
+                    "layer": "api",
+                    "objective": "实现 API",
+                    "allowed_paths": ["backend/app/**"],
+                }
+            ],
+        }
+
+        normalized = ProjectContractInput.model_validate(base)
+
+        self.assertEqual(normalized.entrypoints.health_path, "/health")
+        self.assertEqual(
+            normalized.to_canonical_dict()["entrypoints"]["health_path"],
+            "/health",
+        )
+
+    def test_contract_entrypoint_empty_health_path_uses_default(self) -> None:
+        value = ContractEntrypointInput.model_validate({"health_path": "  "})
+
+        self.assertEqual(value.health_path, "/health")
     def test_bundle_enforces_three_level_parent_semantics(self) -> None:
         bundle = ArchitectureDesignBundle(
             schema_version=1,
@@ -786,6 +823,94 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                 "required_files": ["backend/api/main.py"],
                 "required_paths": ["backend/api/other.py"],
             })
+
+
+class BlueprintLayerDependencyValidationTest(unittest.TestCase):
+    """测试层依赖的引用完整性校验在 pydantic 模型层就能拦住。"""
+
+    def test_layer_dependency_must_reference_declared_layers(self) -> None:
+        """层的 allowed_dependencies 必须引用已声明的层,否则 pydantic 解析失败。"""
+        with self.assertRaises(ValueError) as cm:
+            ArchitectureBlueprint.model_validate({
+                "schema_version": 1,
+                "design_id": "test-blueprint",
+                "system_boundary": "测试系统",
+                "layers": [
+                    {
+                        "name": "presentation",
+                        "allowed_dependencies": ["application", "Python 标准库"],
+                        "path_mapping": ["cli/**"],
+                    },
+                    {
+                        "name": "application",
+                        "allowed_dependencies": ["data"],
+                        "path_mapping": ["core/**"],
+                    },
+                    {
+                        "name": "data",
+                        "allowed_dependencies": [],
+                        "path_mapping": ["storage/**"],
+                    },
+                ],
+                "modules": [
+                    {"module_id": "cli", "responsibility": "命令行"},
+                ],
+            })
+        error_message = str(cm.exception)
+        self.assertIn("allowed_dependencies", error_message.lower())
+        self.assertIn("Python 标准库", error_message)
+
+    def test_layer_dependency_valid_when_all_references_exist(self) -> None:
+        """所有层依赖都引用已声明的层时,解析成功。"""
+        blueprint = ArchitectureBlueprint.model_validate({
+            "schema_version": 1,
+            "design_id": "test-blueprint",
+            "system_boundary": "测试系统",
+            "layers": [
+                {
+                    "name": "presentation",
+                    "allowed_dependencies": ["application"],
+                    "path_mapping": ["cli/**"],
+                },
+                {
+                    "name": "application",
+                    "allowed_dependencies": ["data"],
+                    "path_mapping": ["core/**"],
+                },
+                {
+                    "name": "data",
+                    "allowed_dependencies": [],
+                    "path_mapping": ["storage/**"],
+                },
+            ],
+            "modules": [
+                {"module_id": "cli", "responsibility": "命令行"},
+            ],
+        })
+        self.assertEqual(blueprint.design_id, "test-blueprint")
+        self.assertEqual(len(blueprint.layers), 3)
+
+    def test_layer_self_dependency_rejected(self) -> None:
+        """层不能依赖自己。"""
+        with self.assertRaises(ValueError) as cm:
+            ArchitectureBlueprint.model_validate({
+                "schema_version": 1,
+                "design_id": "test-blueprint",
+                "system_boundary": "测试系统",
+                "layers": [
+                    {
+                        "name": "application",
+                        "allowed_dependencies": ["application"],
+                        "path_mapping": ["app/**"],
+                    },
+                ],
+                "modules": [
+                    {"module_id": "app", "responsibility": "应用"},
+                ],
+            })
+        error_message = str(cm.exception)
+        self.assertIn("application", error_message)
+        self.assertIn("自身", error_message.lower())
 
 
 if __name__ == "__main__":

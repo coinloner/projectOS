@@ -25,6 +25,7 @@ from app.orchestration.runner import (
     _partitioned_code_retry_prompt,
     _refresh_review_quality_section,
     _summarize_sandbox_evidence,
+    _tool_allowlist_for_attempt,
 )
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.orchestration.trace import TraceContext, TraceStore
@@ -279,6 +280,33 @@ class ArchitectureToolNarrowingTest(unittest.TestCase):
             slot="api",
         )
         self.assertEqual(_architecture_tool_allowlist(item), ())
+
+    def test_contract_retry_is_narrowed_to_terminal_writer(self) -> None:
+        item = WorkItem(
+            id="architecture-contract",
+            agent_id="architecture_contract_agent",
+            objective="保存 Project Contract",
+            output_key="architecture_contract",
+            execution_mode=ExecutionMode.EXCLUSIVE,
+        )
+        self.assertEqual(
+            _tool_allowlist_for_attempt(
+                item,
+                attempt=1,
+                prior_delivery_failure=False,
+                prior_worker_abort=False,
+            ),
+            (),
+        )
+        self.assertEqual(
+            _tool_allowlist_for_attempt(
+                item,
+                attempt=2,
+                prior_delivery_failure=False,
+                prior_worker_abort=False,
+            ),
+            ("save_implementation_contract",),
+        )
 
 
 class GraphRunnerTest(unittest.TestCase):

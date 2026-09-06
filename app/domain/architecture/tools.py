@@ -30,8 +30,9 @@ class ArchitectureToolSet:
     def save_architecture(self, content: str) -> str:
         return self._service.save_architecture(content)
 
-    def save_implementation_contract(self, contract: dict[str, Any]) -> str:
-        return _save_contract(self._service, contract)
+    def save_implementation_contract(self, **fields: Any) -> str:
+        """Persist the canonical flat Project Contract payload."""
+        return _save_contract(self._service, dict(fields))
 
     def load_project_contract(self) -> str:
         return self._service.load_implementation_contract()
@@ -49,8 +50,9 @@ class ArchitectureContractToolSet:
     def load_requirement(self) -> str:
         return self._service.load_requirement()
 
-    def save_implementation_contract(self, contract: dict[str, Any]) -> str:
-        return _save_contract(self._service, contract)
+    def save_implementation_contract(self, **fields: Any) -> str:
+        """Persist the canonical flat Project Contract payload."""
+        return _save_contract(self._service, dict(fields))
 
 
 def _module_design_tool_schema() -> dict[str, Any]:
@@ -156,17 +158,11 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                     ToolDef(
                         name="save_implementation_contract",
                         description=(
-                            "保存经过控制面校验的唯一 Project Contract。contract 必须是结构化对象，"
-                            "层级使用 layers 数组对象表达，不要传 JSON 字符串。"
+                            "保存经过控制面校验的唯一 Project Contract。参数就是 Project Contract "
+                            "对象本身：直接提供 schema_version、layers、entrypoints、interfaces 和 "
+                            "implementation_units 等字段，不要再包一层 contract，也不要传 JSON 字符串。"
                         ),
-                        parameters={
-                            "type": "object",
-                            "properties": {
-                                "contract": ProjectContractInput.model_json_schema(),
-                            },
-                            "required": ["contract"],
-                            "additionalProperties": False,
-                        },
+                        parameters=ProjectContractInput.model_json_schema(),
                         execution_modes=("exclusive",),
                         completion_policy="final",
                     ),
@@ -322,11 +318,9 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
 def _save_contract(service: ArchitectureService, contract: dict[str, Any]) -> str:
     """Return machine-readable success/failure while keeping validation atomic."""
 
-    # ToolDef exposes a single named argument; the domain service receives the
-    # contract object itself.  Keeping this unwrap at the adapter boundary means
-    # callers cannot accidentally persist an envelope as the canonical object.
-    if isinstance(contract, dict) and set(contract) == {"contract"}:
-        contract = contract["contract"]
+    # The tool wire shape is the canonical Project Contract object itself; no
+    # envelope is accepted here.  This keeps the provider schema and domain
+    # validator aligned instead of teaching each retry path two shapes.
     try:
         result = service.save_implementation_contract(contract)
     except ValidationError as error:

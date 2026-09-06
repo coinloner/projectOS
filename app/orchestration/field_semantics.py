@@ -206,7 +206,12 @@ class SemanticRegistry:
         return fields
 
     def validate_blueprint(self, blueprint: Any) -> tuple[str, ...]:
-        """Validate Blueprint relationships that a JSON schema cannot express."""
+        """Validate Blueprint relationships that a JSON schema cannot express.
+
+        Layer dependency validation (allowed_dependencies must reference declared layers)
+        has been moved to the pydantic model layer (ArchitectureBlueprint.validate_unique_ids)
+        for earlier failure and automatic retry integration.
+        """
         errors: list[str] = []
         modules = tuple(getattr(blueprint, "modules", ()) or ())
         module_ids = [str(getattr(item, "module_id", "")).strip() for item in modules]
@@ -232,15 +237,7 @@ class SemanticRegistry:
         layer_ids = [str(getattr(layer, "name", "")).strip() for layer in layers]
         if len(layer_ids) != len(set(layer_ids)):
             errors.append("Blueprint.layers.name 必须唯一")
-        known_layers = set(layer_ids)
-        for layer in layers:
-            unknown = sorted(
-                set(getattr(layer, "allowed_dependencies", ()) or ()) - known_layers
-            )
-            if unknown:
-                errors.append(
-                    f"层 {getattr(layer, 'name', '<unknown>')} 依赖未声明层: {', '.join(unknown)}"
-                )
+        # Layer dependency validation removed: now handled by ArchitectureBlueprint.validate_unique_ids
         return tuple(errors)
 
     @staticmethod

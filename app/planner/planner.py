@@ -120,7 +120,7 @@ capability、tool_call。模板只能通过 template_hint_id 引用，步骤只�
   ]
 }
 
-若选择的是带受控执行权限的模板（例如 architecture_parallel、architecture_layered、project_delivery_layered），模板会由系统完整编译，
+若选择的是带受控执行权限的模板（例如 architecture_parallel、architecture_layered、project_delivery_dynamic），模板会由系统完整编译，
 此时 steps 可以为空；不要自行填写 execution_mode、slot、路径、候选或发布权限。
 
 规则：
@@ -130,7 +130,7 @@ capability、tool_call。模板只能通过 template_hint_id 引用，步骤只�
 1. 同一 Agent 可以出现多次，但每个 ref 必须唯一，并且每次 objective 都必须是可独立验收的窄任务。
 2. depends_on 只能引用同一计划中已选择的其他步骤 ref。
 3. 已存在的 artifact 通常表示对应文档工作可跳过；但空项目若目标同时要求实现、测试或交付审查，
-   必须选择受控模板 project_delivery，不能只生成 implementation -> tests -> review 的捷径。
+   必须选择受控模板 project_delivery_dynamic（或调用方明确选择的 project_delivery / project_delivery_layered），不能只生成 implementation -> tests -> review 的捷径。
 4. implementation.md 是实现摘要，不是代码完成证据。若目标要求交付可运行软件，且
    workspace.implementation_file_count 为 0，必须选择 code_agent；后续需要验证或交付
    审查时，test_agent 和 review_agent 必须依赖 code_agent 并按顺序出现。

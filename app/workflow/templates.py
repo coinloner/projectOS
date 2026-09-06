@@ -110,6 +110,79 @@ def project_delivery_template() -> WorkflowTemplate:
     )
 
 
+def project_delivery_dynamic_template() -> WorkflowTemplate:
+    """Project delivery lifecycle with project-shaped architecture expansion.
+
+    The template owns only the stable control-plane milestones.  Module and
+    file WorkItems are added later from the validated ArchitectureBlueprint,
+    ModuleDesigns and ProjectContract; no domain/api/runtime assumptions are
+    encoded here.
+    """
+    return WorkflowTemplate(
+        id="project_delivery_dynamic",
+        name="动态项目交付",
+        description=(
+            "固定需求、架构蓝图、架构集成和合同里程碑；模块、实现单元和交付尾部"
+            "由控制面根据项目对象动态展开。"
+        ),
+        nodes=(
+            TaskBlueprint(
+                id="requirement",
+                agent_id="requirement_agent",
+                objective="将用户目标整理为结构化需求文档并保存到项目目录。",
+                output_key="requirement",
+            ),
+            TaskBlueprint(
+                id="architecture-blueprint",
+                agent_id="architecture_agent",
+                objective="根据已发布需求产出项目专属的 depth=0 ArchitectureBlueprint。",
+                output_key="architecture_blueprint",
+                stage_id="architecture_blueprint",
+                artifact_key="architecture",
+                depends_on=("requirement",),
+                execution_mode=ExecutionMode.PARTITIONED,
+                slot="blueprint",
+                input_refs=("requirement",),
+                acceptance_criteria=(
+                    "只能调用 write_architecture_blueprint 保存结构化蓝图。",
+                    "模块清单、模块目的和模块依赖必须来自当前需求，不得套用固定模块名。",
+                ),
+            ),
+            TaskBlueprint(
+                id="architecture-integration",
+                agent_id="architecture_agent",
+                objective="整合 Blueprint、动态模块设计和实现准备对象，生成唯一架构候选。",
+                output_key="architecture_dynamic_candidate",
+                stage_id="architecture_integration",
+                artifact_key="architecture",
+                depends_on=("architecture-blueprint",),
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture",
+                input_from=("architecture-blueprint",),
+                acceptance_criteria=(
+                    "只能调用 integrate_architecture_designs 整合控制面已授权的结构化对象。",
+                    "不得新增 Blueprint 未声明的模块、接口或文件所有权。",
+                ),
+            ),
+            TaskBlueprint(
+                id="architecture-contract",
+                agent_id="architecture_contract_agent",
+                objective="将已发布的结构化架构对象确定性编译为唯一 Project Contract。",
+                output_key="architecture_contract",
+                stage_id="contract",
+                artifact_key="architecture_contract",
+                depends_on=("architecture-integration",),
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture_contract",
+                acceptance_criteria=(
+                    "只能调用 compile_project_contract_from_designs。",
+                    "Project Contract 必须通过结构、路径、接口 owner 和依赖校验后才能完成。",
+                ),
+            ),
+        ),
+    )
+
+
 def project_delivery_layered_template() -> WorkflowTemplate:
     """复杂项目的完整交付流程，使用三层结构化架构作为前置屏障。
 

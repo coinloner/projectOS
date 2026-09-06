@@ -30,7 +30,9 @@ class LLMFactoryTest(unittest.TestCase):
         self.assertNotIn("test-key", str(request))
     def test_builds_the_configured_crewai_provider(self) -> None:
         with patch("app.llm.factory.load_dotenv"), patch.dict(
-            os.environ, {"FHL_API_KEY": "test-key"}, clear=True
+            os.environ,
+            {"PROJECTOS_LLM_PROVIDER": "fhl", "FHL_API_KEY": "test-key"},
+            clear=True,
         ):
             llm = build_llm()
 
@@ -40,7 +42,9 @@ class LLMFactoryTest(unittest.TestCase):
         self.assertTrue(llm.stream)
 
     def test_missing_api_key_fails_before_crewai_executes(self) -> None:
-        with patch("app.llm.factory.load_dotenv"), patch.dict(os.environ, {}, clear=True):
+        with patch("app.llm.factory.load_dotenv"), patch.dict(
+            os.environ, {"PROJECTOS_LLM_PROVIDER": "fhl"}, clear=True
+        ):
             with self.assertRaisesRegex(RuntimeError, "FHL_API_KEY"):
                 build_llm()
 
@@ -125,6 +129,37 @@ class LLMFactoryTest(unittest.TestCase):
         self.assertEqual(llm.provider, "openai")
         self.assertEqual(llm.base_url, "https://www.fhl.mom/v1")
 
+
+    def test_totoken_uses_openai_responses_endpoint_and_actor_header(self) -> None:
+        with patch("app.llm.factory.load_dotenv"), patch.dict(
+            os.environ,
+            {
+                "PROJECTOS_LLM_PROVIDER": "totoken",
+                "TOTOKEN_API_KEY": "test-key",
+            },
+            clear=True,
+        ):
+            llm = build_llm()
+
+        self.assertEqual(llm.model, "gpt-5.6-sol")
+        self.assertEqual(llm.provider, "openai")
+        self.assertEqual(llm.base_url, "https://totokens.cc")
+        self.assertIsInstance(llm, OpenAIResponsesLLM)
+        self.assertEqual(
+            llm.default_headers,
+            {"x-openai-actor-authorization": "local-image-extension"},
+        )
+        self.assertTrue(llm.stream)
+
+    def test_totoken_model_discovery_does_not_invent_catalog_route(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"TOTOKEN_API_KEY": "test-key"},
+            clear=True,
+        ), patch("app.llm.config.urlopen") as urlopen:
+            self.assertEqual(discover_provider_models("totoken"), ("gpt-5.6-sol",))
+        urlopen.assert_not_called()
+
     def test_portdan_defaults_to_streaming(self) -> None:
         with patch("app.llm.factory.load_dotenv"), patch.dict(
             os.environ,
@@ -187,6 +222,7 @@ class LLMFactoryTest(unittest.TestCase):
         with patch("app.llm.factory.load_dotenv"), patch.dict(
             os.environ,
             {
+                "PROJECTOS_LLM_PROVIDER": "fhl",
                 "FHL_API_KEY": "test-key",
                 "PROJECTOS_LLM_MAX_TOKENS": "2048",
                 "PROJECTOS_LLM_TIMEOUT_SECONDS": "90",

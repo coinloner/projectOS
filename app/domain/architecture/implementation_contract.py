@@ -87,6 +87,7 @@ class InterfaceContract:
         # capability request.  Unknown values remain hard validation errors.
         aliases = {
             "endpoint": "api",
+            "rest": "api",
             "http": "api",
             "http_endpoint": "api",
             "http_api": "api",
@@ -106,6 +107,8 @@ class InterfaceContract:
             "repository_port": "service",
             "port": "service",
             "use_case": "service",
+            "application_service": "service",
+            "domain": "service",
             "service_interface": "service",
             "python_service": "service",
             "python_callable": "symbol",
@@ -119,6 +122,7 @@ class InterfaceContract:
             "dto": "data",
             "model_schema": "data",
             "database": "data",
+            "storage": "data",
             "orm": "data",
             "queue": "event",
             # Architecture workers sometimes use ``provided``/``consumed``

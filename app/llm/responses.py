@@ -2,7 +2,7 @@
 
 CrewAI already owns the protocol details for Responses streaming, tool-call
 item conversion, available-function execution, and structured outputs.  This
-module adds the ProjectOS transport policy: Portdan Responses calls must use
+module adds the ProjectOS transport policy: Responses calls must use
 SSE streaming and must never silently fall back to a non-streaming request.
 """
 

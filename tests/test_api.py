@@ -71,6 +71,11 @@ class ApiTest(unittest.TestCase):
                     "description": "生成需求、架构合同、实施任务、并行代码分区、测试证据和审查报告。",
                 },
                 {
+                    "id": "project_delivery_dynamic",
+                    "name": "动态项目交付",
+                    "description": "固定需求、架构蓝图、架构集成和合同里程碑；模块、实现单元和交付尾部由控制面根据项目对象动态展开。",
+                },
+                {
                     "id": "project_delivery_layered",
                     "name": "分层项目交付",
                     "description": "复杂项目使用三层结构化架构合同，再进入任务、代码、测试和审查闭环。",

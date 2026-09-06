@@ -842,6 +842,81 @@ ImplementationDesign，随后在 Architecture Integration 返回：
 - 该修复完成阶段五的一个真实 Provider 边界，并为阶段六的下游 Tasks、Environment、Code、
   Integration、Test、Review 连续执行消除一个确定性阻塞点。阶段七仍需在真实 FHL 上验证完整
   交付和多项目矩阵；如果 Provider 在设计节点本身断流，仍按 `provider_transport`/
+  `provider_terminal_missing` 或 watchdog 规则处理。
+
+## 37. 2026-09-07：层依赖校验下沉到 pydantic 边界
+
+### 暴露的问题
+
+真实全链运行在 Architecture Blueprint 节点完成后立即失败,报错:
+```
+架构 Blueprint 无法扩展模块计划: Blueprint 语义校验失败: 
+层 presentation 依赖未声明层: Python 标准库; 
+层 application 依赖未声明层: Python 标准库; 
+层 data 依赖未声明层: Python 标准库
+```
+
+LLM 在 `LayerDecision.allowed_dependencies` 里填入了 `["application", "Python 标准库"]`。
+按字段语义,`allowed_dependencies` 的值域只能是"已声明的架构层名",但 LLM 自然地把语言/
+标准库也当成一种"依赖"塞进去——这是个**高频、可预期的范畴错误**。
+
+真正的卡点不是 LLM 犯错,而是**校验时机错位 + 无恢复通道**:
+
+1. **第一道校验**(pydantic `ArchitectureBlueprint.validate_unique_ids`): 只查"层名不重复、
+   文件路径合法",**不查依赖引用合法性** → 通过 ✅
+2. 节点标记 `completed` ✅
+3. **第二道校验**(控制面扩展时 `SemanticRegistry.validate_blueprint`): 这里才查
+   "依赖必须引用已声明的层" → 失败 ❌
+4. 控制面返回错误字符串 → GraphRunner 直接 `return FAILED` → **无重试、无反馈给 LLM、
+   无修复计划**
+
+对比:Blueprint 的 **schema 校验**失败有**有界重试**,会把字段级错误反馈给 Agent 重写。
+但这个**关系校验**在"节点已完成之后"才跑,走的是完全不同的代码路径,没有回流通道。
+
+### 系统级修复
+
+**下沉自包含校验到 pydantic 边界**
+
+"层依赖必须引用已声明的层"是**自包含校验**(所有信息都在一个 `ArchitectureBlueprint`
+对象里),完全可以在 pydantic 模型解析时就拦住。下沉后它会变成和 schema 失败同一类的
+`ARCHITECTURE_SCHEMA_VALIDATION`,自动走**有界重试 + 字段级反馈**。
+
+1. 在 `ArchitectureBlueprint.validate_unique_ids` 里添加层依赖校验逻辑:
+   - 收集所有已声明的层名 `known_layers`
+   - 遍历每层的 `allowed_dependencies`,检查是否都在 `known_layers` 里
+   - 检查层不能依赖自身
+   - 失败时抛出 `ValueError`,包含精确错误信息和已声明层列表
+2. 从 `SemanticRegistry.validate_blueprint` 移除冗余的层依赖校验(保留注释说明下沉原因)
+3. 在 runner 的架构重试提示词 `_architecture_retry_contract_prompt` 里补充"不要把
+   语言/标准库列为层"的明确指引
+
+### 设计意义
+
+这次修复闭合了一个**结构性设计缺口**:校验被分成"节点内"(pydantic,有重试)和"节点间"
+(控制面扩展,无重试)两个阶段,而有些**逻辑上属于"单对象完整性"的校验却被放在了第二阶段**,
+导致本来能自愈的常见错误掉进了"无恢复通道"的路径。
+
+下沉后的边界更清晰:
+- **第一层**(pydantic):单对象的结构不变式 + 自包含引用完整性 → 失败=节点未成功,
+  走有界重试
+- **第二层**(语义校验):真正跨对象的关系约束(模块依赖图、接口 owner 匹配) → 
+  失败应转成 NEEDS_REPLAN 或接入 repair(当前已部分支持,未来可继续完善)
+
+### 验证
+
+- 新增 `BlueprintLayerDependencyValidationTest` 测试套件,覆盖:
+  - 层依赖引用不存在的层时 pydantic 解析失败
+  - 层依赖引用已声明的层时解析成功  
+  - 层不能依赖自身
+- 修复 `test_field_semantics.py` 中受影响的测试(改为测试模块依赖校验)
+- 控制面完整回归:`395 passed, 3 skipped`
+
+### 后续影响
+
+这次下沉是 `field-semantics-refactor` 分支的一个里程碑:把"在哪校验、失败怎么恢复"
+的规则从隐式约定变成了显式边界。后续可以继续识别其他"自包含但被误放在第二层"的校验,
+逐步让校验层次和恢复策略一致。真正跨对象的校验失败,也应该建立统一的 `FailureKind`
+并接入现有 `plan_repair` 机制,而不是直接判死。
   `provider_terminal_missing` 记录并从 checkpoint 恢复。
 
 ## 37. 2026-09-03：动态计划接入稳定交付尾部

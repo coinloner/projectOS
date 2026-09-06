@@ -90,6 +90,22 @@ def root_path_contract_payload():
 
 
 class ImplementationContractTest(unittest.TestCase):
+    def test_interface_kind_architecture_vocabulary_is_normalized(self) -> None:
+        expected = {
+            "rest": "api",
+            "application_service": "service",
+            "domain": "service",
+            "storage": "data",
+        }
+        for raw, canonical in expected.items():
+            interface = InterfaceContract(
+                interface_id=f"i-{raw}",
+                kind=raw,
+                name=f"{raw}.boundary",
+                owner_unit="u",
+            )
+            self.assertEqual(interface.kind, canonical)
+
     def test_interface_kind_aliases_are_normalized_at_contract_boundary(self) -> None:
         payload = {
             "schema_version": 1,

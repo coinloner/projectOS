@@ -40,6 +40,20 @@ class ContractEntrypointInput(_ContractModel):
     frontend_file: str | None = Field(default=None, max_length=512)
     health_path: str = Field(default="/health", min_length=1, max_length=256)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_health_path(cls, value: Any) -> Any:
+        """Normalize an unspecified probe route before strict field validation."""
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        health_path = data.get("health_path", "/health")
+        if health_path is None or (
+            isinstance(health_path, str) and not health_path.strip()
+        ):
+            data["health_path"] = "/health"
+        return data
+
 
 class ContractInterfaceInput(_ContractModel):
     interface_id: str = Field(min_length=1, max_length=128)
@@ -87,9 +101,9 @@ class ContractImplementationUnitInput(_ContractModel):
     layer: str = Field(min_length=1, max_length=64)
     objective: str = Field(min_length=1, max_length=1000)
     allowed_paths: list[str] = Field(min_length=1, max_length=64)
-    # Wire-only migration alias. It is removed by ``normalize_wire_aliases``
-    # before validation and excluded from every canonical dump.
-    required_files: list[str] = Field(default_factory=list, max_length=64, exclude=True)
+    # ``required_paths`` is the only field exposed in the canonical wire schema.
+    # ``required_files`` is normalized and discarded by ``normalize_wire_aliases``
+    # before strict validation, so the model cannot emit two names for one meaning.
     required_paths: list[str] = Field(default_factory=list, max_length=64)
     forbidden_paths: list[str] = Field(default_factory=list, max_length=64)
     depends_on: list[str] = Field(default_factory=list, max_length=64)
