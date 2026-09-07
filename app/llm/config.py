@@ -50,6 +50,13 @@ _PROVIDERS: dict[str, dict[str, str]] = {
         "crewai_provider": "openai",
         "wire_api": "responses",
     },
+    "totoken": {
+        "base_url": "https://totokens.cc",
+        "model": "gpt-5.6-sol",
+        "api_key_env": "TOTOKEN_API_KEY",
+        "crewai_provider": "openai",
+        "wire_api": "responses",
+    },
 }
 
 # ── 当前激活厂商 ──────────────────────────────

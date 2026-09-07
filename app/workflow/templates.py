@@ -826,6 +826,22 @@ def delivery_default_template() -> WorkflowTemplate:
                     "模块依赖无环,层次依赖符合架构原则。",
                 ),
             ),
+            TaskBlueprint(
+                id="architecture-integration",
+                agent_id="architecture_agent",
+                objective="整合 Blueprint、动态模块设计和实现准备对象，生成唯一架构候选。",
+                output_key="architecture_integration",
+                stage_id="architecture_integration",
+                artifact_key="architecture",
+                depends_on=("architecture-blueprint",),
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture",
+                input_from=("architecture-blueprint",),
+                acceptance_criteria=(
+                    "只能调用 integrate_architecture_designs 整合控制面已授权的结构化对象。",
+                    "不得新增 Blueprint 未声明的模块、接口或文件所有权。",
+                ),
+            ),
 
             # 3. Contract 阶段 - 确定性编译锚点
             # 由控制面从 Blueprint/ModuleDesign/ImplementationDesign 编译得到
@@ -834,7 +850,7 @@ def delivery_default_template() -> WorkflowTemplate:
                 agent_id="architecture_contract_agent",
                 objective="编译架构设计为可执行的项目合同,定义文件所有权和接口。",
                 output_key="architecture_contract",
-                depends_on=("architecture-blueprint",),
+                depends_on=("architecture-integration",),
                 stage_id="contract",
                 acceptance_criteria=(
                     "合同包含实现单元、文件所有权、wave 和接口定义。",
