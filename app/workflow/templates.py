@@ -818,6 +818,7 @@ def delivery_default_template() -> WorkflowTemplate:
                 output_key="architecture",
                 artifact_key="architecture",
                 depends_on=("requirement",),
+                input_refs=("requirement",),
                 stage_id="architecture_blueprint",
                 slot="blueprint",
                 execution_mode=ExecutionMode.PARTITIONED,
