@@ -907,7 +907,7 @@ def delivery_default_template() -> WorkflowTemplate:
             # 这里只放一个占位符,表示"代码实现阶段存在"
             TaskBlueprint(
                 id="implementation-anchor",
-                agent_id="integration_agent",
+                agent_id="code_integration_agent",
                 objective="代码实现动态展开锚点 - 由控制面从 Contract 生成文件级 WorkItem。",
                 output_key="implementation",
                 artifact_key="implementation",
@@ -1041,7 +1041,7 @@ def delivery_incremental_template() -> WorkflowTemplate:
             # 3. Implementation 阶段
             TaskBlueprint(
                 id="implementation-anchor",
-                agent_id="integration_agent",
+                agent_id="code_integration_agent",
                 objective="代码实现动态展开锚点 - 由控制面从 Contract 生成文件级 WorkItem。",
                 output_key="implementation",
                 artifact_key="implementation",

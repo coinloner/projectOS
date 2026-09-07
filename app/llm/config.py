@@ -67,6 +67,7 @@ class LLMSelection:
     api_key_env: str
     crewai_provider: str
     wire_api: str = "chat_completions"
+    http_headers: tuple[tuple[str, str], ...] = ()
 
     def as_dict(self) -> dict[str, str]:
         return {
