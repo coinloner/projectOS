@@ -176,44 +176,6 @@ class TechStackVerifier:
         return True
 
     @classmethod
-
-技术栈列表: {tech_stacks}
-模块上下文: {context}
-
-请返回 JSON 格式的验证结果:
-{{
-  "results": [
-    {{
-      "tech_stack": "原始输入",
-      "exists": true/false,
-      "normalized_name": "规范化名称（小写、短横线分隔）",
-      "category": "frontend_framework" | "backend_framework" | "database" | "build_tool" | "schema" | "container" | "other",
-      "runtime": "browser" | "server" | "docker" | "static" | "embedded" | null,
-      "confidence": "high" | "medium" | "low",
-      "reason": "判断理由（50字以内）",
-      "warnings": ["注意事项（可选）"]
-    }}
-  ]
-}}
-
-验证标准:
-1. 必须是真实存在的技术（有官方文档、npm/PyPI包、GitHub仓库等）
-2. 不接受编程语言本身（python, javascript, java, go 等）
-3. 不接受过于泛泛的词（frontend, backend, framework, library）
-4. 优先使用官方标准名称（小写、短横线分隔）
-5. 如果是别名或大小写错误，在 normalized_name 中纠正
-
-示例:
-- "React" → exists: true, normalized_name: "react", category: "frontend_framework", runtime: "browser"
-- "FastAPI" → exists: true, normalized_name: "fastapi", category: "backend_framework", runtime: "server"
-- "python" → exists: false, reason: "编程语言不算技术栈"
-- "unknown-lib" → exists: false, reason: "无法找到相关资料"
-- "json-schema" → exists: true, normalized_name: "json-schema", category: "schema", runtime: "static"
-
-请基于你的知识库判断，不要猜测。如果不确定，标记 confidence: "low"。
-"""
-
-    @classmethod
     def verify_batch(
         cls,
         tech_stacks: list[str],
