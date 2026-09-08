@@ -87,6 +87,11 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
     """注册兼容的独占工具和新分区/集成工具。"""
     tools = ArchitectureToolSet(ArchitectureService(project_path))
     module_design_schema = _module_design_tool_schema()
+
+    # 导入新的工具函数
+    from app.agent.tools.select_tech_stack import select_tech_stack
+    from app.agent.tools.select_interface_kind import select_interface_kind
+
     gateway.register_toolset(
         domain="architecture",
         name="project_artifacts",
@@ -125,6 +130,54 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                         completion_policy="final",
                     ),
                     tools.save_architecture,
+                ),
+                (
+                    ToolDef(
+                        name="select_tech_stack",
+                        description="选择模块的技术栈（必须先调用此工具获取可用技术栈列表）。",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "module_id": {
+                                    "type": "string",
+                                    "description": "模块标识符",
+                                },
+                                "module_category": {
+                                    "type": "string",
+                                    "description": "模块类别（frontend/backend/database/schema 等）",
+                                },
+                            },
+                            "required": ["module_id", "module_category"],
+                        },
+                        execution_modes=("exclusive", "partitioned"),
+                    ),
+                    lambda module_id, module_category: json.dumps(
+                        select_tech_stack(module_id, module_category), ensure_ascii=False
+                    ),
+                ),
+                (
+                    ToolDef(
+                        name="select_interface_kind",
+                        description="选择接口的类型标签（必须先调用此工具获取可用的接口类型）。",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "interface_name": {
+                                    "type": "string",
+                                    "description": "接口名称",
+                                },
+                                "interface_description": {
+                                    "type": "string",
+                                    "description": "接口的简短描述",
+                                },
+                            },
+                            "required": ["interface_name", "interface_description"],
+                        },
+                        execution_modes=("exclusive", "partitioned"),
+                    ),
+                    lambda interface_name, interface_description: json.dumps(
+                        select_interface_kind(interface_name, interface_description), ensure_ascii=False
+                    ),
                 ),
             ]
         ),
