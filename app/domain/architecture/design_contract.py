@@ -55,6 +55,11 @@ class ModuleRef(_DesignModel):
         description="只引用 Blueprint 中已声明的 module_id",
     )
     requirement_ids: list[str] = Field(default_factory=list, max_length=64)
+    tech_stack: list[str] = Field(
+        default_factory=list,
+        max_length=32,
+        description="技术栈标签列表，如 ['react', 'vite']，用于消费方式推断和架构验证",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -356,6 +361,7 @@ class ArchitectureDesignBundle(_DesignModel):
                 )
 
         # 验证消费方式一致性（新增）
+        self._validate_tech_stacks()
         self._validate_consumption_types()
 
         missing = sorted(module_refs - set(modules_by_id))
@@ -413,6 +419,58 @@ class ArchitectureDesignBundle(_DesignModel):
                         f"{dependency} 为 wave={dep_wave}, 当前为 wave={current_wave}"
                     )
         return self
+
+    def _validate_tech_stacks(self) -> None:
+        """验证所有模块的技术栈声明。"""
+        from app.orchestration.tech_stack_verification import (
+            TechStackVerifier,
+            format_verification_errors,
+        )
+
+        # 收集所有技术栈
+        all_stacks = set()
+        for module_ref in self.blueprint.modules:
+            tech_stack = getattr(module_ref, "tech_stack", [])
+            all_stacks.update(tech_stack)
+
+        if not all_stacks:
+            # 没有声明技术栈，跳过验证
+            return
+
+        # 批量验证（一次 LLM 调用）
+        results = TechStackVerifier.verify_batch(
+            tech_stacks=list(all_stacks),
+            context={"blueprint_id": self.blueprint.design_id}
+        )
+
+        # 检查验证结果
+        errors = []
+        warnings = []
+
+        for stack, result in results.items():
+            if result.should_block:
+                errors.append(f"❌ 技术栈 '{stack}' 不存在或不合法: {result.reason}")
+            elif result.should_warn:
+                warnings.append(f"⚠️  技术栈 '{stack}' 置信度低: {result.reason}")
+            else:
+                # 自动规范化技术栈名称
+                if result.normalized_name != stack:
+                    # 更新所有使用该技术栈的模块
+                    for module_ref in self.blueprint.modules:
+                        if stack in module_ref.tech_stack:
+                            idx = module_ref.tech_stack.index(stack)
+                            module_ref.tech_stack[idx] = result.normalized_name
+
+        if errors:
+            raise ValueError(
+                "架构验证失败：技术栈验证不通过\n\n" + "\n".join(errors)
+            )
+
+        if warnings:
+            # 记录警告但不阻塞
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("技术栈验证警告:\n" + "\n".join(warnings))
 
     def _validate_consumption_types(self) -> None:
         """验证接口的消费方式一致性。"""
