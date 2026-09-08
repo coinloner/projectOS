@@ -223,56 +223,59 @@ def _contract_backend_command(
     the known stdlib entrypoint shape. It also keeps launcher generation
     deterministic when the contract is absent or malformed.
 
-    For python-dynamic applications, validates the command through CommandValidator
-    before accepting it.
+    This function now works for ALL application profiles by reading the
+    architecture contract's backend_command and validating it through
+    CommandValidator.
     """
     if service_id != "backend":
         return None
 
+    # 读取架构合同中的 backend_command
+    path = root / ".projectos" / "architecture" / "project-contract.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        value = payload.get("entrypoints", {}).get("backend_command")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+
     # python-backend 只接受简单的 python -m 格式
     if application_id == "python-backend":
-        path = root / ".projectos" / "architecture" / "project-contract.json"
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            value = payload.get("entrypoints", {}).get("backend_command")
-        except (OSError, ValueError, AttributeError):
-            return None
-        if isinstance(value, str):
-            parts = value.split()
-            if (
-                len(parts) == 3
-                and parts[:2] == ["python", "-m"]
-                and re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", parts[2])
-            ):
-                return tuple(parts)
+        parts = value.split()
+        if (
+            len(parts) == 3
+            and parts[:2] == ["python", "-m"]
+            and re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", parts[2])
+        ):
+            return tuple(parts)
         return None
 
-    # python-dynamic 支持更复杂的命令,但需要通过验证器
-    if application_id == "python-dynamic":
-        path = root / ".projectos" / "architecture" / "project-contract.json"
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            value = payload.get("entrypoints", {}).get("backend_command")
-        except (OSError, ValueError, AttributeError):
-            return None
-
-        if isinstance(value, str) and value.strip():
-            # 使用命令验证器验证安全性
-            from app.runtime.command_validator import CommandValidatorFactory
-            validator = CommandValidatorFactory.get_validator('python')
-            if validator is None:
-                return None
-
-            result = validator.validate(value)
-            if not result.is_valid:
-                # 验证失败,记录日志但不抛出异常(保持向后兼容)
-                print(f"Warning: Contract backend_command validation failed: {result.reason}")
-                return None
-
-            # 验证通过,将命令包装为 shell 执行
-            # 这样可以正确处理 PYTHONPATH=xxx python -m xxx 格式
-            return ("sh", "-c", value)
+    # 对于所有其他 profile（包括 todo-web, fastapi-postgres-web 等）
+    # 使用命令验证器验证安全性
+    from app.runtime.command_validator import CommandValidatorFactory
+    validator = CommandValidatorFactory.get_validator('python')
+    if validator is None:
+        # 如果验证器不可用，回退到简单的白名单检查
+        # 允许常见的 Python 启动命令
+        if value.startswith(("python ", "uvicorn ", "gunicorn ", "flask ", "fastapi ")):
+            return tuple(value.split())
         return None
+
+    result = validator.validate(value)
+    if not result.is_valid:
+        # 验证失败，记录日志但不抛出异常（保持向后兼容）
+        print(f"Warning: Contract backend_command validation failed: {result.reason}")
+        return None
+
+    # 验证通过，将命令包装为列表执行
+    # 对于简单命令（如 "uvicorn app.main:app"），直接返回 split 结果
+    # 对于复杂命令（包含 PYTHONPATH 等环境变量），包装为 shell 执行
+    if any(marker in value for marker in ["=", "&&", "||", "|", ";"]):
+        return ("sh", "-c", value)
+    else:
+        return tuple(value.split())
 
     return None
 
