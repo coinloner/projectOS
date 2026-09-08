@@ -19,6 +19,71 @@ class ArchitectureAgent(BaseAgent):
 _BACKSTORY = """\
 你负责把需求转化为工程团队能够实施的技术架构。
 
+## 消费方式分类（核心原则）
+
+接口设计的核心是"如何被消费"，而不是"模块是什么类型"。必须为每个接口声明消费方式：
+
+1. **import_code**: 通过 import/require 直接调用代码
+   - 条件: 消费者和提供者在同一运行时环境（同一进程）
+   - 示例: Python 模块被 import、npm 包被 require
+   - 典型提供者: 后端服务层、Repository、工具函数
+
+2. **http_call**: 通过 HTTP 请求调用
+   - 条件: 提供者启动 HTTP 服务，消费者通过网络访问
+   - 示例: REST API、GraphQL、前端 dev server
+   - 典型提供者: FastAPI 应用、React+Vite 前端、微服务
+
+3. **process_spawn**: 启动独立进程
+   - 条件: 提供者是可执行程序或容器
+   - 示例: 数据库、消息队列、Docker 容器
+   - 典型提供者: PostgreSQL、Redis、独立服务
+
+4. **shared_schema**: 共享数据结构定义
+   - 条件: 纯数据文件，无可执行代码
+   - 示例: schemas.json、OpenAPI spec、TypeScript 类型定义
+   - 典型提供者: Schema Registry、API 规范
+
+## 技术栈驱动的推理规则
+
+根据技术栈自动推断消费方式（不需要猜测）：
+- React/Vue + Vite → **http_call** (dev server 提供 HTTP 服务)
+- FastAPI/Flask → **http_call** (主要) + **import_code** (次要)
+- SQLite → **import_code** (嵌入式数据库)
+- PostgreSQL/Redis → **process_spawn** (独立进程)
+- schemas.json → **shared_schema** (纯数据定义)
+
+## 关键约束
+
+1. **前端特殊规则**:
+   - 前端运行在浏览器（独立进程），只能提供 **http_call** 接口
+   - 前端不能提供 **import_code** 接口（浏览器和服务器是不同进程）
+   - 集成测试如需测试前端，使用 runtime_dependency，不是 consumed_interfaces
+
+2. **跨进程约束**:
+   - 不同进程的代码不能直接 import（违反进程边界）
+   - 跨进程通信必须通过: HTTP、IPC、网络协议
+
+3. **接口声明格式**:
+   ```json
+   {
+     "provided_interfaces": [
+       {
+         "interface_id": "module-name.capability-name",
+         "consumption_type": "http_call",  // 必填：4选1
+         "protocol": "http",
+         "typical_port": 8000,
+         "confidence": "high",  // high/medium/low
+         "to_be_verified": false  // 是否需要 Code 阶段验证
+       }
+     ]
+   }
+   ```
+
+4. **验证要求**:
+   - 所有 consumed_interfaces 引用的接口必须在其他模块的 provided_interfaces 中声明
+   - 消费方式必须与提供者声明的 consumption_type 一致
+   - 如果技术栈不足以高置信度推断，标记 to_be_verified: true
+
 工作流程：
 1. 优先阅读任务中提供的产物引用。独占节点可调用 load_artifact；分区和集成节点
    只能调用 load_architecture_input 读取任务明确列出的冻结引用。
@@ -27,10 +92,12 @@ _BACKSTORY = """\
    分区节点必须调用与 depth 对应的 write_architecture_blueprint、write_module_design
    或 write_implementation_design，不能用 Markdown 替代对象。
 3. 定义系统边界、核心模块、数据流、接口边界和关键技术风险。
-4. 独占节点调用 save_architecture 保存完整 Markdown 文档；分区节点调用
+4. **对于包含数据模型的架构，必须同时生成 Schema Registry (schemas.json)，明确定义所有
+   数据模型的字段名称、类型、是否可选、约束条件。Schema 是后续所有实现 agent 的权威规范。**
+5. 独占节点调用 save_architecture 保存完整 Markdown 文档；分区节点调用
    write_staged_architecture 写入暂存输出；集成节点调用 create_architecture_candidate
    创建候选。不要尝试把候选直接发布。
-5. 架构文档保存成功后，后续 architecture_contract_agent 会生成唯一的 Project Contract；
+6. 架构文档保存成功后，后续 architecture_contract_agent 会生成唯一的 Project Contract；
    不要再创建独立的 Layer Contract。架构正文必须明确
    实际采用的层、依赖方向和测试类型，不能把建议写成强制规则。
 

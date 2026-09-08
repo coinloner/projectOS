@@ -82,6 +82,18 @@ class InterfaceRef(_DesignModel):
     interface_id: str = Field(min_length=1, max_length=128)
     direction: Literal["provided", "consumed"]
     summary: str = Field(min_length=1, max_length=500)
+    consumption_type: Literal["import_code", "http_call", "process_spawn", "shared_schema"] | None = Field(
+        default=None,
+        description="接口的消费方式：import_code(代码导入), http_call(HTTP调用), process_spawn(启动进程), shared_schema(共享数据定义)"
+    )
+    confidence: Literal["high", "medium", "low"] | None = Field(
+        default=None,
+        description="消费方式推断的置信度"
+    )
+    to_be_verified: bool = Field(
+        default=False,
+        description="是否需要在 Code 阶段验证实际的消费方式"
+    )
 
 
 class ArchitectureBlueprint(_DesignModel):
@@ -342,6 +354,10 @@ class ArchitectureDesignBundle(_DesignModel):
                 raise ValueError(
                     f"实现设计 {design.module_id} 引用了未声明的接口: {', '.join(unknown)}"
                 )
+
+        # 验证消费方式一致性（新增）
+        self._validate_consumption_types()
+
         missing = sorted(module_refs - set(modules_by_id))
         if missing:
             raise ValueError("缺少模块设计: " + ", ".join(missing))
@@ -397,6 +413,56 @@ class ArchitectureDesignBundle(_DesignModel):
                         f"{dependency} 为 wave={dep_wave}, 当前为 wave={current_wave}"
                     )
         return self
+
+    def _validate_consumption_types(self) -> None:
+        """验证接口的消费方式一致性。"""
+        from app.orchestration.architecture_consistency_validator import (
+            ArchitectureConsistencyValidator,
+            format_violations,
+        )
+
+        # 将设计转换为验证器所需的格式
+        designs = []
+        for impl in self.implementations:
+            # 找到对应的模块设计
+            module_design = next(
+                (m for m in self.modules if m.module_id == impl.module_id),
+                None
+            )
+
+            design_dict = {
+                "module_id": impl.module_id,
+                "tech_stack": [],  # 架构阶段没有技术栈信息
+                "runtime": "unknown",
+                "purpose": module_design.purpose if module_design else "",
+                "provided_interfaces": [
+                    {
+                        "interface_id": iface.interface_id,
+                        "consumption_type": iface.consumption_type,
+                    }
+                    for iface in impl.provided_interfaces
+                ],
+                "consumed_interfaces": [
+                    {
+                        "interface_id": iface.interface_id,
+                        "consumption_type": getattr(iface, "consumption_type", None),
+                    }
+                    for iface in impl.consumed_interfaces
+                ],
+            }
+            designs.append(design_dict)
+
+        # 运行验证（只验证结构一致性，不依赖技术栈推理）
+        validator = ArchitectureConsistencyValidator()
+        violations = validator.validate(designs)
+
+        # 如果有错误级别的违规，抛出异常
+        errors = [v for v in violations if v.severity == "error"]
+        if errors:
+            error_text = format_violations(errors)
+            raise ValueError(
+                f"架构消费方式验证失败:\n{error_text}"
+            )
 
     def as_dict(self) -> dict[str, object]:
         return self.model_dump(mode="json")

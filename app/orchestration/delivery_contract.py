@@ -45,6 +45,7 @@ class DeliveryContract:
             DeliveryArtifact("requirement.md", "project-documents", "planning"),
             DeliveryArtifact("architecture.md", "project-documents", "planning"),
             DeliveryArtifact("architecture_contract.md", "project-documents", "planning"),
+            DeliveryArtifact("schemas.json", "project-documents", "planning", ("code", "test", "code-integration")),
             DeliveryArtifact("tasks.md", "project-documents", "planning"),
             DeliveryArtifact("environment.md", "environment", "environment", ("tests", "review")),
             DeliveryArtifact("implementation.md", "code-integration", "integration", ("tests", "review")),

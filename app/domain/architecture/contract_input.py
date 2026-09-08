@@ -66,6 +66,18 @@ class ContractInterfaceInput(_ContractModel):
     output_schema: str | None = Field(default=None, max_length=4000)
     errors: list[str] = Field(default_factory=list, max_length=32)
     constraints: list[str] = Field(default_factory=list, max_length=32)
+    consumption_type: Literal["import_code", "http_call", "process_spawn", "shared_schema"] | None = Field(
+        default=None,
+        description="接口的消费方式"
+    )
+    confidence: Literal["high", "medium", "low"] | None = Field(
+        default=None,
+        description="消费方式推断的置信度"
+    )
+    to_be_verified: bool = Field(
+        default=False,
+        description="是否需要在 Code 阶段验证"
+    )
 
 
 class ConsumedInterfaceRefInput(_ContractModel):

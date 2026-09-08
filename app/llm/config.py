@@ -57,11 +57,19 @@ _PROVIDERS: dict[str, dict[str, str]] = {
         "crewai_provider": "openai",
         "wire_api": "responses",
     },
+    "uuapi": {
+        "base_url": "https://uuapi.io/v1",
+        "model": "gpt-5.6-terra",
+        "api_key_env": "UUAPI_API_KEY",
+        "crewai_provider": "openai",
+        "wire_api": "responses",
+        "http_headers": (("x-openai-actor-authorization", "local-image-extension"),),
+    },
 }
 
 # ── 当前激活厂商 ──────────────────────────────
 # 环境变量 PROJECTOS_LLM_PROVIDER 的优先级高于此默认值。
-ACTIVE_PROVIDER: str = "fhl"
+ACTIVE_PROVIDER: str = "uuapi"
 
 
 @dataclass(frozen=True)

@@ -396,8 +396,26 @@ class OpenAIResponsesLLM(OpenAICompletion):
         usage: dict[str, Any] | None = None
 
         diag = self._sse_diag_start(mode="sync", params=params)
+
+        # Debug: Log request details
+        client = self._get_sync_client()
+        print(f"[DEBUG] === Responses API Request Debug ===")
+        print(f"[DEBUG] Base URL: {getattr(client, 'base_url', None)}")
+        print(f"[DEBUG] Model: {params.get('model')}")
+        print(f"[DEBUG] Default Headers: {getattr(client, 'default_headers', None)}")
+        print(f"[DEBUG] API Key Prefix: {str(getattr(client, 'api_key', ''))[:20]}...")
+        print(f"[DEBUG] =====================================")
+
+        logger.error(
+            "responses_request_debug base_url=%s model=%s headers=%s api_key_prefix=%s",
+            getattr(client, "base_url", None),
+            params.get("model"),
+            getattr(client, "default_headers", None),
+            str(getattr(client, "api_key", ""))[:20] + "..." if hasattr(client, "api_key") else "NONE"
+        )
+
         try:
-            stream = self._get_sync_client().responses.create(**params)
+            stream = client.responses.create(**params)
         except Exception as error:
             logger.exception("responses_sse_transport_error mode=sync stage=create")
             _diag_file_event("transport_error", {
