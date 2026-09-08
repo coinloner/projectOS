@@ -107,6 +107,40 @@ Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用�
 - 第二次重试：可以使用自定义技术栈（格式：小写、短横线分隔），但需说明理由
 - 第三次重试：将被管理员审核
 
+## 接口类型声明规则（重要）
+
+### 必须使用工具选择接口类型
+
+在设计每个接口时，**必须先调用 select_interface_kind 工具**获取可用的接口类型，然后从中选择。
+
+示例流程：
+1. 调用 select_interface_kind(interface_name="book-api.crud", interface_description="提供书籍的 CRUD HTTP 端点")
+2. 工具返回: {"available_kinds": {...}, "recommendation": "api"}
+3. 从返回的 5 种类型中选择: "kind": "api"
+
+### 只有 5 种合法的接口类型
+
+- **symbol**: 代码符号（函数、类、模块），通过 import 使用
+- **service**: 独立服务或进程（前端应用、数据库、Repository）
+- **api**: HTTP API 端点（REST、GraphQL）
+- **data**: 数据定义或 Schema（JSON Schema、数据模型）
+- **event**: 事件或消息（消息队列、事件总线）
+
+### 禁止的做法
+
+❌ 不调用工具，直接声明: "kind": "api"
+❌ 创造新的类型名称: "kind": "python_module", "kind": "http_api", "kind": "json_schema"
+❌ 使用描述性名称: "kind": "browser_ui", "kind": "rest_api"
+
+### 快速映射规则
+
+- Python 函数/类/模块 → **symbol**
+- FastAPI 路由/REST 端点 → **api**
+- React 前端应用 → **service**
+- SQLite 数据库 → **service**
+- JSON Schema 定义 → **data**
+- Repository 层 → **service**
+
 ## 消费方式分类（核心原则）
 
 接口设计的核心是"如何被消费"，而不是"模块是什么类型"。必须为每个接口声明消费方式：

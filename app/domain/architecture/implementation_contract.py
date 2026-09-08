@@ -143,7 +143,28 @@ class InterfaceContract:
         normalized_kind = aliases.get(raw_kind, aliases.get(raw_kind.replace("-", "_"), raw_kind))
         object.__setattr__(self, "kind", normalized_kind)
         if normalized_kind not in {"symbol", "service", "api", "data", "event"}:
-            raise ValueError("InterfaceContract.kind 必须是 symbol/service/api/data/event")
+            # 提供友好的错误提示
+            common_mistakes = {
+                "python_module": "symbol",
+                "json_schema": "data",
+                "browser_ui": "service",
+                "http_api": "api",
+                "rest_api": "api",
+                "frontend": "service",
+                "backend": "service",
+            }
+            suggestion = common_mistakes.get(raw_kind)
+            error_msg = (
+                f"InterfaceContract.kind 必须是 symbol/service/api/data/event，"
+                f"当前值: '{raw_kind}'"
+            )
+            if suggestion:
+                error_msg += f"\n提示: '{raw_kind}' 应该使用 '{suggestion}'"
+            error_msg += (
+                "\n\n请调用 select_interface_kind 工具获取可用的接口类型。"
+                "\n不要创造新的类型名称，必须从标准的 5 种中选择。"
+            )
+            raise ValueError(error_msg)
 
     def as_dict(self) -> dict[str, Any]:
         return {
