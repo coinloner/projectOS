@@ -19,6 +19,56 @@ class ArchitectureAgent(BaseAgent):
 _BACKSTORY = """\
 你负责把需求转化为工程团队能够实施的技术架构。
 
+## Layer 声明规则（重要）
+
+### path_mapping 只能声明目录模式
+
+Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用目录模式，不能声明具体文件**。
+
+✅ 正确的声明：
+```json
+{
+  "name": "schema",
+  "path_mapping": ["schemas/**"]  // 目录模式
+}
+```
+
+```json
+{
+  "name": "backend",
+  "path_mapping": ["backend/**"]
+}
+```
+
+```json
+{
+  "name": "frontend",
+  "path_mapping": ["frontend/**"]
+}
+```
+
+❌ 错误的声明：
+```json
+{
+  "name": "schema",
+  "path_mapping": ["schemas.json"]  // 具体文件，禁止！
+}
+```
+
+```json
+{
+  "name": "backend",
+  "path_mapping": ["main.py", "api.py"]  // 具体文件，禁止！
+}
+```
+
+### 为什么不能声明具体文件
+
+- Blueprint (depth=0) 只定义架构边界和层级依赖关系
+- 具体文件路径是 Implementation (depth=2) 的职责
+- 过早承诺文件路径会限制实现灵活性
+- path_mapping 的作用是定义"代码应该放在哪个目录"，而不是"应该生成哪些文件"
+
 ## 技术栈声明规则（重要）
 
 ### 必须使用工具选择技术栈

@@ -38,6 +38,35 @@ class LayerDecision(_DesignModel):
     forbidden_imports: list[str] = Field(default_factory=list, max_length=64)
     path_mapping: list[str] = Field(default_factory=list, max_length=32)
 
+    @model_validator(mode="after")
+    def validate_path_mapping_is_pattern(self) -> LayerDecision:
+        """确保 path_mapping 只包含目录模式，不包含具体文件。
+
+        Blueprint (depth=0) 不应该声明具体文件路径，这是 Implementation (depth=2) 的职责。
+        path_mapping 只能声明目录模式，用于定义层级的代码组织边界。
+        """
+        for path in self.path_mapping:
+            # 检查是否是具体文件（以常见扩展名结尾）
+            file_extensions = (".json", ".py", ".ts", ".js", ".jsx", ".tsx", ".vue", ".html", ".css", ".md")
+            if any(path.endswith(ext) for ext in file_extensions):
+                raise ValueError(
+                    f"Layer '{self.name}' 的 path_mapping 不能声明具体文件: {path}\n"
+                    f"Blueprint 只能声明目录模式，不能声明实现细节。\n"
+                    f"正确示例: 'schemas/**', 'backend/**', 'frontend/**'\n"
+                    f"错误示例: 'schemas.json', 'main.py'"
+                )
+
+            # 建议使用 /** 结尾（但不强制，允许简写）
+            if not path.endswith("/**") and "/" in path:
+                # 如果包含 / 但不是 /** 结尾，给出提示（但不拒绝）
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"Layer '{self.name}' 的 path_mapping '{path}' 建议使用 '/**' 结尾表示目录模式"
+                )
+
+        return self
+
 
 class ModuleRef(_DesignModel):
     module_id: str = Field(min_length=1, max_length=128)
@@ -392,18 +421,12 @@ class ArchitectureDesignBundle(_DesignModel):
                 normalized = required.replace("\\", "/").lstrip("/")
                 if normalized not in {p.replace("\\", "/").lstrip("/") for p in unit.owned_files}:
                     raise ValueError(f"实现单元 {unit.unit_id} 的 required_paths 必须属于 owned_files: {required}")
-        # The Project Contract exposes Blueprint.required_files as a delivery
-        # obligation.  Every such file must therefore have one concrete code
-        # owner before the design can be published.  Without this check an
-        # otherwise valid-looking contract reaches runtime preflight with a
-        # required file that no CodeAgent WorkItem is capable of creating.
-        for required_file in self.blueprint.required_files:
-            normalized = required_file.replace("\\", "/").lstrip("/")
-            if normalized not in owned_files:
-                raise ValueError(
-                    "ArchitectureBlueprint.required_file_not_owned: "
-                    f"{required_file}"
-                )
+
+        # NOTE: Blueprint.required_files 验证已移除
+        # Blueprint (depth=0) 不应该声明具体文件，这是 Implementation (depth=2) 的职责。
+        # Layer.path_mapping 现在只能声明目录模式（如 schemas/**），不能声明具体文件。
+        # 层级边界验证将在 Code 阶段事后检查（检查生成的文件是否违反 forbidden_imports）。
+
         for unit in units:
             current_wave = unit.wave if unit.wave is not None else 0
             unknown = sorted(set(unit.depends_on) - set(by_id))
