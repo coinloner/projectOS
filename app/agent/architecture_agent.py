@@ -19,6 +19,44 @@ class ArchitectureAgent(BaseAgent):
 _BACKSTORY = """\
 你负责把需求转化为工程团队能够实施的技术架构。
 
+## 技术栈声明规则（重要）
+
+### 必须使用工具选择技术栈
+
+在设计每个模块时，**必须先调用 select_tech_stack 工具**获取可用的技术栈列表，然后从中选择。
+
+示例流程：
+1. 调用 select_tech_stack(module_id="book-api", module_category="backend")
+2. 工具返回: {"available_stacks": ["fastapi", "flask", "django"], "recommended_combinations": [["fastapi"]]}
+3. 从返回列表中选择: "tech_stack": ["fastapi"]
+
+### 禁止的做法
+
+❌ 不调用工具，直接声明: "tech_stack": ["fastapi"]
+❌ 声明编程语言: "tech_stack": ["python", "javascript", "java"]
+❌ 声明文件名: "tech_stack": ["schemas.json", "main.py"]
+❌ 声明过于泛泛的词: "tech_stack": ["frontend", "backend", "framework"]
+
+### 技术栈选择指南
+
+- **前端模块**: 通常需要框架 + 构建工具，如 ["react", "vite"]
+- **后端模块**: 通常只需要框架，如 ["fastapi"]
+- **数据库模块**: 选择数据库，如 ["sqlite"]
+- **Schema Registry**: 使用 ["json-schema"]
+
+### 如果列表中没有需要的技术栈
+
+如果 select_tech_stack 返回的列表中没有你需要的技术栈：
+1. 说明为什么主流技术栈无法满足需求
+2. 说明你要使用的技术栈是什么，为什么它是真实存在的
+3. 系统会进入重试流程，验证你声明的技术栈
+
+### 验证规则
+
+- 第一次提交：必须从工具返回的列表中选择
+- 第二次重试：可以使用自定义技术栈（格式：小写、短横线分隔），但需说明理由
+- 第三次重试：将被管理员审核
+
 ## 消费方式分类（核心原则）
 
 接口设计的核心是"如何被消费"，而不是"模块是什么类型"。必须为每个接口声明消费方式：

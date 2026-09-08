@@ -1,16 +1,21 @@
-"""技术栈验证工具 - 使用 LLM 验证技术栈的真实性。
+"""技术栈验证工具 - 使用分层验证机制。
 
 这是一个轻量级验证工具，在架构设计阶段验证声明的技术栈是否真实存在。
-采用 LLM 验证而非人工维护白名单，避免维护成本和非即时性问题。
+采用分层重试机制：
+- 第0次：只允许主流技术栈（从工具选择）
+- 第1次：允许自定义技术栈，但验证格式
+- 第2次：使用 LLM 验证真实性
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from crewai import Agent, Task, Crew
 from app.llm.factory import build_llm
+from app.agent.tools.select_tech_stack import ALL_MAINSTREAM_STACKS
 
 
 class TechStackVerificationResult:
@@ -56,9 +61,121 @@ class TechStackVerificationResult:
 
 
 class TechStackVerifier:
-    """技术栈验证器。"""
+    """技术栈验证器 - 分层验证机制。"""
 
-    VERIFICATION_PROMPT = """你是技术栈验证专家。请验证以下技术栈是否真实存在。
+    # 禁止使用的技术栈（编程语言、泛泛词汇等）
+    BLACKLIST = {
+        # 编程语言
+        "python", "javascript", "typescript", "java", "go", "rust", "c", "cpp", "c++",
+        # 泛泛词汇
+        "frontend", "backend", "database", "framework", "library", "tool",
+        # 文件扩展名
+        ".json", ".js", ".py", ".ts", ".html", ".css",
+    }
+
+    # 自定义技术栈的格式规则
+    CUSTOM_STACK_PATTERN = re.compile(r'^[a-z0-9]+(-[a-z0-9]+)*$')
+    CUSTOM_STACK_MIN_LENGTH = 2
+    CUSTOM_STACK_MAX_LENGTH = 30
+
+    @classmethod
+    def validate_with_retry(
+        cls,
+        tech_stacks: list[str],
+        retry_level: int = 0,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        验证技术栈（支持重试级别）。
+
+        Args:
+            tech_stacks: 待验证的技术栈列表
+            retry_level: 重试级别 (0=首次, 1=第一次重试, 2=第二次重试)
+            context: 上下文信息
+
+        Returns:
+            {
+                "valid": bool,
+                "errors": [str],
+                "warnings": [str],
+                "retry_instruction": str | None,
+            }
+        """
+        errors = []
+        warnings = []
+        retry_instruction = None
+
+        for stack in tech_stacks:
+            # 检查黑名单
+            if stack.lower() in cls.BLACKLIST or any(stack.endswith(ext) for ext in [".json", ".js", ".py"]):
+                errors.append(
+                    f"'{stack}' 不是有效的技术栈"
+                    f"（{'编程语言' if stack.lower() in ['python', 'javascript', 'java'] else '不合法的声明'}）"
+                )
+                continue
+
+            # 第0次：只允许主流技术栈
+            if retry_level == 0:
+                if stack not in ALL_MAINSTREAM_STACKS:
+                    errors.append(
+                        f"'{stack}' 不在主流技术栈列表中"
+                    )
+            # 第1次：允许自定义，但验证格式
+            elif retry_level == 1:
+                if stack not in ALL_MAINSTREAM_STACKS:
+                    if not cls._is_valid_custom_format(stack):
+                        errors.append(
+                            f"'{stack}' 格式不符合规范"
+                            f"（必须是小写字母、数字、短横线，长度2-30）"
+                        )
+                    else:
+                        warnings.append(
+                            f"'{stack}' 是自定义技术栈，将使用 LLM 验证真实性"
+                        )
+            # 第2次：使用 LLM 验证
+            else:
+                # 这个级别会在下面的 LLM 验证中处理
+                pass
+
+        # 生成重试指令
+        if errors:
+            if retry_level == 0:
+                retry_instruction = (
+                    "首次验证失败。你必须调用 select_tech_stack 工具获取可用的主流技术栈列表，"
+                    "然后从返回的 available_stacks 中选择。"
+                    "\n禁止声明："
+                    "\n- 编程语言（python, javascript, java）"
+                    "\n- 文件名（schemas.json）"
+                    "\n- 泛泛词汇（frontend, backend）"
+                )
+            elif retry_level == 1:
+                retry_instruction = (
+                    "第一次重试失败。如果你需要使用主流列表中没有的技术栈，"
+                    "请确保格式符合规范：小写字母、数字、短横线分隔，长度2-30字符。"
+                    "\n并说明为什么主流技术栈无法满足需求。"
+                )
+            else:
+                retry_instruction = (
+                    "已达到最大重试次数。请联系管理员审核你声明的技术栈。"
+                )
+
+        return {
+            "valid": len(errors) == 0,
+            "errors": errors,
+            "warnings": warnings,
+            "retry_instruction": retry_instruction,
+        }
+
+    @classmethod
+    def _is_valid_custom_format(cls, stack: str) -> bool:
+        """验证自定义技术栈的格式。"""
+        if not cls.CUSTOM_STACK_PATTERN.match(stack):
+            return False
+        if len(stack) < cls.CUSTOM_STACK_MIN_LENGTH or len(stack) > cls.CUSTOM_STACK_MAX_LENGTH:
+            return False
+        return True
+
+    @classmethod
 
 技术栈列表: {tech_stacks}
 模块上下文: {context}
@@ -104,7 +221,7 @@ class TechStackVerifier:
         verification_model: str | None = None,
     ) -> dict[str, TechStackVerificationResult]:
         """
-        批量验证技术栈。
+        批量验证技术栈（使用 LLM，用于第2次重试）。
 
         Args:
             tech_stacks: 待验证的技术栈列表
@@ -120,34 +237,86 @@ class TechStackVerifier:
         # 去重
         unique_stacks = list(set(tech_stacks))
 
-        # 构造提示词
-        prompt = cls.VERIFICATION_PROMPT.format(
-            tech_stacks=unique_stacks,
-            context=context or {}
-        )
+        # 过滤出需要 LLM 验证的技术栈（不在主流列表中的）
+        custom_stacks = [s for s in unique_stacks if s not in ALL_MAINSTREAM_STACKS]
+
+        results = {}
+
+        # 主流技术栈直接通过
+        for stack in unique_stacks:
+            if stack in ALL_MAINSTREAM_STACKS:
+                results[stack] = TechStackVerificationResult({
+                    "tech_stack": stack,
+                    "exists": True,
+                    "normalized_name": stack,
+                    "confidence": "high",
+                    "reason": "主流技术栈",
+                })
+
+        # 自定义技术栈使用 LLM 验证
+        if custom_stacks:
+            llm_results = cls._verify_with_llm(custom_stacks, context)
+            results.update(llm_results)
+
+        return results
+
+    @classmethod
+    def _verify_with_llm(
+        cls,
+        tech_stacks: list[str],
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, TechStackVerificationResult]:
+        """使用 LLM 验证自定义技术栈。"""
+
+        prompt = f"""你是技术栈验证专家。请验证以下自定义技术栈是否真实存在。
+
+技术栈列表: {tech_stacks}
+模块上下文: {context or {}}
+
+请返回 JSON 格式的验证结果:
+{{
+  "results": [
+    {{
+      "tech_stack": "原始输入",
+      "exists": true/false,
+      "normalized_name": "规范化名称（小写、短横线分隔）",
+      "category": "frontend_framework" | "backend_framework" | "database" | "build_tool" | "schema" | "container" | "other",
+      "runtime": "browser" | "server" | "docker" | "static" | "embedded" | null,
+      "confidence": "high" | "medium" | "low",
+      "reason": "判断理由（50字以内）",
+      "warnings": ["注意事项（可选）"]
+    }}
+  ]
+}}
+
+验证标准:
+1. 必须是真实存在的技术（有官方文档、npm/PyPI包、GitHub仓库等）
+2. 不接受编程语言本身（python, javascript, java, go 等）
+3. 不接受过于泛泛的词（frontend, backend, framework, library）
+4. 优先使用官方标准名称（小写、短横线分隔）
+
+请基于你的知识库判断，不要猜测。如果不确定，标记 confidence: "low"。
+"""
 
         # 使用 CrewAI 调用 LLM
         try:
-            llm = build_llm(selection=None)  # 使用默认配置
+            llm = build_llm(selection=None)
 
-            # 创建一个简单的 Agent 来执行验证任务
             verifier_agent = Agent(
                 role="Tech Stack Verifier",
-                goal="Verify if tech stacks are real and valid",
+                goal="Verify if custom tech stacks are real and valid",
                 backstory="You are an expert in validating technology stacks.",
                 llm=llm,
                 allow_delegation=False,
                 verbose=False,
             )
 
-            # 创建验证任务
             verify_task = Task(
                 description=prompt,
                 agent=verifier_agent,
                 expected_output="JSON object with verification results"
             )
 
-            # 执行任务
             crew = Crew(
                 agents=[verifier_agent],
                 tasks=[verify_task],
@@ -158,27 +327,26 @@ class TechStackVerifier:
             response = str(result)
 
         except Exception as e:
-            # LLM 调用失败，标记所有技术栈为低置信度
             import logging
             logger = logging.getLogger(__name__)
-            logger.warning(f"Tech stack verification LLM call failed: {e}")
+            logger.warning(f"Tech stack LLM verification failed: {e}")
 
+            # LLM 调用失败，标记为低置信度
             return {
                 stack: TechStackVerificationResult({
                     "tech_stack": stack,
                     "exists": True,
                     "normalized_name": stack.lower(),
                     "confidence": "low",
-                    "reason": f"验证服务调用失败: {str(e)[:50]}",
+                    "reason": f"LLM 验证失败: {str(e)[:50]}",
                 })
-                for stack in unique_stacks
+                for stack in tech_stacks
             }
 
         # 解析结果
         try:
             data = json.loads(response)
         except json.JSONDecodeError:
-            # LLM 返回格式错误，标记所有技术栈为低置信度
             return {
                 stack: TechStackVerificationResult({
                     "tech_stack": stack,
@@ -187,7 +355,7 @@ class TechStackVerifier:
                     "confidence": "low",
                     "reason": "验证响应解析失败",
                 })
-                for stack in unique_stacks
+                for stack in tech_stacks
             }
 
         results = {}
@@ -196,9 +364,8 @@ class TechStackVerifier:
             results[result.tech_stack] = result
 
         # 检查是否所有输入都有结果
-        for stack in unique_stacks:
+        for stack in tech_stacks:
             if stack not in results:
-                # LLM 遗漏了某些输入，标记为低置信度
                 results[stack] = TechStackVerificationResult({
                     "tech_stack": stack,
                     "exists": True,

@@ -421,11 +421,8 @@ class ArchitectureDesignBundle(_DesignModel):
         return self
 
     def _validate_tech_stacks(self) -> None:
-        """验证所有模块的技术栈声明。"""
-        from app.orchestration.tech_stack_verification import (
-            TechStackVerifier,
-            format_verification_errors,
-        )
+        """验证所有模块的技术栈声明（分层验证）。"""
+        from app.orchestration.tech_stack_verification import TechStackVerifier
 
         # 收集所有技术栈
         all_stacks = set()
@@ -437,40 +434,30 @@ class ArchitectureDesignBundle(_DesignModel):
             # 没有声明技术栈，跳过验证
             return
 
-        # 批量验证（一次 LLM 调用）
-        results = TechStackVerifier.verify_batch(
+        # 使用第0级验证（只允许主流技术栈）
+        validation = TechStackVerifier.validate_with_retry(
             tech_stacks=list(all_stacks),
+            retry_level=0,  # 架构集成时应该已经通过了重试，这里用最严格的验证
             context={"blueprint_id": self.blueprint.design_id}
         )
 
-        # 检查验证结果
-        errors = []
-        warnings = []
+        if not validation["valid"]:
+            # 构造错误消息
+            error_lines = ["架构验证失败：技术栈验证不通过\n"]
+            error_lines.extend(f"  - {err}" for err in validation["errors"])
 
-        for stack, result in results.items():
-            if result.should_block:
-                errors.append(f"❌ 技术栈 '{stack}' 不存在或不合法: {result.reason}")
-            elif result.should_warn:
-                warnings.append(f"⚠️  技术栈 '{stack}' 置信度低: {result.reason}")
-            else:
-                # 自动规范化技术栈名称
-                if result.normalized_name != stack:
-                    # 更新所有使用该技术栈的模块
-                    for module_ref in self.blueprint.modules:
-                        if stack in module_ref.tech_stack:
-                            idx = module_ref.tech_stack.index(stack)
-                            module_ref.tech_stack[idx] = result.normalized_name
+            if validation["retry_instruction"]:
+                error_lines.append(f"\n重试指导：\n{validation['retry_instruction']}")
 
-        if errors:
-            raise ValueError(
-                "架构验证失败：技术栈验证不通过\n\n" + "\n".join(errors)
-            )
+            raise ValueError("\n".join(error_lines))
 
-        if warnings:
-            # 记录警告但不阻塞
+        # 警告信息（如果有）
+        if validation["warnings"]:
             import logging
             logger = logging.getLogger(__name__)
-            logger.warning("技术栈验证警告:\n" + "\n".join(warnings))
+            logger.warning("技术栈验证警告:\n" + "\n".join(
+                f"  - {warn}" for warn in validation["warnings"]
+            ))
 
     def _validate_consumption_types(self) -> None:
         """验证接口的消费方式一致性。"""
