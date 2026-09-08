@@ -9,7 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.llm.responses import chat_completion
+from crewai import Agent, Task, Crew
+from app.llm.factory import build_llm
 
 
 class TechStackVerificationResult:
@@ -125,13 +126,53 @@ class TechStackVerifier:
             context=context or {}
         )
 
-        # 调用 LLM（使用独立的验证模型，避免自己出题自己审批）
-        # TODO: 后续需要配置独立的验证模型
-        response = chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            # model=verification_model,  # 后续启用
-        )
+        # 使用 CrewAI 调用 LLM
+        try:
+            llm = build_llm(selection=None)  # 使用默认配置
+
+            # 创建一个简单的 Agent 来执行验证任务
+            verifier_agent = Agent(
+                role="Tech Stack Verifier",
+                goal="Verify if tech stacks are real and valid",
+                backstory="You are an expert in validating technology stacks.",
+                llm=llm,
+                allow_delegation=False,
+                verbose=False,
+            )
+
+            # 创建验证任务
+            verify_task = Task(
+                description=prompt,
+                agent=verifier_agent,
+                expected_output="JSON object with verification results"
+            )
+
+            # 执行任务
+            crew = Crew(
+                agents=[verifier_agent],
+                tasks=[verify_task],
+                verbose=False
+            )
+
+            result = crew.kickoff()
+            response = str(result)
+
+        except Exception as e:
+            # LLM 调用失败，标记所有技术栈为低置信度
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Tech stack verification LLM call failed: {e}")
+
+            return {
+                stack: TechStackVerificationResult({
+                    "tech_stack": stack,
+                    "exists": True,
+                    "normalized_name": stack.lower(),
+                    "confidence": "low",
+                    "reason": f"验证服务调用失败: {str(e)[:50]}",
+                })
+                for stack in unique_stacks
+            }
 
         # 解析结果
         try:
