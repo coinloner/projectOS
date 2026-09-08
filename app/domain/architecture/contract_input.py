@@ -86,6 +86,18 @@ class ConsumedInterfaceRefInput(_ContractModel):
     interface_id: str = Field(min_length=1, max_length=128)
     usage: str | None = Field(default=None, max_length=1000)
     required: bool = True
+    consumption_type: Literal["import_code", "http_call", "process_spawn", "shared_schema"] | None = Field(
+        default=None,
+        description="接口的消费方式：import_code(代码导入), http_call(HTTP调用), process_spawn(启动进程), shared_schema(共享数据定义)"
+    )
+    confidence: Literal["high", "medium", "low"] | None = Field(
+        default=None,
+        description="消费方式推断的置信度"
+    )
+    to_be_verified: bool = Field(
+        default=False,
+        description="是否需要在 Code 阶段验证实际的消费方式"
+    )
 
     @model_validator(mode="before")
     @classmethod
