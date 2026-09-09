@@ -121,7 +121,18 @@ class TemplateCompiler:
             getattr(item, "implementation_unit_id", None) == "project-documents"
             for item in plan.work_items
         ):
-            DeliveryContract.project_delivery().validate_plan(plan.work_items)
+            DeliveryContract.project_delivery().validate_plan(
+                plan.work_items,
+                bindings={
+                    "project-documents": item_id_by_blueprint.get("project-documents", ""),
+                    "environment": item_id_by_blueprint.get("environment", ""),
+                    "code-integration": item_id_by_blueprint.get("code-integration", ""),
+                    "tests": item_id_by_blueprint.get("tests", ""),
+                    "review": item_id_by_blueprint.get("review", ""),
+                    "code": item_id_by_blueprint.get("code-integration", ""),
+                    "test": item_id_by_blueprint.get("tests", ""),
+                },
+            )
         return plan
 
     @staticmethod

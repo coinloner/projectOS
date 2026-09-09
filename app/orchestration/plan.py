@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from app.orchestration.trace import TraceContext
 from app.orchestration.work_item import WorkItem
+from app.orchestration.delivery_registry import DeliveryContractRegistry
 from app.execution_context import ExecutionMode
 
 
@@ -37,6 +38,12 @@ class ExecutionPlan:
             raise ValueError("ExecutionPlan 包含重复 WorkItem id")
 
         known_ids = set(item_ids)
+        contract_errors = DeliveryContractRegistry.validate_plan(self.work_items)
+        if contract_errors:
+            raise ValueError(
+                "ExecutionPlan 交付合同校验失败: " + "; ".join(contract_errors)
+            )
+
         for item in self.work_items:
             unknown_dependencies = set(item.dependency_ids) - known_ids
             if unknown_dependencies:

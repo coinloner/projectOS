@@ -197,20 +197,31 @@ class TechStackVerifier:
             return {}
 
         # 去重
-        unique_stacks = list(set(tech_stacks))
+        unique_stacks = list(dict.fromkeys(tech_stacks))
+        canonical = {stack: stack.strip().lower() for stack in unique_stacks}
+        mainstream = {str(item).lower(): item for item in ALL_MAINSTREAM_STACKS}
 
         # 过滤出需要 LLM 验证的技术栈（不在主流列表中的）
-        custom_stacks = [s for s in unique_stacks if s not in ALL_MAINSTREAM_STACKS]
+        custom_stacks = [s for s in unique_stacks if canonical[s] not in mainstream and canonical[s] not in cls.BLACKLIST]
 
         results = {}
 
+        # 黑名单在边界处确定性拒绝，并且不进入外部验证。
+        for stack in unique_stacks:
+            if canonical[stack] in cls.BLACKLIST:
+                results[stack] = TechStackVerificationResult({
+                    "tech_stack": stack, "exists": False,
+                    "normalized_name": canonical[stack], "confidence": "high",
+                    "reason": "不是可接受的技术栈声明",
+                })
+
         # 主流技术栈直接通过
         for stack in unique_stacks:
-            if stack in ALL_MAINSTREAM_STACKS:
+            if canonical[stack] in mainstream:
                 results[stack] = TechStackVerificationResult({
                     "tech_stack": stack,
                     "exists": True,
-                    "normalized_name": stack,
+                    "normalized_name": canonical[stack],
                     "confidence": "high",
                     "reason": "主流技术栈",
                 })
@@ -300,7 +311,7 @@ class TechStackVerifier:
                     "exists": True,
                     "normalized_name": stack.lower(),
                     "confidence": "low",
-                    "reason": f"LLM 验证失败: {str(e)[:50]}",
+                    "reason": f"LLM 验证失败，无法确认技术栈: {str(e)[:50]}",
                 })
                 for stack in tech_stacks
             }
@@ -315,7 +326,7 @@ class TechStackVerifier:
                     "exists": True,
                     "normalized_name": stack.lower(),
                     "confidence": "low",
-                    "reason": "验证响应解析失败",
+                    "reason": "验证响应解析失败，无法确认技术栈",
                 })
                 for stack in tech_stacks
             }
@@ -333,7 +344,7 @@ class TechStackVerifier:
                     "exists": True,
                     "normalized_name": stack.lower(),
                     "confidence": "low",
-                    "reason": "验证器未返回结果",
+                    "reason": "验证器未返回结果，状态为未确认",
                 })
 
         return results

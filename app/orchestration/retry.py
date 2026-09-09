@@ -55,6 +55,9 @@ class FailureKind(str, Enum):
     RUNTIME_PREFLIGHT = "runtime_preflight"
     ARCHITECTURE_CONTRACT_MISSING = "architecture_contract_missing"
     ARCHITECTURE_SCHEMA_VALIDATION = "architecture_schema_validation"
+    TOOL_CONTRACT_MISMATCH = "tool_contract_mismatch"
+    ARTIFACT_CONTRACT_VIOLATION = "artifact_contract_violation"
+    ARTIFACT_COMMIT_FAILURE = "artifact_commit_failure"
     TOOL_EXECUTION = "tool_execution"
     PLANNER_VALIDATION = "planner_validation"
     # These are control-plane observations, not agent-authored failures.
@@ -485,6 +488,13 @@ class RetryLimits:
         # one extra correction turn after field-level validation feedback.
         (FailureKind.ARCHITECTURE_CONTRACT_MISSING, 2),
         (FailureKind.ARCHITECTURE_SCHEMA_VALIDATION, 1),
+        # Contract mismatches are deterministic control-plane failures: never
+        # spend a model call trying to repair a tool that cannot be injected.
+        (FailureKind.TOOL_CONTRACT_MISMATCH, 0),
+        # An artifact may get one bounded schema repair, but a failed commit
+        # is an infrastructure/control-plane fault and must not replay the LLM.
+        (FailureKind.ARTIFACT_CONTRACT_VIOLATION, 1),
+        (FailureKind.ARTIFACT_COMMIT_FAILURE, 0),
         # A missing ChangeSet is a delivery protocol failure, not a semantic
         # test failure. Give the single-file agent dedicated retries.
         (FailureKind.CODE_DELIVERY_INCOMPLETE, 2),
@@ -524,7 +534,12 @@ class RetryPolicy:
         item_retries: int,
         kind_retries: int,
     ) -> RecoveryAction:
-        if signal.kind in {FailureKind.SANDBOX_SETUP, FailureKind.WORKER_BOOTSTRAP_FAILURE}:
+        if signal.kind in {
+            FailureKind.SANDBOX_SETUP,
+            FailureKind.WORKER_BOOTSTRAP_FAILURE,
+            FailureKind.TOOL_CONTRACT_MISMATCH,
+            FailureKind.ARTIFACT_COMMIT_FAILURE,
+        }:
             return RecoveryAction.BLOCK
         if signal.kind is FailureKind.TEST_FAILURE:
             return RecoveryAction.REQUEST_REPLAN
@@ -555,6 +570,8 @@ class RetryPolicy:
         if signal.kind is FailureKind.ARCHITECTURE_CONTRACT_MISSING:
             return RecoveryAction.RETRY_ITEM
         if signal.kind is FailureKind.ARCHITECTURE_SCHEMA_VALIDATION:
+            return RecoveryAction.RETRY_ITEM
+        if signal.kind is FailureKind.ARTIFACT_CONTRACT_VIOLATION:
             return RecoveryAction.RETRY_ITEM
         if signal.kind is FailureKind.CODE_DELIVERY_INCOMPLETE:
             return RecoveryAction.RETRY_ITEM

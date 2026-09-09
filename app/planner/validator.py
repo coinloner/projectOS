@@ -46,15 +46,12 @@ class PlanValidator:
         if not missing_baseline or not self._goal_requests_delivery(context.goal):
             return None
 
-        dynamic = context.template_source("project_delivery_dynamic")
-        if dynamic is not None and dynamic.has_controlled_execution:
-            return "project_delivery_dynamic"
-        project_delivery = context.template_source("project_delivery")
-        if project_delivery is not None and project_delivery.has_controlled_execution:
-            return "project_delivery"
-        layered = context.template_source("project_delivery_layered")
-        if layered is not None and layered.has_controlled_execution:
-            return "project_delivery_layered"
+        # New projects always use the active registry id. Legacy ids are
+        # compatibility-only and must never win default routing.
+        selected = context.default_template_id
+        template = context.template_source(selected)
+        if template is not None and template.has_controlled_execution:
+            return template.id
         return None
 
     @staticmethod
@@ -124,8 +121,8 @@ class PlanValidator:
                 "project_delivery_layered",
             }:
                 raise PlanValidationError(
-                    "空项目的完整交付必须选择受控模板 'project_delivery_dynamic'、"
-                    "'project_delivery' 或 'project_delivery_layered'；"
+                    "空项目的完整交付必须选择受控模板 'project_delivery'"
+                    " 或 'project_delivery_layered'；"
                     "该模板会生成 requirement、architecture、tasks、environment、"
                     "implementation、tests 和 review 全链路产物"
                 )
@@ -259,11 +256,7 @@ class PlanValidator:
             # Blueprint stage; the control plane will add module stages after
             # that object is validated instead of forcing a fixed template.
             and not any(step.stage_id == "architecture_blueprint" for step in draft.steps)
-            and (
-                context.template_source("project_delivery") is not None
-                or context.template_source("project_delivery_dynamic") is not None
-                or context.template_source("project_delivery_layered") is not None
-            )
+            and context.default_template_id is not None
         )
 
     @staticmethod

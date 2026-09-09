@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from app.execution_context import ExecutionMode
 
@@ -128,19 +129,84 @@ class WorkflowTemplate:
     def has_controlled_execution(self) -> bool:
         return any(node.execution_mode is not ExecutionMode.EXCLUSIVE for node in self.nodes)
 
+@dataclass(frozen=True)
+class WorkflowTemplateRecord:
+    """模板的生命周期元数据，与模板内容本身分离。"""
+
+    template: WorkflowTemplate
+    version: str = "v1"
+    status: Literal["active", "deprecated", "hidden", "compatibility_only"] = "active"
+    aliases: tuple[str, ...] = ()
+    is_default: bool = False
+
+
 class WorkflowTemplateRegistry:
-    """Planner 可查询的流程经验目录。"""
+    """流程模板唯一事实来源，兼容旧模板但不让其参与新项目默认路由。"""
 
     def __init__(self) -> None:
-        self._templates: dict[str, WorkflowTemplate] = {}
+        self._records: dict[str, WorkflowTemplateRecord] = {}
+        self._aliases: dict[str, str] = {}
 
-    def register(self, template: WorkflowTemplate) -> None:
-        if template.id in self._templates:
+    def register(
+        self,
+        template: WorkflowTemplate,
+        *,
+        version: str = "v1",
+        status: Literal["active", "deprecated", "hidden", "compatibility_only"] | None = None,
+        aliases: tuple[str, ...] = (),
+        is_default: bool = False,
+    ) -> None:
+        if template.id in self._records:
             raise ValueError(f"WorkflowTemplate '{template.id}' 已注册")
-        self._templates[template.id] = template
+        if template.id in self._aliases:
+            raise ValueError(f"模板 canonical id '{template.id}' 已被 alias 占用")
+        if len(set(aliases)) != len(aliases):
+            raise ValueError(f"模板 '{template.id}' 包含重复 alias")
+        if template.id in aliases:
+            raise ValueError(f"模板 '{template.id}' 不能把自身注册为 alias")
+        conflicting_aliases = [
+            alias for alias in aliases
+            if alias in self._aliases or alias in self._records
+        ]
+        if conflicting_aliases:
+            raise ValueError(
+                f"模板 alias 已注册: {', '.join(sorted(conflicting_aliases))}"
+            )
+        inferred_status = status or "active"
+        if not version or not version.strip():
+            raise ValueError("模板 version 不能为空")
+        if any(not alias or not alias.strip() for alias in aliases):
+            raise ValueError("模板 alias 不能为空")
+        if is_default and inferred_status != "active":
+            raise ValueError("只有 active 模板可以成为默认模板")
+        if is_default and any(record.is_default and record.status == "active" for record in self._records.values()):
+            raise ValueError("模板族已存在 active 默认模板")
+        record = WorkflowTemplateRecord(template, version, inferred_status, aliases, is_default)
+        self._records[template.id] = record
+        for alias in aliases:
+            if alias in self._aliases or alias in self._records:
+                raise ValueError(f"模板 alias '{alias}' 已注册")
+            self._aliases[alias] = template.id
 
     def get(self, template_id: str) -> WorkflowTemplate | None:
-        return self._templates.get(template_id)
+        canonical = self._aliases.get(template_id, template_id)
+        record = self._records.get(canonical)
+        return record.template if record else None
 
-    def templates(self) -> tuple[WorkflowTemplate, ...]:
-        return tuple(self._templates.values())
+    def record(self, template_id: str) -> WorkflowTemplateRecord | None:
+        canonical = self._aliases.get(template_id, template_id)
+        return self._records.get(canonical)
+
+    def active_templates(self) -> tuple[WorkflowTemplate, ...]:
+        return tuple(r.template for r in self._records.values() if r.status == "active")
+
+    def default(self, family: str = "project_delivery") -> WorkflowTemplate | None:
+        active = tuple(r.template for r in self._records.values() if r.status == "active" and r.is_default)
+        if len(active) > 1:
+            raise ValueError(f"模板族 '{family}' 存在多个默认模板")
+        return active[0] if active else None
+
+    def templates(self, *, include_compatibility: bool = True) -> tuple[WorkflowTemplate, ...]:
+        if include_compatibility:
+            return tuple(r.template for r in self._records.values())
+        return self.active_templates()

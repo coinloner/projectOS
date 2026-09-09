@@ -56,6 +56,7 @@ _PROVIDERS: dict[str, dict[str, str]] = {
         "api_key_env": "TOTOKEN_API_KEY",
         "crewai_provider": "openai",
         "wire_api": "responses",
+        "http_headers": (("x-openai-actor-authorization", "local-image-extension"),),
     },
     "uuapi": {
         "base_url": "https://uuapi.io/v1",
@@ -139,6 +140,7 @@ def resolve_llm_selection(
         api_key_env=config["api_key_env"],
         crewai_provider=config["crewai_provider"],
         wire_api=config.get("wire_api", "chat_completions"),
+        http_headers=tuple(config.get("http_headers", ())),
     )
 
 

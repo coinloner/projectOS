@@ -2268,7 +2268,7 @@ class RunService:
                 "name": template.name,
                 "description": template.description,
             }
-            for template in container.templates.templates()
+            for template in container.templates.templates(include_compatibility=False)
             if template.has_controlled_execution
         )
 

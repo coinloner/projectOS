@@ -160,7 +160,7 @@ class PlanningContextTest(unittest.TestCase):
                 goal="生产级前后端系统，包含数据库、异步任务和并发交互页面",
                 plan_id="complex-delivery",
             )
-            self.assertEqual(result.plan.template_id, "project_delivery_dynamic")
+            self.assertEqual(result.plan.template_id, "project_delivery")
             self.assertEqual(result.attempts, 0)
             self.assertEqual(runtime.prompts, [])
 
@@ -695,7 +695,7 @@ class PlannerServiceTest(unittest.TestCase):
             result = service.plan(goal="实现 Todo 并完成测试和交付审查", plan_id="full-delivery")
 
             self.assertEqual(result.attempts, 0)
-            self.assertEqual(result.plan.template_id, "project_delivery_dynamic")
+            self.assertEqual(result.plan.template_id, "project_delivery")
             self.assertEqual(len(result.plan.work_items), 4)
             self.assertEqual(
                 {item.artifact_key for item in result.plan.work_items},

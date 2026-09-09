@@ -113,6 +113,14 @@ class ModuleRef(_DesignModel):
 
 
 class InterfaceRef(_DesignModel):
+    def model_dump(self, *args, **kwargs):
+        # Optional transport metadata is omitted from the default wire shape.
+        # Callers can still opt in explicitly by passing exclude_defaults=False
+        # or exclude_none=False.
+        kwargs.setdefault("exclude_none", True)
+        kwargs.setdefault("exclude_defaults", True)
+        return super().model_dump(*args, **kwargs)
+
     interface_id: str = Field(min_length=1, max_length=128)
     direction: Literal["provided", "consumed"]
     summary: str = Field(min_length=1, max_length=500)
@@ -422,10 +430,22 @@ class ArchitectureDesignBundle(_DesignModel):
                 if normalized not in {p.replace("\\", "/").lstrip("/") for p in unit.owned_files}:
                     raise ValueError(f"实现单元 {unit.unit_id} 的 required_paths 必须属于 owned_files: {required}")
 
-        # NOTE: Blueprint.required_files 验证已移除
-        # Blueprint (depth=0) 不应该声明具体文件，这是 Implementation (depth=2) 的职责。
-        # Layer.path_mapping 现在只能声明目录模式（如 schemas/**），不能声明具体文件。
-        # 层级边界验证将在 Code 阶段事后检查（检查生成的文件是否违反 forbidden_imports）。
+        # Blueprint.required_files is a cross-level promise: every declared
+        # file must have one and only one implementation owner. Enforce this at
+        # integration time so a plan cannot reach Code with an unowned file.
+        required_files = {
+            path.replace("\\", "/").lstrip("/")
+            for path in self.blueprint.required_files
+        }
+        missing_required = sorted(required_files - set(owned_files))
+        if missing_required:
+            raise ValueError(
+                "ArchitectureBlueprint.required_file_not_owned: "
+                + ", ".join(missing_required)
+            )
+
+        # Layer.path_mapping remains a directory boundary; concrete ownership
+        # is now guaranteed by the cross-level check above.
 
         for unit in units:
             current_wave = unit.wave if unit.wave is not None else 0

@@ -10,6 +10,7 @@ from app.agent.result import AgentResult
 from app.artifact.repository import ArtifactRef, ArtifactRepository
 from app.memory.store import MemoryStore
 from app.domain.architecture.service import ArchitectureArtifactWorkflow
+from app.domain.architecture.tools import register_architecture_tools
 from app.orchestration.retry import FailureKind, FailurePackage, FailureSignal, RecoveryAction, RetryPolicy
 from app.orchestration.node_result import NodeResult
 from app.tool_manager.gateway import ToolGateway
@@ -175,23 +176,26 @@ class ReviewQualityRefreshTest(unittest.TestCase):
             AgentDefinition("architecture_agent", "architecture", "架构", "architecture"),
             InvalidArchitectureAgent,
         )
-        result = GraphRunner(agents, ToolGateway()).run(
-            ExecutionPlan(
-                id="architecture-tool-validation",
-                goal="测试架构工具校验错误",
-                trace=TraceContext.ephemeral(),
-                work_items=(
-                    WorkItem(
-                        id="module-api",
-                        agent_id="architecture_agent",
-                        objective="生成模块设计",
-                        output_key="module-api",
-                        execution_mode=ExecutionMode.PARTITIONED,
-                        slot="module-api",
+        gateway = ToolGateway()
+        with tempfile.TemporaryDirectory() as project_path:
+            register_architecture_tools(gateway, project_path)
+            result = GraphRunner(agents, gateway).run(
+                ExecutionPlan(
+                    id="architecture-tool-validation",
+                    goal="测试架构工具校验错误",
+                    trace=TraceContext.ephemeral(),
+                    work_items=(
+                        WorkItem(
+                            id="module-api",
+                            agent_id="architecture_agent",
+                            objective="生成模块设计",
+                            output_key="module-api",
+                            execution_mode=ExecutionMode.PARTITIONED,
+                            slot="module-api",
+                        ),
                     ),
-                ),
+                )
             )
-        )
         self.assertEqual(result.status, GraphRunStatus.FAILED)
         self.assertIn("architecture_schema_validation", result.error or "")
         self.assertIn("expected_tool=write_module_design", result.error or "")
@@ -514,8 +518,16 @@ class GraphRunnerTest(unittest.TestCase):
             self.assertIn("交付文件缺少合同声明符号", " ".join(issues))
 
     def setUp(self) -> None:
+        self._architecture_project = tempfile.TemporaryDirectory()
         self.tools = ToolGateway()
+        # Architecture WorkItems now have a deterministic tool contract. Keep
+        # the fixture aligned with production bootstrap so tests exercise the
+        # Agent behavior rather than being rejected by preflight.
+        register_architecture_tools(self.tools, self._architecture_project.name)
         self.agents = AgentRegistry()
+
+    def tearDown(self) -> None:
+        self._architecture_project.cleanup()
 
     def register_agent(
         self,

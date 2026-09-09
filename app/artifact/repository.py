@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
 import re
 from threading import RLock
+from typing import Callable
 from uuid import uuid4
 
 from app.artifact.store import ArtifactStore
@@ -70,6 +71,39 @@ class StagedArtifact:
     ref: ArtifactRef
     digest: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class ArtifactCommitReceipt:
+    """统一的、可审计的 staged 交付完成凭证。
+
+    Agent 文本和 ``write_staged`` 的返回值都不是完成信号；只有经过
+    manifest、内容 digest、范围和领域 validator 验证后写入的 receipt 才能
+    驱动 WorkItem 完成或恢复。
+    """
+
+    artifact_id: str
+    artifact_kind: str
+    ref: ArtifactRef
+    digest: str
+    trace_id: str
+    work_item_id: str
+    slot: str
+    validation_status: str = "passed"
+    committed_at: str = field(default_factory=lambda: _now())
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "artifact_id": self.artifact_id,
+            "artifact_kind": self.artifact_kind,
+            "ref": asdict(self.ref),
+            "digest": self.digest,
+            "trace_id": self.trace_id,
+            "work_item_id": self.work_item_id,
+            "slot": self.slot,
+            "validation_status": self.validation_status,
+            "committed_at": self.committed_at,
+        }
 
 
 @dataclass(frozen=True)
@@ -189,6 +223,73 @@ class ArtifactRepository:
             if manifest.get("artifact_key") != ref.artifact_key or manifest.get("digest") != _digest(content):
                 raise RuntimeError(f"暂存产物清单校验失败: {ref.ref_id}")
             return content
+
+    def verify_staged(
+        self,
+        ref: ArtifactRef,
+        *,
+        expected_trace_id: str,
+        expected_work_item_id: str,
+        expected_slot: str,
+        expected_artifact_kind: str,
+        validator: Callable[[str], object] | None = None,
+    ) -> ArtifactCommitReceipt:
+        """Validate and commit one staged output through one control-plane gate.
+
+        The method is deliberately the same entry point used by execution and
+        recovery. It checks provenance before reading content, then validates
+        domain shape, and only then persists a receipt. A receipt is immutable
+        evidence that the output—not the model's prose—satisfied the contract.
+        """
+        if ref.layer != "staged":
+            raise ValueError("staged 交付验证只能接受 staged ArtifactRef")
+        if ref.trace_id != expected_trace_id or ref.work_item_id != expected_work_item_id:
+            raise ValueError(
+                f"staged 产物 provenance 不匹配: expected={expected_trace_id}/{expected_work_item_id}, "
+                f"actual={ref.trace_id}/{ref.work_item_id}"
+            )
+        if ref.slot != expected_slot:
+            raise ValueError(f"staged 产物 slot 不匹配: expected={expected_slot}, actual={ref.slot}")
+        content = self.load_ref(ref)
+        if validator is not None:
+            validator(content)
+        manifest = self._read_json(self._staged_root(ref) / "manifest.json")
+        digest = str(manifest.get("digest") or _digest(content))
+        receipt = ArtifactCommitReceipt(
+            artifact_id=ref.ref_id,
+            artifact_kind=expected_artifact_kind,
+            ref=ref,
+            digest=digest,
+            trace_id=expected_trace_id,
+            work_item_id=expected_work_item_id,
+            slot=expected_slot,
+        )
+        with self._lock:
+            self._write_json(self._staged_root(ref) / "commit-receipt.json", receipt.as_dict())
+        return receipt
+
+    def load_commit_receipt(self, ref: ArtifactRef) -> ArtifactCommitReceipt:
+        """Load a receipt and re-verify the referenced staged content."""
+        if ref.layer != "staged":
+            raise ValueError("commit receipt 只能对应 staged ArtifactRef")
+        path = self._staged_root(ref) / "commit-receipt.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"staged 产物没有 commit receipt: {ref.ref_id}")
+        payload = self._read_json(path)
+        content = self.load_ref(ref)
+        if payload.get("digest") != _digest(content):
+            raise RuntimeError(f"commit receipt digest 校验失败: {ref.ref_id}")
+        return ArtifactCommitReceipt(
+            artifact_id=str(payload["artifact_id"]),
+            artifact_kind=str(payload["artifact_kind"]),
+            ref=ArtifactRef(**payload["ref"]),
+            digest=str(payload["digest"]),
+            trace_id=str(payload["trace_id"]),
+            work_item_id=str(payload["work_item_id"]),
+            slot=str(payload["slot"]),
+            validation_status=str(payload.get("validation_status", "passed")),
+            committed_at=str(payload["committed_at"]),
+        )
 
     def create_candidate(
         self,

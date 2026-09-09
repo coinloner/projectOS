@@ -27,7 +27,7 @@ class Project:
         RuntimeManifest(
             version=1,
             profile="python-stdlib",
-            application="python-dynamic"
+            application=None
         ).save(
             str(self.project_path)
         )

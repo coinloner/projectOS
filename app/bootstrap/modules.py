@@ -61,11 +61,13 @@ def install_modules(container: "ProjectOSContainer") -> None:
     container.templates.register(architecture_parallel_template())
     container.templates.register(architecture_layered_template())
     # 新的标准模板 (优先注册)
-    container.templates.register(delivery_default_template())
+    container.templates.register(
+        delivery_default_template(), is_default=True
+    )
     container.templates.register(delivery_incremental_template())
     container.templates.register(architecture_only_template())
     # 旧模板 (已废弃,仅供历史 Trace 兼容)
-    container.templates.register(project_delivery_template())
+    container.templates.register(project_delivery_template(), status="compatibility_only")
     # container.templates.register(project_delivery_dynamic_template())  # 已禁用废弃模板
     container.templates.register(project_delivery_layered_template())
     container.templates.register(project_delivery_minimal_template())

@@ -103,6 +103,7 @@ class PlanningContext:
     workspace: WorkspaceSnapshot
     runtime: RuntimeSnapshot
     project_contract: ProjectContractSnapshot
+    default_template_id: str | None = None
     processes: tuple[ProcessHint, ...] = ()
     source_templates: tuple["WorkflowTemplate", ...] = field(
         default=(), repr=False, compare=False
@@ -145,7 +146,7 @@ class PlanningContext:
             for key in artifact_keys
         )
         template_hints = tuple(
-            _template_hint(template) for template in templates.templates()
+            _template_hint(template) for template in templates.active_templates()
         )
         workspace = WorkspaceStore(artifacts.project_path)
         contract_store = ProjectContractStore(artifacts.project_path)
@@ -172,6 +173,7 @@ class PlanningContext:
             ),
             runtime=runtime_snapshot(artifacts.project_path),
             project_contract=project_contract,
+            default_template_id=(templates.default().id if templates.default() else None),
             processes=tuple(_process_hint(process) for process in default_process_registry().processes()),
             source_templates=templates.templates(),
         )

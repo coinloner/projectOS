@@ -43,6 +43,38 @@ class RetryPolicyTest(unittest.TestCase):
             )
             self.assertEqual(restored.latest_for_work_item("b"), record)
 
+    def test_control_plane_contract_failures_have_explicit_retry_boundaries(self) -> None:
+        policy = RetryPolicy()
+
+        self.assertEqual(
+            policy.action_for(
+                FailureSignal(FailureKind.TOOL_CONTRACT_MISMATCH, "missing tool"),
+                total_retries=0, item_retries=0, kind_retries=0,
+            ),
+            RecoveryAction.BLOCK,
+        )
+        self.assertEqual(
+            policy.action_for(
+                FailureSignal(FailureKind.ARTIFACT_CONTRACT_VIOLATION, "invalid staged output"),
+                total_retries=0, item_retries=0, kind_retries=0,
+            ),
+            RecoveryAction.RETRY_ITEM,
+        )
+        self.assertEqual(
+            policy.action_for(
+                FailureSignal(FailureKind.ARTIFACT_CONTRACT_VIOLATION, "invalid staged output"),
+                total_retries=1, item_retries=1, kind_retries=1,
+            ),
+            RecoveryAction.FAIL,
+        )
+        self.assertEqual(
+            policy.action_for(
+                FailureSignal(FailureKind.ARTIFACT_COMMIT_FAILURE, "digest mismatch"),
+                total_retries=0, item_retries=0, kind_retries=0,
+            ),
+            RecoveryAction.BLOCK,
+        )
+
     def test_policy_chooses_recovery_by_failure_cause_and_budget(self) -> None:
         policy = RetryPolicy()
 

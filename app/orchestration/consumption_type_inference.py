@@ -179,8 +179,13 @@ class ConsumptionTypeInferenceEngine:
             return ConsumptionInference(
                 consumption_type=constraint["must_be"],
                 confidence="high",
-                rationale=f"运行时约束: {constraint['rationale']}",
+                rationale=f"运行时约束: {constraint['rationale']}（HTTP 服务/跨进程边界）",
                 requires_code_verification=False,
+                interface_suggestion=(
+                    {"protocol": "http"}
+                    if constraint["must_be"] is ConsumptionType.HTTP_CALL
+                    else None
+                ),
             )
 
         # 2. 检查技术栈规则
@@ -270,7 +275,7 @@ class ConsumptionTypeInferenceEngine:
         if consumer_runtime == "browser" and provider_type == ConsumptionType.IMPORT_CODE:
             return {
                 "is_valid": False,
-                "reason": "浏览器环境不能直接 import 服务器端代码，必须通过 HTTP 调用",
+                "reason": "浏览器环境不能直接 import 服务器端代码，属于不同运行时/不同进程，必须通过 HTTP 调用",
                 "suggestion": "将提供者声明为 HTTP_CALL 类型，或使用编译时工具（如 Webpack）打包",
             }
 
@@ -282,7 +287,7 @@ class ConsumptionTypeInferenceEngine:
             provider_runtime != "unknown"):
             return {
                 "is_valid": False,
-                "reason": f"不同运行时环境（{consumer_runtime} vs {provider_runtime}）不能直接 import 代码",
+                "reason": f"不同运行时环境（{consumer_runtime} vs {provider_runtime}）不能直接 import 代码；不同进程之间必须通过接口通信",
                 "suggestion": "使用 HTTP_CALL 或 PROCESS_SPAWN 进行跨进程通信",
             }
 

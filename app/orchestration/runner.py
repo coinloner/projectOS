@@ -32,6 +32,7 @@ from app.orchestration.progress import (
 )
 from app.orchestration.work_item import WorkItem
 from app.orchestration.work_item import DependencySource, WorkItemDependency
+from app.orchestration.delivery_registry import DeliveryContractRegistry
 from app.orchestration.retry import (
     FailureKind,
     FailureSignal,
@@ -159,66 +160,43 @@ def _is_empty_test_evidence(evidence: object) -> bool:
     )
 
 
-def _architecture_tool_allowlist(item: WorkItem) -> tuple[str, ...]:
-    """Return the minimal local tool set for a structured architecture item.
+def _delivery_contract_for(item: WorkItem):
+    return DeliveryContractRegistry.contract_for(
+        agent_id=item.agent_id,
+        execution_mode=item.execution_mode,
+        slot=item.slot,
+        stage_id=item.stage_id,
+        work_item_id=item.id,
+        publish_target=item.publish_target,
+    )
 
-    Legacy Markdown architecture workflows retain their historical tool set;
-    only the new layered slots are narrowed here.
-    """
-    if item.agent_id != "architecture_agent":
-        return ()
-    if item.execution_mode is ExecutionMode.QUALITY_GATE:
-        return ()
-    if item.execution_mode is ExecutionMode.PARTITIONED:
-        slot = item.slot or ""
-        writer = (
-            "write_architecture_blueprint"
-            if slot == "blueprint"
-            else "write_module_design"
-            if slot.startswith("module-")
-            else "write_implementation_design"
-            if slot.startswith("implementation-")
-            else None
-        )
-        if writer is not None:
-            return ("load_architecture_input", writer)
-    # Compiled plans prefix blueprint ids (for example ``wi-09-``).  Match
-    # the semantic suffix instead of the template id so the integration
-    # contract is enforced for both compiled and hand-built plans.
-    if (
-        item.execution_mode is ExecutionMode.INTEGRATION
-        and (
-            item.stage_id == "architecture_integration"
-            or item.id.endswith("architecture-layered-integration")
-            or item.publish_target == "architecture"
-        )
-    ):
-        return ("load_architecture_input", "integrate_architecture_designs")
-    return ()
+
+def _architecture_tool_allowlist(item: WorkItem) -> tuple[str, ...]:
+    """Compatibility wrapper around the single delivery-contract registry."""
+    from app.orchestration.delivery_registry import DeliveryContractRegistry
+
+    return DeliveryContractRegistry.allowlist_for(
+        agent_id=item.agent_id,
+        execution_mode=item.execution_mode,
+        slot=item.slot,
+        stage_id=item.stage_id,
+        work_item_id=item.id,
+        publish_target=item.publish_target,
+    )
 
 
 def _expected_architecture_tool(item: WorkItem) -> str | None:
-    """Return the single structured writer expected by a layered item."""
-    if item.agent_id != "architecture_agent":
-        return None
-    slot = item.slot or ""
-    if item.execution_mode is ExecutionMode.PARTITIONED:
-        if slot == "blueprint":
-            return "write_architecture_blueprint"
-        if slot.startswith("module-"):
-            return "write_module_design"
-        if slot.startswith("implementation-"):
-            return "write_implementation_design"
-    if (
-        item.execution_mode is ExecutionMode.INTEGRATION
-        and (
-            item.stage_id == "architecture_integration"
-            or item.id.endswith("architecture-layered-integration")
-            or item.publish_target == "architecture"
-        )
-    ):
-        return "integrate_architecture_designs"
-    return None
+    """Compatibility wrapper around the single delivery-contract registry."""
+    from app.orchestration.delivery_registry import DeliveryContractRegistry
+
+    return DeliveryContractRegistry.expected_tool_for(
+        agent_id=item.agent_id,
+        execution_mode=item.execution_mode,
+        slot=item.slot,
+        stage_id=item.stage_id,
+        work_item_id=item.id,
+        publish_target=item.publish_target,
+    )
 
 
 def _validate_layered_blueprint_modules(plan: ExecutionPlan, content: str) -> str | None:
@@ -1967,6 +1945,43 @@ class GraphRunner:
                     prior_worker_abort=prior_worker_abort,
                 ),
             )
+            tool_diagnostics = self._tools.preflight(
+                definition.domain, item.required_tools, context=context
+            )
+            self._record_event(
+                state.plan,
+                item,
+                "tool_contract_preflight",
+                details=tool_diagnostics.as_dict(),
+            )
+            if not tool_diagnostics.passed:
+                missing = ", ".join(
+                    dict.fromkeys(
+                        (*tool_diagnostics.missing_registered, *tool_diagnostics.missing_visible)
+                    )
+                )
+                return NodeResult.needs_replan(
+                    work_item_id=item.id,
+                    agent_id=item.agent_id,
+                    content="tool contract preflight failed",
+                    signal=FailureSignal(
+                        FailureKind.TOOL_CONTRACT_MISMATCH,
+                        (
+                            f"工作项必需工具在 Agent 创建前未通过控制面预检: {missing}; "
+                            f"registered={list(tool_diagnostics.registered_tools)}; "
+                            f"visible={list(tool_diagnostics.visible_tools)}"
+                        ),
+                        validator="ToolGateway.preflight",
+                        code=(
+                            "missing_registered"
+                            if tool_diagnostics.missing_registered
+                            else "missing_visible"
+                        ),
+                        input_digest=item.contract_digest,
+                        retry_hint="repair_plan_or_tool_registration",
+                    ),
+                )
+
             skill_guidance, resolved_skill_refs = self._skills.render_for(
                 item.agent_id, item.skill_refs
             )
@@ -2505,54 +2520,84 @@ class GraphRunner:
             agent_id=item.agent_id,
             result=agent_result,
         )
-        # A layered architecture item is not complete merely because the
-        # model returned natural-language text.  Its staged object is the
-        # hand-off contract for every dependent module; verify that exact
-        # manifest/output before allowing the DAG to advance.
-        expected_architecture_tool = _expected_architecture_tool(item)
+        # Completion is driven by the registered artifact contract, never by
+        # the Agent's natural-language terminal response.  The same verified
+        # receipt is also used by durable recovery below.
+        delivery_contract = _delivery_contract_for(item)
+        expected_architecture_tool = (
+            delivery_contract.expected_tool if delivery_contract is not None else None
+        )
         if (
             node_result.status is NodeStatus.COMPLETED
-            and expected_architecture_tool is not None
+            and delivery_contract is not None
+            and delivery_contract.output_artifact_kind is not None
             and item.execution_mode is ExecutionMode.PARTITIONED
             and self._artifacts is not None
         ):
             staged_ref = ArtifactRef.staged(
-                artifact_key="architecture",
+                artifact_key=item.artifact_key or "architecture",
                 trace_id=state.plan.trace.trace_id,
                 work_item_id=item.id,
                 slot=item.slot or "",
             )
-            try:
-                staged_content = self._artifacts.load_ref(staged_ref)
+
+            def validate_staged(content: str) -> object:
+                parsed = DeliveryContractRegistry.validate_content(
+                    delivery_contract, content
+                )
                 if item.slot == "blueprint":
                     blueprint_error = _validate_layered_blueprint_modules(
-                        state.plan, staged_content
+                        state.plan, content
                     )
                     if blueprint_error:
                         raise ValueError(blueprint_error)
-            except (FileNotFoundError, RuntimeError, ValueError) as error:
-                validation_like = isinstance(error, ValueError) and any(
-                    marker in str(error).lower()
-                    for marker in ("validation error", "input should", "string_type", "field required")
+                return parsed
+
+            try:
+                receipt = self._artifacts.verify_staged(
+                    staged_ref,
+                    expected_trace_id=state.plan.trace.trace_id,
+                    expected_work_item_id=item.id,
+                    expected_slot=item.slot or "",
+                    expected_artifact_kind=delivery_contract.output_artifact_kind,
+                    validator=validate_staged,
                 )
+                self._record_event(
+                    state.plan,
+                    item,
+                    "artifact_commit_verified",
+                    details={"receipt": receipt.as_dict(), "contract_kind": delivery_contract.kind},
+                )
+            except RuntimeError as error:
                 return NodeResult.needs_replan(
                     work_item_id=item.id,
                     agent_id=item.agent_id,
                     content=node_result.content,
-                    signal=(
+                    signal=FailureSignal(
+                        FailureKind.ARTIFACT_COMMIT_FAILURE,
+                        f"架构 staged 产物提交凭证校验失败（{expected_architecture_tool}）：{error}",
+                        validator="ArtifactRepository.verify_staged",
+                        input_digest=item.contract_digest,
+                        retry_hint="repair_artifact_repository",
+                    ),
+                )
+            except (FileNotFoundError, ValueError, TypeError) as error:
+                return NodeResult.needs_replan(
+                    work_item_id=item.id,
+                    agent_id=item.agent_id,
+                    content=node_result.content,
+                    signal=replace(
                         _architecture_validation_signal(
                             error,
                             item=item,
                             summary_prefix=(
-                                f"架构节点 staged 设计对象未通过结构校验（{expected_architecture_tool}）"
+                                f"架构 staged 产物违反交付合同（{expected_architecture_tool}）"
                             ),
-                        )
-                        if validation_like
-                        else FailureSignal(
-                            FailureKind.ARCHITECTURE_CONTRACT_MISSING,
-                            f"架构节点未形成必需的 staged 设计对象（{expected_architecture_tool}）：{error}",
-                            input_digest=item.contract_digest,
-                        )
+                        ),
+                        kind=FailureKind.ARTIFACT_CONTRACT_VIOLATION,
+                        validator=delivery_contract.validator,
+                        input_digest=item.contract_digest,
+                        retry_hint="schema_repair",
                     ),
                 )
         if (
@@ -3205,6 +3250,9 @@ class GraphRunner:
             and item.execution_mode is ExecutionMode.PARTITIONED
             and self._artifacts is not None
         ):
+            contract = _delivery_contract_for(item)
+            if contract is None or contract.output_artifact_kind is None:
+                return None
             ref = ArtifactRef.staged(
                 artifact_key=item.artifact_key or "architecture",
                 trace_id=state.plan.trace.trace_id,
@@ -3212,13 +3260,25 @@ class GraphRunner:
                 slot=item.slot or "",
             )
             try:
-                self._artifacts.load_ref(ref)
-            except (FileNotFoundError, RuntimeError, ValueError):
+                receipt = self._artifacts.verify_staged(
+                    ref,
+                    expected_trace_id=state.plan.trace.trace_id,
+                    expected_work_item_id=item.id,
+                    expected_slot=item.slot or "",
+                    expected_artifact_kind=contract.output_artifact_kind,
+                    validator=lambda content: DeliveryContractRegistry.validate_content(
+                        contract, content
+                    ),
+                )
+            except (FileNotFoundError, RuntimeError, ValueError, TypeError):
                 return None
             return NodeResult.completed(
                 work_item_id=item.id,
                 agent_id=item.agent_id,
-                content=f"从已校验暂存产物恢复: {ref.ref_id}",
+                content=(
+                    f"从已验证 ArtifactCommitReceipt 恢复: {receipt.artifact_id} "
+                    f"digest={receipt.digest}"
+                ),
             )
         if (
             item.agent_id == "architecture_agent"

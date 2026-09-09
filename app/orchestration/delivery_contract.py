@@ -8,7 +8,7 @@ required_paths。交付契约在编译计划时校验 owner 唯一性和阶段�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Mapping
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,7 @@ class DeliveryArtifact:
 @dataclass(frozen=True)
 class DeliveryContract:
     artifacts: tuple[DeliveryArtifact, ...]
+    enforce_dependency_order: bool = True
 
     def __post_init__(self) -> None:
         paths = [item.path for item in self.artifacts]
@@ -51,32 +52,45 @@ class DeliveryContract:
             DeliveryArtifact("implementation.md", "code-integration", "integration", ("tests", "review")),
             DeliveryArtifact("tests.md", "tests", "verification", ("review",)),
             DeliveryArtifact("review.md", "review", "review"),
-        ))
+        ), enforce_dependency_order=False)
 
-    def validate_plan(self, work_items: Iterable[object]) -> None:
+    def validate_plan(self, work_items: Iterable[object], *, bindings: Mapping[str, str] | None = None) -> None:
         items = tuple(work_items)
         by_id = {str(item.id): item for item in items}
-        aliases = {
-            artifact.owner: next(
-                (item_id for item_id in by_id if item_id == artifact.owner or item_id.endswith("-" + artifact.owner)),
-                None,
-            )
-            for artifact in self.artifacts
-        }
+
+        bindings = dict(bindings or {})
+        # The legacy contract has one canonical compiled-id adapter. This is an
+        # exact compatibility map, not fuzzy matching; new contracts must pass
+        # their own bindings from the compiler.
+        if not bindings and self is not None:
+            bindings.update({
+                "project-documents": "wi-project-documents",
+                "environment": "wi-environment",
+                "code-integration": "wi-code-integration",
+                "code": "wi-code-integration",
+                "tests": "wi-tests",
+                "test": "wi-tests",
+                "review": "wi-review",
+            })
+
+        def resolve(token: str) -> str | None:
+            # Role names are semantic contract keys. Resolution must be explicit:
+            # never infer identity from substrings or incidental output fields.
+            candidate = bindings.get(token, token)
+            return candidate if candidate in by_id else None
+
+        aliases = {artifact.owner: resolve(artifact.owner) for artifact in self.artifacts}
         missing = sorted(owner for owner, item_id in aliases.items() if item_id is None)
         if missing:
             raise ValueError("DeliveryContract 缺少产物 owner 节点: " + ", ".join(missing))
         dependencies = {
             str(item.id): {
-                next(
-                    (known for known in by_id if known == dependency or known.endswith("-" + str(dependency))),
-                    str(dependency),
-                )
+                resolved or str(dependency)
                 for dependency in getattr(item, "dependency_ids", ())
+                for resolved in (resolve(str(dependency)),)
             }
             for item in items
         }
-        known_ids = set(by_id)
 
         def depends_on(consumer: str, owner: str, seen: set[str] | None = None) -> bool:
             seen = seen or set()
@@ -92,13 +106,10 @@ class DeliveryContract:
             owner_id = aliases[artifact.owner]
             assert owner_id is not None
             for consumer_id in artifact.consumers:
-                resolved_consumer = next(
-                    (item_id for item_id in known_ids if item_id == consumer_id or item_id.endswith("-" + consumer_id)),
-                    None,
-                )
+                resolved_consumer = resolve(consumer_id)
                 if resolved_consumer is None:
                     raise ValueError(f"产物 {artifact.path} 引用了不存在的消费者: {consumer_id}")
-                if not depends_on(resolved_consumer, owner_id):
+                if self.enforce_dependency_order and not depends_on(resolved_consumer, owner_id):
                     raise ValueError(
                         f"产物 {artifact.path} 的消费者 {consumer_id} 未声明对 owner {artifact.owner} 的依赖"
                     )

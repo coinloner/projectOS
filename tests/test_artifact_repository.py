@@ -40,6 +40,49 @@ class ArtifactRepositoryTest(unittest.TestCase):
         )
         self.assertEqual(self.repository.load_ref(current), "# Integrated architecture")
 
+    def test_verify_staged_writes_a_receipt_and_recovery_can_revalidate_it(self) -> None:
+        staged = self.repository.write_staged(
+            trace_id="tr-receipt",
+            work_item_id="module-api",
+            artifact_key="architecture",
+            slot="module-api",
+            content="# Module API",
+        )
+
+        receipt = self.repository.verify_staged(
+            staged.ref,
+            expected_trace_id="tr-receipt",
+            expected_work_item_id="module-api",
+            expected_slot="module-api",
+            expected_artifact_kind="architecture_design",
+            validator=lambda content: content,
+        )
+        restored = self.repository.load_commit_receipt(staged.ref)
+
+        self.assertEqual(receipt.digest, staged.digest)
+        self.assertEqual(restored.artifact_kind, "architecture_design")
+        self.assertEqual(restored.ref, staged.ref)
+
+    def test_verify_staged_rejects_tampered_content_as_commit_failure(self) -> None:
+        staged = self.repository.write_staged(
+            trace_id="tr-tamper",
+            work_item_id="module-api",
+            artifact_key="architecture",
+            slot="module-api",
+            content="# Module API",
+        )
+        output = Path(self.project_path) / ".projectos" / "runs" / "tr-tamper" / "work-items" / "module-api" / "output" / "module-api.md"
+        output.write_text("# Tampered", encoding="utf-8")
+
+        with self.assertRaisesRegex(RuntimeError, "清单校验失败"):
+            self.repository.verify_staged(
+                staged.ref,
+                expected_trace_id="tr-tamper",
+                expected_work_item_id="module-api",
+                expected_slot="module-api",
+                expected_artifact_kind="architecture_design",
+            )
+
     def test_rejected_candidate_never_changes_current_revision(self) -> None:
         self.repository.write_staged(
             trace_id="tr-first", work_item_id="architecture-overview",

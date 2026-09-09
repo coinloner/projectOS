@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import fnmatch
 import hashlib
@@ -11,6 +11,7 @@ import json
 from app.artifact.repository import ArtifactRef
 from app.execution_context import ExecutionMode
 from app.orchestration.retry import FailurePackage
+from app.orchestration.delivery_registry import DeliveryContractRegistry
 
 
 class DependencySource(str, Enum):
@@ -73,7 +74,9 @@ class WorkItem:
     # control plane safely expand project-specific stages without asking the
     # model to provide execution permissions.
     stage_id: str | None = None
+    required_tools: tuple[str, ...] = ()
     contract_digest: str | None = None
+    _legacy_contract_digest: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for field_name in ("id", "agent_id", "objective", "output_key"):
@@ -140,6 +143,25 @@ class WorkItem:
                 )
         if self.delivery_contract is not None and not isinstance(self.delivery_contract, dict):
             raise ValueError("WorkItem.delivery_contract 必须是对象")
+        if any(not tool.strip() for tool in self.required_tools):
+            raise ValueError("WorkItem.required_tools 不能包含空字符串")
+        if len(set(self.required_tools)) != len(self.required_tools):
+            raise ValueError("WorkItem.required_tools 不能重复")
+        derived_tools = DeliveryContractRegistry.required_tools_for(
+            agent_id=self.agent_id,
+            execution_mode=self.execution_mode,
+            slot=self.slot,
+            work_item_id=self.id,
+            stage_id=self.stage_id,
+            publish_target=self.publish_target,
+        )
+        if not self.required_tools and derived_tools:
+            object.__setattr__(self, "required_tools", derived_tools)
+        elif derived_tools and self.required_tools != derived_tools:
+            raise ValueError(
+                f"WorkItem '{self.id}' 的 required_tools 与交付合同不一致: "
+                f"expected={derived_tools!r}, actual={self.required_tools!r}"
+            )
         if self.output_kind is None:
             object.__setattr__(self, "output_kind", _default_output_kind(self.execution_mode))
         elif not self.output_kind.strip():
@@ -160,13 +182,21 @@ class WorkItem:
         if self.contract_digest is None:
             object.__setattr__(self, "contract_digest", computed_digest)
         elif self.contract_digest != computed_digest:
-            raise ValueError("WorkItem.contract_digest 与执行合同不匹配")
+            # Historical plans did not seal the tool contract. Accept their
+            # legacy digest once so durable traces remain resumable; every new
+            # WorkItem and every explicitly rebuilt contract uses the stronger
+            # digest below.
+            legacy_digest = self._compute_contract_digest(include_required_tools=False)
+            if self.contract_digest == legacy_digest:
+                object.__setattr__(self, "_legacy_contract_digest", True)
+            else:
+                raise ValueError("WorkItem.contract_digest 与执行合同不匹配")
 
     @property
     def dependency_ids(self) -> tuple[str, ...]:
         return tuple(dependency.work_item_id for dependency in self.dependencies)
 
-    def _compute_contract_digest(self) -> str:
+    def _compute_contract_digest(self, *, include_required_tools: bool | None = None) -> str:
         """Return the digest of fields that define execution authorization.
 
         Objective/failure evidence are mutable diagnostics and are not part of
@@ -174,6 +204,8 @@ class WorkItem:
         must explicitly clear ``contract_digest`` so the new contract is
         re-sealed after deterministic boundary checks.
         """
+        if include_required_tools is None:
+            include_required_tools = not self._legacy_contract_digest
         payload = {
             "agent_id": self.agent_id,
             "execution_mode": self.execution_mode.value,
@@ -205,6 +237,8 @@ class WorkItem:
             "delivery_contract": self.delivery_contract,
             "output_kind": self.output_kind,
         }
+        if include_required_tools:
+            payload["required_tools"] = list(self.required_tools)
         # Historical plans without a process-stage identity retain their
         # original contract digest; dynamic stages opt into this extra field.
         if self.stage_id is not None:
@@ -222,6 +256,7 @@ class WorkItem:
             "stage_id": self.stage_id,
             "execution_mode": self.execution_mode.value,
             "output_kind": self.output_kind,
+            "required_tools": list(self.required_tools),
             "input_refs": [ref.ref_id for ref in self.input_refs],
             "dependencies": list(self.dependency_ids),
             "allowed_paths": list(self.allowed_paths),
