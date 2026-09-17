@@ -24,6 +24,7 @@ from app.orchestration.work_item import WorkItem
 from app.project.project import Project
 from scripts.freeze_architecture_comparison import verify_bundle, digest
 from scripts.architecture_comparison_faults import FaultProbe, SCENARIOS
+from scripts.architecture_branch_profile import validate_branch_profile, source_identity
 
 
 def import_module(bundle: Path, project: Path, module_id: str):
@@ -74,6 +75,9 @@ def main():
     parser.add_argument('--fault-scenario', choices=tuple(SCENARIOS), default='none')
     parser.add_argument('--group-id', default=None)
     args = parser.parse_args()
+    checkout = Path(__file__).resolve().parents[1]
+    branch_profile = validate_branch_profile(checkout, args.arm)
+    source = source_identity(checkout) if branch_profile else None
     verify_bundle(args.bundle)
     load_dotenv(args.env_file, override=False)
     if not os.environ.get('wanfa_API_KEY'):
@@ -98,6 +102,7 @@ def main():
         skills=container.skills, policies=container.policies, llm_selection=selection,
         max_workers=1, architecture_config=architecture_config)
     report = dict(scope='matched module natural pilot, not E2E or completed ABC comparison',
+        source_identity=source, branch_profile=branch_profile,
         architecture_config=architecture_config.as_dict(),
         architecture_config_digest=architecture_config.digest,
         group_id=args.group_id, fault_scenario=args.fault_scenario,

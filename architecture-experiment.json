@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "arm": "D",
+  "mode": "recursive",
+  "branch": "codex/architecture-fourway-d-20260917",
+  "common_snapshot": "22a3f4b330d08f6d1e7b5fe03a51c1b7fb64c5c7",
+  "implementation_status": "not_implemented"
+}

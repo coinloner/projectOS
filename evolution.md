@@ -411,3 +411,22 @@ B 在十次中九次观测到非空 checkpoint 加载（第10组只加载空记�
 历史样本审计额外发现一条未配对 A 运行：wanfa-matched-a-20260917-174747-644882（failed）。保留原始证据，不纳入15个匹配对，也不得隐去后用匹配完成率宣称所有已启动实验的总体完成率。匹配自然组1/2为191835与193735两个时间批次，组3/4/5为194856、205633、205938。
 
 结论：已完成请求的15组（30次匹配运行），未证明 checkpoint 提高成功率或降低成本。暂不扩大生产重构；优先调查 B 正式提交恢复失败及额外重试来源。此轮故障为工具调用异常，不覆盖输入版本变更、响应流截断或 Worker kill；不以未执行场景作成功证据。
+
+
+## 2026-09-17：四方案独立分支准备（不是横评结果）
+
+用户要求 A/B/C/D 四个独立分支，先完成 C/D 基础，再按 A/B 方法同期横评。
+已从当前含未提交修改的代码创建共同快照 `22a3f4b330d08f6d1e7b5fe03a51c1b7fb64c5c7`，
+使用临时 index，不改变原 index/HEAD、不 reset、不 clean。四个分支及 worktree 见
+`docs/design/architecture-fourway-protocol.md`；创建清单在
+`/Users/coinloner/projectOS/project/architecture-fourway-setup-20260917-fourway/branches.json`。
+
+新增实验分支身份检查，拒绝跨 arm 使用分支；运行 evidence 增加 source commit、branch、dirty 状态及 profile。
+C/D 没有实现路径时硬拒绝运行，不能通过把配置标签改成 implemented 来冒充方案完成。
+新增只读四分支预检；这不是四臂执行器。
+
+重新确认：当前 issue report 只记录冲突，不会修订父产物；固定 depth=0/1/2 不能视作递归设计。
+旧单 Module 用例继续保留，但不足以验证 C/D；扩展闭环组必须四臂同输入、同最终交付门槛、同总预算。
+C/D 准入测试与正式横评分开；未命中故障不能算恢复成功。
+
+本阶段未调用 wanfa、未新增模型实验样本、未产生四方案优劣结论。C/D 实现和真实准入运行仍未完成。
