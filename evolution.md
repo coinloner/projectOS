@@ -430,3 +430,10 @@ C/D 没有实现路径时硬拒绝运行，不能通过把配置标签改成 imp
 C/D 准入测试与正式横评分开；未命中故障不能算恢复成功。
 
 本阶段未调用 wanfa、未新增模型实验样本、未产生四方案优劣结论。C/D 实现和真实准入运行仍未完成。
+
+### 本阶段实际验证
+
+分支隔离/输入校验/故障探针/既有 A/B checkpoint 相关定向测试：源工作目录以及四个独立 worktree 均各自执行，均为 `50 passed, 7 subtests passed`。
+这些是共同基线与隔离检查，不是 C/D 功能测试，不证明 C/D 完整或四方案效果。
+四分支预检 `ready_to_benchmark=false`，阻塞项为 C/D 实现未完成及真实 wanfa 准入证据缺失。
+预检报告：`/Users/coinloner/projectOS/project/architecture-fourway-setup-20260917-fourway/preflight.json`。
