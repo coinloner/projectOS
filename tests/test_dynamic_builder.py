@@ -22,6 +22,7 @@ from app.agent.registry import AgentDefinition
 from app.agent.result import AgentResult
 from app.tool_manager.gateway import ToolGateway
 from app.orchestration.runner import GraphRunner
+from app.domain.architecture.tools import register_architecture_tools
 from app.domain.architecture.service import ArchitectureArtifactWorkflow
 from app.execution_context import ExecutionContext
 from app.artifact.store import ArtifactStore
@@ -379,9 +380,11 @@ class DynamicBuilderTest(unittest.TestCase):
                 ),
                 factory=lambda: DynamicAgent(),
             )
+            tools = ToolGateway()
+            register_architecture_tools(tools, project_path)
             result = GraphRunner(
                 agents,
-                ToolGateway(),
+                tools,
                 traces=traces,
                 artifacts=ArtifactRepository(project_path),
                 max_workers=4,
@@ -390,7 +393,40 @@ class DynamicBuilderTest(unittest.TestCase):
             self.assertIn("wi-architecture-module-catalog", result.state.node_results)
             self.assertEqual(len(result.state.plan.work_items), 3)
 
+    def test_failed_dynamic_child_never_reaches_integration(self) -> None:
+        blueprint = _blueprint(ModuleRef(module_id="catalog", responsibility="目录", purpose="发现商品"))
+        calls = []
+        with tempfile.TemporaryDirectory() as project_path:
+            class Agent:
+                def run(self, task, *, context=None):
+                    calls.append(context.work_item_id)
+                    if context.slot == "blueprint":
+                        ArchitectureArtifactWorkflow(project_path).write_staged_design(
+                            context, blueprint.model_dump(mode="json"))
+                    # Child falsely reports completed without persisting its design.
+                    return AgentResult.completed("done")
+
+            traces = TraceStore(project_path)
+            plan = replace(_base_plan(), trace=traces.start_trace("failed dynamic child"))
+            plan = replace(plan, work_items=(replace(plan.work_items[0], input_refs=(), contract_digest=None), *plan.work_items[1:]))
+            agents = AgentRegistry()
+            agents.register(AgentDefinition(id="architecture_agent", domain="architecture", description="architecture",
+                                            output_key="architecture", max_parallel_instances=4), factory=Agent)
+            tools = ToolGateway()
+            register_architecture_tools(tools, project_path)
+            result = GraphRunner(agents, tools, traces=traces, artifacts=ArtifactRepository(project_path), max_workers=4).run(plan)
+            self.assertNotEqual(result.status.value, "completed")
+            self.assertIn("wi-architecture-module-catalog", calls)
+            self.assertNotIn("wi-architecture-integration", calls)
+            self.assertNotIn("wi-architecture-implementation-catalog", calls)
+
     def test_runner_executes_dynamic_implementation_and_architecture_integration(self) -> None:
+        self._run_dynamic_integration(missing_capability=False)
+
+    def test_integration_capability_fallback_updates_node_result(self) -> None:
+        self._run_dynamic_integration(missing_capability=True)
+
+    def _run_dynamic_integration(self, *, missing_capability: bool) -> None:
         blueprint = _blueprint(
             ModuleRef(module_id="catalog", responsibility="目录", purpose="发现商品"),
             ModuleRef(module_id="orders", responsibility="订单", purpose="完成购买", depends_on_modules=["catalog"]),
@@ -400,6 +436,10 @@ class DynamicBuilderTest(unittest.TestCase):
             def run(self, task, *, context=None):
                 workflow = ArchitectureArtifactWorkflow(project_path)
                 if context.execution_mode is ExecutionMode.INTEGRATION:
+                    if missing_capability:
+                        return AgentResult.needs_capability(
+                            "integrate_architecture_designs", "local tool unavailable"
+                        )
                     workflow.integrate_structured_designs(context)
                 elif context.slot == "blueprint":
                     workflow.write_staged_design(context, blueprint.model_dump(mode="json"))
@@ -455,9 +495,11 @@ class DynamicBuilderTest(unittest.TestCase):
                 ),
                 factory=lambda: DynamicAgent(),
             )
+            tools = ToolGateway()
+            register_architecture_tools(tools, project_path)
             result = GraphRunner(
                 agents,
-                ToolGateway(),
+                tools,
                 traces=traces,
                 artifacts=ArtifactRepository(project_path),
                 max_workers=4,
@@ -468,7 +510,26 @@ class DynamicBuilderTest(unittest.TestCase):
             self.assertIn("wi-architecture-integration", result.state.node_results)
             self.assertEqual(len(result.state.plan.work_items), 6)
             events = traces.list_events(trace.trace_id)
+            if missing_capability:
+                self.assertEqual(sum(event["type"] == "architecture_integration_control_plane_fallback"
+                                     for event in events), 1)
+                self.assertFalse(any(event["type"] == "work_item_waiting_capability" for event in events))
+                self.assertEqual(result.state.node_results["wi-architecture-integration"].status.value, "completed")
+                self.assertIsNone(result.state.node_results["wi-architecture-integration"].capability_request)
             self.assertTrue(any(event.get("type") == "architecture_implementations_expanded" for event in events))
+            completed = {
+                event["work_item_id"]: index
+                for index, event in enumerate(events)
+                if event.get("type") == "work_item_completed"
+            }
+            integration_started = next(
+                index for index, event in enumerate(events)
+                if event.get("type") == "work_item_started"
+                and event.get("work_item_id") == "wi-architecture-integration"
+            )
+            for module_id in ("catalog", "orders"):
+                for depth in ("module", "implementation"):
+                    self.assertLess(completed[f"wi-architecture-{depth}-{module_id}"], integration_started)
             latest = traces.load_plan_expansion(trace.trace_id, plan.id)
             self.assertEqual(latest["kind"], "architecture_implementation_expansion")
 

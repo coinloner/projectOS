@@ -485,6 +485,34 @@ class ArchitectureDesignContractTest(unittest.TestCase):
             )
             self.assertIn("structured_designs=5", result)
 
+    def test_provider_and_consumer_aliases_use_same_final_catalogue(self) -> None:
+        from app.domain.architecture.service import _normalize_interface_references
+
+        module = ModuleDesign.model_validate({
+            **_module("domain").model_dump(mode="json"),
+            "provided_interfaces": [{"interface_id": "domain.todo_task_operations",
+                                     "direction": "provided", "summary": "operations"}],
+        })
+        provider = ImplementationDesign.model_validate({
+            **_implementation("domain").model_dump(mode="json"),
+            "provided_interfaces": [{"interface_id": "domain.todo_operations",
+                                     "kind": "internal", "name": "operations",
+                                     "owner_unit": "unit-domain"}],
+        })
+        consumer = ImplementationDesign.model_validate({
+            **_implementation("api").model_dump(mode="json"),
+            "consumed_interfaces": [{"interface_id": "domain.todo_task_operations",
+                                     "usage": "operations"}],
+        })
+        for inputs in ([provider, consumer], [consumer, provider]):
+            with self.subTest(order=[d.module_id for d in inputs]):
+                normalized = _normalize_interface_references([module, _module("api")], inputs)
+                by_module = {d.module_id: d for d in normalized}
+                self.assertEqual(by_module["domain"].provided_interfaces[0].interface_id,
+                                 "domain.todo_task_operations")
+                self.assertEqual(by_module["api"].consumed_interfaces[0].interface_id,
+                                 "domain.todo_task_operations")
+
     def test_integration_normalizes_unambiguous_interface_id_alias(self) -> None:
         """A shortened consumer id is mapped to the ModuleDesign catalogue."""
         with tempfile.TemporaryDirectory() as project_path:
@@ -635,7 +663,7 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                 )
                 for slot, _ in designs
             )
-            bundle = workflow._load_design_bundle(
+            bundle = workflow.validate_design_inputs(
                 ExecutionContext(
                     trace_id=trace_id,
                     work_item_id="wi-integration",

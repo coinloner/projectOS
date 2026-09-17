@@ -5,7 +5,7 @@ import unittest
 from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.application.runs import (
     RunCoordinator,
@@ -17,6 +17,7 @@ from app.bootstrap.runtime import build_container
 from app.execution_context import ExecutionMode
 from app.orchestration.node_result import NodeResult
 from app.orchestration.plan import ExecutionPlan
+from app.orchestration.runner import GraphRunResult, GraphRunStatus
 from app.orchestration.state import RunState
 from app.orchestration.trace import TraceStore
 from app.orchestration.progress import (
@@ -62,6 +63,25 @@ class FakeProcess:
 
     def terminate(self) -> None:
         self.terminated = True
+
+
+class NonRetryableRepairTest(unittest.TestCase):
+    def test_nonretryable_plan_error_never_calls_repair_planner(self):
+        item = WorkItem(id="architecture", agent_id="architecture_agent",
+                        objective="Design", output_key="architecture")
+        plan = ExecutionPlan(id="plan", goal="Design", work_items=(item,))
+        signal = FailureSignal(FailureKind.PLANNER_VALIDATION, "Upstream must be repaired",
+                               retryable=False, validator="ArchitectureInputPreflight")
+        node = NodeResult.needs_replan(work_item_id=item.id, agent_id=item.agent_id,
+                                      content=signal.summary, signal=signal)
+        result = GraphRunResult(status=GraphRunStatus.NEEDS_REPLAN, state=RunState(plan),
+                                node_result=node, failure_signal=signal)
+        container = SimpleNamespace(runner=Mock(), planner=Mock(), traces=Mock())
+        container.runner.run.return_value = result
+        self.assertIs(RunCoordinator._run_with_repairs(container, plan), result)
+        container.runner.run.assert_called_once()
+        container.planner.plan_repair.assert_not_called()
+        self.assertEqual(container.traces.record_event.call_args.args[2], "repair_cycle_blocked")
 
 
 class ArchitectureContractRecoveryTest(unittest.TestCase):

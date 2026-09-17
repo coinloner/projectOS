@@ -7,6 +7,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from app.artifact.repository import ArtifactRef
+from app.architecture_execution_config import ArchitectureExecutionConfig
 
 if TYPE_CHECKING:
     from app.memory.store import MemoryStore
@@ -36,6 +37,7 @@ class ExecutionContext:
     contract_digest: str | None = None
     execution_mode: ExecutionMode = ExecutionMode.EXCLUSIVE
     input_refs: tuple[ArtifactRef, ...] = ()
+    input_digests: tuple[str, ...] | None = None
     slot: str | None = None
     publish_target: str | None = None
     allowed_paths: tuple[str, ...] = ()
@@ -53,6 +55,7 @@ class ExecutionContext:
     # Optional per-attempt narrowing used by the control plane for bounded
     # retries.  Empty means the normal execution-mode tool set.
     tool_allowlist: tuple[str, ...] = ()
+    architecture_config: ArchitectureExecutionConfig = ArchitectureExecutionConfig()
 
     def __post_init__(self) -> None:
         for field_name in ("trace_id", "work_item_id", "agent_id"):

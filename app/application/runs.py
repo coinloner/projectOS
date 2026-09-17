@@ -1947,6 +1947,15 @@ class RunCoordinator:
             )
             if failure is None:
                 break
+            if not failure.retryable:
+                container.traces.record_event(
+                    plan.trace, "control", "repair_cycle_blocked",
+                    details={"failure_kind": failure.kind.value,
+                             "validator": failure.validator,
+                             "reason": failure.summary,
+                             "retry_hint": failure.retry_hint},
+                )
+                break
             # Save the original DAG state before the repair Worker replaces
             # plan.json/checkpoint.json with its local repair plan.
             container.traces.record_delivery_checkpoint(

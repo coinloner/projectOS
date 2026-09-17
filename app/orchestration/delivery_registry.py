@@ -48,6 +48,14 @@ class DeliveryContractRegistry:
 
         slot_value = slot or ""
         if execution_mode is ExecutionMode.PARTITIONED:
+            if slot_value in {"design", "baseline", "api", "data", "frontend"}:
+                return cls._architecture(
+                    kind="architecture.markdown_package",
+                    required_tools=("load_architecture_input", "write_staged_architecture"),
+                    expected_tool="write_staged_architecture",
+                    output_slot_pattern=slot_value,
+                    validator="MarkdownArchitecturePackage",
+                )
             if slot_value == "blueprint":
                 return cls._architecture(
                     kind="architecture.blueprint",
@@ -73,10 +81,21 @@ class DeliveryContractRegistry:
                     validator="ImplementationDesign",
                 )
 
+        if execution_mode is ExecutionMode.INTEGRATION and stage_id == "architecture_markdown_integration":
+            return cls._architecture(
+                kind="architecture.markdown_integration",
+                required_tools=("load_architecture_input", "create_architecture_candidate"),
+                expected_tool="create_architecture_candidate",
+                output_slot_pattern=None,
+                validator="MarkdownArchitecturePackage",
+            )
+
         if execution_mode is ExecutionMode.INTEGRATION and (
             stage_id == "architecture_integration"
-            or (work_item_id or "").endswith("architecture-layered-integration")
-            or publish_target == "architecture"
+            or (stage_id is None and (
+                (work_item_id or "").endswith("architecture-layered-integration")
+                or publish_target == "architecture"
+            ))
         ):
             return cls._architecture(
                 kind="architecture.integration",
@@ -102,7 +121,7 @@ class DeliveryContractRegistry:
             domain="architecture",
             required_tools=required_tools,
             expected_tool=expected_tool,
-            output_artifact_kind="architecture_design",
+            output_artifact_kind=("architecture_markdown" if validator == "MarkdownArchitecturePackage" else "architecture_design"),
             output_slot_pattern=output_slot_pattern,
             validator=validator,
             retry_policy="artifact_schema_repair",
@@ -198,6 +217,10 @@ class DeliveryContractRegistry:
         silently choose different schemas for the same WorkItem kind.
         """
         if contract.domain != "architecture" or contract.validator is None:
+            return content
+        if contract.validator == "MarkdownArchitecturePackage":
+            if not content.strip():
+                raise ValueError("Architecture Markdown package must not be empty")
             return content
         from app.domain.architecture.design_contract import (
             ArchitectureBlueprint,

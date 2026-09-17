@@ -13,6 +13,11 @@ from app.orchestration.retry import (
 
 
 class RetryPolicyTest(unittest.TestCase):
+    def test_nonretryable_failure_blocks_even_with_available_budget(self):
+        signal = FailureSignal(FailureKind.PLANNER_VALIDATION, "upstream missing", retryable=False)
+        self.assertEqual(FailureSignal.from_dict(signal.as_dict()), signal)
+        self.assertEqual(RetryPolicy().action_for(signal, total_retries=0, item_retries=0, kind_retries=0), RecoveryAction.BLOCK)
+
     def test_retry_ledger_round_trips_and_counts_parallel_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
             signal = FailureSignal(FailureKind.PROVIDER_STALL, "provider stalled", input_digest="contract")

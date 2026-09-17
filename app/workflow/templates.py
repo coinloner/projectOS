@@ -393,6 +393,7 @@ def architecture_parallel_template() -> WorkflowTemplate:
                 artifact_key="architecture",
                 depends_on=("architecture-api", "architecture-data", "architecture-frontend"),
                 execution_mode=ExecutionMode.INTEGRATION,
+                stage_id="architecture_markdown_integration",
                 publish_target="architecture",
                 input_from=("architecture-api", "architecture-data", "architecture-frontend"),
                 acceptance_criteria=(
@@ -571,6 +572,7 @@ def architecture_compact_template() -> WorkflowTemplate:
                 artifact_key="architecture",
                 depends_on=("architecture-design",),
                 execution_mode=ExecutionMode.INTEGRATION,
+                stage_id="architecture_markdown_integration",
                 publish_target="architecture",
                 input_from=("architecture-design",),
                 acceptance_criteria=(
@@ -844,6 +846,20 @@ def delivery_default_template() -> WorkflowTemplate:
                 ),
             ),
 
+            TaskBlueprint(
+                id="architecture-quality-gate",
+                agent_id="architecture_agent",
+                objective="校验集成候选并发布唯一架构版本，之后才允许编译实现合同。",
+                output_key="architecture_quality_gate",
+                artifact_key="architecture",
+                depends_on=("architecture-integration",),
+                stage_id="architecture_quality_gate",
+                execution_mode=ExecutionMode.QUALITY_GATE,
+                publish_target="architecture",
+                candidate_from="architecture-integration",
+                acceptance_criteria=("候选及其输入版本有效，正式架构发布成功。",),
+            ),
+
             # 3. Contract 阶段 - 确定性编译锚点
             # 由控制面从 Blueprint/ModuleDesign/ImplementationDesign 编译得到
             TaskBlueprint(
@@ -851,7 +867,7 @@ def delivery_default_template() -> WorkflowTemplate:
                 agent_id="architecture_contract_agent",
                 objective="编译架构设计为可执行的项目合同,定义文件所有权和接口。",
                 output_key="architecture_contract",
-                depends_on=("architecture-integration",),
+                depends_on=("architecture-quality-gate",),
                 stage_id="contract",
                 acceptance_criteria=(
                     "合同包含实现单元、文件所有权、wave 和接口定义。",
@@ -1118,7 +1134,8 @@ def architecture_only_template() -> WorkflowTemplate:
     生命周期阶段:
     1. Requirement - 需求澄清
     2. Architecture - 架构设计 (Blueprint + 可选的详细设计)
-    3. Quality Gate - 架构质量门
+    3. Integration - 整合已完成的设计并生成候选
+    4. Quality Gate - 架构质量门
     """
     return WorkflowTemplate(
         id="architecture_only",
@@ -1151,18 +1168,34 @@ def architecture_only_template() -> WorkflowTemplate:
                 ),
             ),
 
-            # 3. Architecture Quality Gate
+            # 3. Architecture integration candidate.  The blueprint is an input,
+            # not itself a publishable candidate; keep the barrier explicit.
+            TaskBlueprint(
+                id="architecture-integration",
+                agent_id="architecture_agent",
+                objective="将蓝图及其已完成的细化设计整合为唯一架构候选。",
+                output_key="architecture_candidate",
+                artifact_key="architecture",
+                depends_on=("architecture-blueprint",),
+                stage_id="architecture_integration",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture",
+                input_from=("architecture-blueprint",),
+                acceptance_criteria=("必须调用 integrate_architecture_designs 形成唯一候选。",),
+            ),
+
+            # 4. Architecture Quality Gate
             TaskBlueprint(
                 id="architecture-quality-gate",
                 agent_id="architecture_agent",
                 objective="检查架构设计质量,确保满足需求并符合架构原则。",
                 output_key="architecture_quality_gate",
                 artifact_key="architecture",
-                depends_on=("architecture-blueprint",),
+                depends_on=("architecture-integration",),
                 stage_id="architecture_quality_gate",
                 execution_mode=ExecutionMode.QUALITY_GATE,
                 publish_target="architecture",
-                candidate_from="architecture-blueprint",
+                candidate_from="architecture-integration",
                 acceptance_criteria=(
                     "架构满足所有功能需求和非功能需求。",
                     "层次清晰,职责分离,依赖关系合理。",

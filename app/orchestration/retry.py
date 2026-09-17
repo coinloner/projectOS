@@ -317,6 +317,7 @@ class FailureSignal:
     input_digest: str | None = None
     artifact_digest: str | None = None
     retry_hint: str | None = None
+    retryable: bool = True
 
     @property
     def failure_fingerprint(self) -> str:
@@ -337,6 +338,7 @@ class FailureSignal:
             "input_digest": self.input_digest,
             "artifact_digest": self.artifact_digest,
             "retry_hint": self.retry_hint,
+            "retryable": self.retryable,
             "failure_fingerprint": self.failure_fingerprint,
         }
 
@@ -356,6 +358,7 @@ class FailureSignal:
             input_digest=str(payload["input_digest"]) if payload.get("input_digest") is not None else None,
             artifact_digest=str(payload["artifact_digest"]) if payload.get("artifact_digest") is not None else None,
             retry_hint=str(payload["retry_hint"]) if payload.get("retry_hint") is not None else None,
+            retryable=payload.get("retryable", True) is not False,
         )
 
 
@@ -534,6 +537,8 @@ class RetryPolicy:
         item_retries: int,
         kind_retries: int,
     ) -> RecoveryAction:
+        if not signal.retryable:
+            return RecoveryAction.BLOCK
         if signal.kind in {
             FailureKind.SANDBOX_SETUP,
             FailureKind.WORKER_BOOTSTRAP_FAILURE,

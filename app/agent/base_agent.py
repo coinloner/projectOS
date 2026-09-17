@@ -75,6 +75,10 @@ class BaseAgent:
 
     # ── 入口 ──────────────────────────────────
 
+    def backstory_for_context(self, context: ExecutionContext | None) -> str:
+        """Return policy text appropriate for this execution context."""
+        return self._backstory
+
     def run(
         self, task: str, *, context: ExecutionContext | None = None
     ) -> AgentResult:
@@ -101,11 +105,12 @@ class BaseAgent:
 
         available_tools = self._gateway.tools_for(self._domain, context=context)
         visible_tool_names = {str(tool.name) for tool in available_tools}
+        backstory = self.backstory_for_context(context)
         crew_agent = Agent(
             role=self._role,
             goal=self._goal,
             backstory=(
-                f"{self._backstory}\n\n{_LANGUAGE_PROMPT}\n\n"
+                f"{backstory}\n\n{_LANGUAGE_PROMPT}\n\n"
                 f"{_CAPABILITY_REQUEST_PROMPT}\n\n{_PROGRESS_REPORT_PROMPT}"
             ),
             # Respect the deployment/request-level stream setting.  Forcing SSE

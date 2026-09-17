@@ -11,6 +11,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from app.architecture_execution_config import ArchitectureExecutionConfig
 from app.agent.registry import AgentRegistry
 from app.agent.result import AgentResult, AgentStatus
 from app.artifact.repository import ArtifactRef, ArtifactRepository
@@ -237,10 +238,13 @@ def _tool_allowlist_for_attempt(
     attempt: int,
     prior_delivery_failure: bool,
     prior_worker_abort: bool,
+    architecture_config: ArchitectureExecutionConfig = ArchitectureExecutionConfig(),
 ) -> tuple[str, ...]:
     """Combine stable WorkItem narrowing with retry-specific code narrowing."""
     architecture_tools = _architecture_tool_allowlist(item)
     if architecture_tools:
+        if architecture_config.supports_checkpoints(item.agent_id, item.execution_mode.value, item.slot):
+            return architecture_tools + architecture_config.intermediate_tools
         return architecture_tools
     if (
         attempt > 1
@@ -524,6 +528,7 @@ class GraphRunner:
         policies: PolicyModule | None = None,
         llm_selection: LLMSelection | None = None,
         llm_overrides: dict[str, LLMSelection] | None = None,
+        architecture_config: ArchitectureExecutionConfig = ArchitectureExecutionConfig(),
     ) -> None:
         if max_workers < 1:
             raise ValueError("GraphRunner.max_workers 至少为 1")
@@ -531,6 +536,7 @@ class GraphRunner:
         self._tools = tools
         self._traces = traces
         self._max_workers = max_workers
+        self._architecture_config = architecture_config
         self._retry_policy = retry_policy or RetryPolicy()
         self._artifacts = artifacts
         self._memory = memory
@@ -578,6 +584,18 @@ class GraphRunner:
                 )
             else:
                 self._traces.record_plan(plan)
+
+        if resumed:
+            invalid = self._validate_restored_architecture(state)
+            if invalid is not None:
+                self._record_checkpoint(state)
+                result = GraphRunResult(
+                    status=GraphRunStatus.NEEDS_REPLAN, state=state,
+                    node_result=invalid, failure_signal=invalid.failure_signal,
+                    error=invalid.failure_signal.summary,
+                )
+                self._finish_trace(state.plan, result)
+                return result
 
         def cancelled_result() -> GraphRunResult | None:
             if self._traces is None:
@@ -1873,6 +1891,106 @@ class GraphRunner:
                 error=f"ExecutionPlan 引用了未注册 Agent: '{item.agent_id}'",
             )
 
+        if (
+            item.agent_id == "architecture_agent"
+            and item.execution_mode in {ExecutionMode.PARTITIONED, ExecutionMode.INTEGRATION}
+            and _delivery_contract_for(item) is None
+        ):
+            return NodeResult.needs_replan(
+                work_item_id=item.id, agent_id=item.agent_id,
+                signal=FailureSignal(
+                    FailureKind.PLANNER_VALIDATION,
+                    "Architecture work item has no registered delivery protocol",
+                    validator="ArchitectureProtocolPreflight",
+                    field_path=item.id,
+                    retry_hint="repair_plan_or_tool_registration",
+                    retryable=False,
+                ),
+            )
+
+        # A consumer cannot repair a missing/corrupt declared input. Check before
+        # durable-output recovery and before creating the agent; expose a plan
+        # repair instead of spending the consumer's model retry budget.
+        input_digests = None
+        if item.agent_id == "architecture_agent" and self._artifacts is not None:
+            from hashlib import sha256
+
+            captured_digests = []
+            for ref in item.input_refs:
+                try:
+                    captured_digests.append(sha256(self._artifacts.load_ref(ref).encode("utf-8")).hexdigest())
+                except (FileNotFoundError, RuntimeError, ValueError, TypeError) as error:
+                    return NodeResult.needs_replan(
+                        work_item_id=item.id,
+                        agent_id=item.agent_id,
+                        signal=FailureSignal(
+                            FailureKind.PLANNER_VALIDATION,
+                            f"Architecture input is unavailable or invalid: {ref.ref_id}; "
+                            f"producer={ref.work_item_id or 'published artifact'}; {error}",
+                            validator="ArchitectureInputPreflight",
+                            field_path=ref.ref_id,
+                            code="invalid_upstream_input",
+                            retry_hint="repair_producer_or_input_reference",
+                            retryable=False,
+                        ),
+                    )
+
+            input_digests = tuple(captured_digests)
+
+        def changed_input_result() -> NodeResult | None:
+            if input_digests is None or self._artifacts is None:
+                return None
+            try:
+                self._artifacts.verify_input_versions(item.input_refs, input_digests)
+            except (FileNotFoundError, RuntimeError, ValueError, TypeError) as error:
+                return NodeResult.needs_replan(
+                    work_item_id=item.id, agent_id=item.agent_id,
+                    signal=FailureSignal(
+                        FailureKind.PLANNER_VALIDATION,
+                        f"Architecture input changed during execution: {error}",
+                        validator="ArchitectureInputPreflight",
+                        retry_hint="repair_producer_or_input_reference",
+                        retryable=False,
+                    ),
+                )
+            return None
+
+        if (
+            item.agent_id == "architecture_agent"
+            and item.execution_mode is ExecutionMode.INTEGRATION
+            and _expected_architecture_tool(item) == "integrate_architecture_designs"
+            and self._traces is not None
+            and self._artifacts is not None
+        ):
+            from app.domain.architecture.service import ArchitectureArtifactWorkflow
+
+            try:
+                ArchitectureArtifactWorkflow(self._traces.project_path).validate_design_inputs(
+                    ExecutionContext(
+                        trace_id=state.plan.trace.trace_id,
+                        work_item_id=item.id,
+                        agent_id=item.agent_id,
+                        execution_mode=item.execution_mode,
+                        publish_target=item.publish_target,
+                        input_refs=item.input_refs,
+                        input_digests=input_digests,
+                        contract_digest=item.contract_digest,
+                    )
+                )
+            except (FileNotFoundError, ValueError, TypeError, RuntimeError) as error:
+                return NodeResult.needs_replan(
+                    work_item_id=item.id,
+                    agent_id=item.agent_id,
+                    signal=FailureSignal(
+                        FailureKind.PLANNER_VALIDATION,
+                        f"Architecture integration inputs failed deterministic validation: {error}",
+                        validator="ArchitectureInputPreflight",
+                        field_path=item.id,
+                        retry_hint="repair_producer_or_input_reference",
+                        retryable=False,
+                    ),
+                )
+
         recovered = self._recover_durable_work_item(state, item)
         if recovered is not None:
             self._record_event(
@@ -1910,6 +2028,7 @@ class GraphRunner:
                 contract_digest=item.contract_digest,
                 execution_mode=item.execution_mode,
                 input_refs=item.input_refs,
+                input_digests=input_digests,
                 slot=item.slot,
                 publish_target=item.publish_target,
                 allowed_paths=item.allowed_paths,
@@ -1933,6 +2052,8 @@ class GraphRunner:
                     else None
                 ),
                 llm_selection=self._llm_overrides.get(item.agent_id, self._llm_selection),
+                architecture_config=(self._architecture_config if item.agent_id == "architecture_agent"
+                                     else ArchitectureExecutionConfig()),
                 implementation_unit_count=(
                     _implementation_unit_count_from_item(item)
                     if item.agent_id == "architecture_agent"
@@ -1943,8 +2064,14 @@ class GraphRunner:
                     attempt=attempt,
                     prior_delivery_failure=prior_delivery_failure,
                     prior_worker_abort=prior_worker_abort,
+                    architecture_config=self._architecture_config,
                 ),
             )
+            if item.agent_id == "architecture_agent":
+                self._record_event(state.plan, item, "architecture_execution_config", details={
+                    "config": self._architecture_config.as_dict(),
+                    "digest": self._architecture_config.digest,
+                })
             tool_diagnostics = self._tools.preflight(
                 definition.domain, item.required_tools, context=context
             )
@@ -2419,6 +2546,9 @@ class GraphRunner:
                 metadata={"status": agent_result.status.value},
             )
         except Exception as error:
+            invalid_input = changed_input_result()
+            if invalid_input is not None:
+                return invalid_input
             if "context" in locals():
                 self._record_memory(
                     context,
@@ -2515,6 +2645,10 @@ class GraphRunner:
                 error=f"工作项 '{item.id}' 执行失败: {error}",
             )
 
+        invalid_input = changed_input_result()
+        if invalid_input is not None:
+            return invalid_input
+
         node_result = NodeResult.from_agent_result(
             work_item_id=item.id,
             agent_id=item.agent_id,
@@ -2561,6 +2695,8 @@ class GraphRunner:
                     expected_slot=item.slot or "",
                     expected_artifact_kind=delivery_contract.output_artifact_kind,
                     validator=validate_staged,
+                    expected_source_refs=item.input_refs,
+                    expected_contract_digest=item.contract_digest,
                 )
                 self._record_event(
                     state.plan,
@@ -2602,6 +2738,30 @@ class GraphRunner:
                 )
         if (
             node_result.status is NodeStatus.COMPLETED
+            and expected_architecture_tool == "create_architecture_candidate"
+            and self._artifacts is not None
+        ):
+            try:
+                self._artifacts.candidate_for_work_item(
+                    trace_id=state.plan.trace.trace_id,
+                    artifact_key="architecture",
+                    work_item_id=item.id,
+                    expected_source_refs=item.input_refs,
+                    expected_contract_digest=item.contract_digest,
+                )
+            except (FileNotFoundError, RuntimeError, ValueError) as error:
+                return NodeResult.needs_replan(
+                    work_item_id=item.id,
+                    agent_id=item.agent_id,
+                    content=node_result.content,
+                    signal=FailureSignal(
+                        FailureKind.ARCHITECTURE_CONTRACT_MISSING,
+                        f"Markdown integration did not produce a unique candidate: {error}",
+                        retry_hint="call create_architecture_candidate",
+                    ),
+                )
+        if (
+            node_result.status is NodeStatus.COMPLETED
             and expected_architecture_tool == "integrate_architecture_designs"
             and item.execution_mode is ExecutionMode.INTEGRATION
             and self._artifacts is not None
@@ -2611,6 +2771,8 @@ class GraphRunner:
                     trace_id=state.plan.trace.trace_id,
                     artifact_key="architecture",
                     work_item_id=item.id,
+                    expected_source_refs=item.input_refs,
+                    expected_contract_digest=item.contract_digest,
                 )
             except (FileNotFoundError, RuntimeError, ValueError) as error:
                 # Some relays return a terminal natural-language response even
@@ -2646,6 +2808,8 @@ class GraphRunner:
                             trace_id=state.plan.trace.trace_id,
                             artifact_key="architecture",
                             work_item_id=item.id,
+                            expected_source_refs=item.input_refs,
+                            expected_contract_digest=item.contract_digest,
                         )
                         fallback_succeeded = True
                     except Exception as fallback_error:
@@ -2658,6 +2822,9 @@ class GraphRunner:
                             signal=FailureSignal(
                                 FailureKind.ARCHITECTURE_CONTRACT_MISSING,
                                 f"架构集成节点未形成唯一候选（{expected_architecture_tool}）：{error}",
+                                validator="ArchitectureIntegration",
+                                retryable=False,
+                                retry_hint="repair_upstream_designs_or_plan",
                             ),
                         )
                 else:
@@ -2729,7 +2896,23 @@ class GraphRunner:
                             "architecture_integration_control_plane_fallback",
                             details={"tool": "integrate_architecture_designs"},
                         )
-                        agent_result = AgentResult.completed(fallback_content)
+                        # The AgentResult was already projected before this
+                        # fallback. Replace that projection too; otherwise the
+                        # caller receives the stale capability request even
+                        # though integration persisted its candidate.
+                        if self._artifacts is not None:
+                            self._artifacts.candidate_for_work_item(
+                                trace_id=state.plan.trace.trace_id,
+                                artifact_key="architecture",
+                                work_item_id=item.id,
+                                expected_source_refs=item.input_refs,
+                                expected_contract_digest=item.contract_digest,
+                            )
+                        node_result = NodeResult.completed(
+                            work_item_id=item.id,
+                            agent_id=item.agent_id,
+                            content=fallback_content,
+                        )
                     except Exception as error:
                         return NodeResult.needs_replan(
                             work_item_id=item.id,
@@ -2739,6 +2922,9 @@ class GraphRunner:
                                 FailureKind.ARCHITECTURE_CONTRACT_MISSING,
                                 "架构集成工具误报能力缺失，控制面自动整合也未通过校验："
                                 + str(error),
+                                validator="ArchitectureIntegration",
+                                retryable=False,
+                                retry_hint="repair_upstream_designs_or_plan",
                             ),
                         )
                 else:
@@ -3232,14 +3418,67 @@ class GraphRunner:
                         issues.append(f"交付文件缺少合同声明符号 {relative}:{value}")
         return tuple(issues)
 
+    def _validate_restored_architecture(self, state: RunState) -> NodeResult | None:
+        """A completed checkpoint is scheduling state, not delivery evidence.
+
+        Stop for plan repair rather than replaying an expanded graph whose
+        children may have been derived from an obsolete parent design.
+        """
+        invalid: set[str] = set()
+        for item in state.plan.work_items:
+            result = state.node_results.get(item.id)
+            architecture_delivery = (
+                item.agent_id == "architecture_agent"
+                and item.execution_mode in (ExecutionMode.PARTITIONED, ExecutionMode.INTEGRATION)
+            ) or (
+                item.execution_mode is ExecutionMode.QUALITY_GATE
+                and item.publish_target == "architecture"
+            )
+            if (result is None or result.status is not NodeStatus.COMPLETED
+                    or not architecture_delivery):
+                continue
+            if self._recover_durable_work_item(state, item) is None:
+                invalid.add(item.id)
+        if not invalid:
+            return None
+        affected = set(invalid)
+        while True:
+            descendants = {
+                item.id for item in state.plan.work_items
+                if set(item.dependency_ids) & affected
+                or any(ref.layer == "staged"
+                       and ref.trace_id == state.plan.trace.trace_id
+                       and ref.work_item_id in affected for ref in item.input_refs)
+            }
+            if descendants <= affected:
+                break
+            affected.update(descendants)
+        for item in state.plan.work_items:
+            if item.id in affected:
+                state.node_results.pop(item.id, None)
+                state.artifacts.pop(item.output_key, None)
+        item = next(item for item in state.plan.work_items if item.id in invalid)
+        signal = FailureSignal(
+            FailureKind.PLANNER_VALIDATION,
+            "Architecture checkpoint 完成证据失效；修复生产者并重新核验动态计划。"
+            f" invalid={sorted(invalid)}; invalidated={sorted(affected)}",
+            validator="ArchitectureCheckpointPreflight",
+            field_path=item.id, retryable=False,
+            retry_hint="repair_producer_and_rebuild_dependent_plan",
+        )
+        self._record_event(state.plan, item, "architecture_checkpoint_invalidated",
+                           details={"invalid": sorted(invalid), "affected": sorted(affected)})
+        return NodeResult.needs_replan(work_item_id=item.id, agent_id=item.agent_id,
+                                      content=signal.summary, signal=signal)
+
     def _recover_durable_work_item(
         self, state: RunState, item: WorkItem
     ) -> NodeResult | None:
         """Reuse a validated staged output left by an interrupted Worker.
 
-        Agent text and progress summaries are never sufficient. Recovery is
-        allowed only for the two durable partition protocols already owned by
-        the control plane: staged Architecture artifacts and Git ChangeSets.
+        Agent text and progress summaries are never sufficient. Recovery uses
+        verified Architecture staged outputs, candidates/publications, or Code
+        Git ChangeSets; a completed checkpoint alone is not delivery evidence.
         """
         if item.id in state.forced_rerun_work_item_ids:
             return None
@@ -3266,6 +3505,8 @@ class GraphRunner:
                     expected_work_item_id=item.id,
                     expected_slot=item.slot or "",
                     expected_artifact_kind=contract.output_artifact_kind,
+                    expected_source_refs=item.input_refs,
+                    expected_contract_digest=item.contract_digest,
                     validator=lambda content: DeliveryContractRegistry.validate_content(
                         contract, content
                     ),
@@ -3291,6 +3532,8 @@ class GraphRunner:
                     trace_id=state.plan.trace.trace_id,
                     artifact_key="architecture",
                     work_item_id=item.id,
+                    expected_source_refs=item.input_refs,
+                    expected_contract_digest=item.contract_digest,
                 )
             except (FileNotFoundError, RuntimeError, ValueError):
                 return None
@@ -3300,6 +3543,27 @@ class GraphRunner:
                 work_item_id=item.id,
                 agent_id=item.agent_id,
                 content=f"从已校验架构候选恢复: {candidate.id}",
+            )
+        if (
+            item.execution_mode is ExecutionMode.QUALITY_GATE
+            and item.publish_target == "architecture"
+            and self._artifacts is not None
+        ):
+            try:
+                producer = state.plan.work_item(item.candidate_from_work_item_id or "")
+                if producer is None or producer.execution_mode is not ExecutionMode.INTEGRATION:
+                    return None
+                candidate = self._artifacts.candidate_for_work_item(
+                    trace_id=state.plan.trace.trace_id, artifact_key="architecture",
+                    work_item_id=producer.id, expected_source_refs=producer.input_refs,
+                    expected_contract_digest=producer.contract_digest,
+                )
+                ref = self._artifacts.verify_published_candidate(candidate)
+            except (FileNotFoundError, RuntimeError, ValueError, KeyError):
+                return None
+            return NodeResult.completed(
+                work_item_id=item.id, agent_id=item.agent_id,
+                content=f"从已验证发布证据恢复: {ref.ref_id}; candidate={candidate.id}",
             )
         if item.agent_id == "code_agent" and item.execution_mode is ExecutionMode.PARTITIONED:
             from app.domain.code.service import CodeStagingService
@@ -3358,19 +3622,32 @@ class GraphRunner:
                 error="QUALITY_GATE WorkItem 需要 ArtifactRepository",
             )
         try:
+            producer = state.plan.work_item(item.candidate_from_work_item_id or "")
+            if producer is None or producer.execution_mode is not ExecutionMode.INTEGRATION:
+                raise ValueError("质量门必须引用当前计划中的集成生产者")
             candidate = self._artifacts.candidate_for_work_item(
                 trace_id=state.plan.trace.trace_id,
                 artifact_key=item.publish_target or "",
-                work_item_id=item.candidate_from_work_item_id or "",
+                work_item_id=producer.id,
+                expected_source_refs=producer.input_refs,
+                expected_contract_digest=producer.contract_digest,
             )
             self._artifacts.promote_candidate(
                 candidate.id, artifact_key=item.publish_target or ""
             )
+            self._artifacts.verify_published_candidate(candidate)
         except (FileNotFoundError, PermissionError, RuntimeError, ValueError) as error:
-            return NodeResult.failed(
+            return NodeResult.needs_replan(
                 work_item_id=item.id,
                 agent_id=item.agent_id,
-                error=f"架构质量门拒绝发布: {error}",
+                signal=FailureSignal(
+                    FailureKind.PLANNER_VALIDATION,
+                    f"架构质量门拒绝发布: {error}",
+                    validator="ArchitectureQualityGate",
+                    field_path=item.id,
+                    retry_hint="repair_producer_or_input_reference",
+                    retryable=False,
+                ),
             )
         return NodeResult.completed(
             work_item_id=item.id,

@@ -54,10 +54,10 @@ class NewTemplatesTest(unittest.TestCase):
         self.assertNotIn("review", node_ids, "架构设计模板不应该有 review")
 
     def test_architecture_only_is_minimal(self) -> None:
-        """验证 architecture_only 模板只有 3 个节点。"""
+        """验证 architecture_only 模板只有 4 个节点。"""
         template = architecture_only_template()
-        self.assertEqual(len(template.nodes), 3,
-                        "architecture_only 应该只有 3 个节点: requirement, blueprint, quality-gate")
+        self.assertEqual(len(template.nodes), 4,
+                        "architecture_only 应该只有 4 个节点: requirement, blueprint, integration, quality-gate")
 
 
 if __name__ == "__main__":

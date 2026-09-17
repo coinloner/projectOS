@@ -97,7 +97,17 @@ class DeliveryDefaultTemplateTest(unittest.TestCase):
 
         contract_node = contract_nodes[0]
         self.assertEqual(contract_node.agent_id, "architecture_contract_agent")
-        self.assertIn("architecture-blueprint", contract_node.depends_on)
+        self.assertEqual(contract_node.depends_on, ("architecture-quality-gate",))
+        nodes = {node.id: node for node in template.nodes}
+        gate = nodes["architecture-quality-gate"]
+        self.assertEqual(gate.execution_mode.value, "quality_gate")
+        self.assertEqual(gate.candidate_from, "architecture-integration")
+        self.assertEqual(gate.publish_target, "architecture")
+        self.assertEqual(gate.depends_on, ("architecture-integration",))
+        self.assertEqual(
+            nodes["architecture-integration"].depends_on,
+            ("architecture-blueprint",),
+        )
 
 
 if __name__ == "__main__":

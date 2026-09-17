@@ -1,4 +1,5 @@
 import tempfile
+import json
 import unittest
 from pathlib import Path
 
@@ -74,6 +75,21 @@ class DomainServiceTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "字符上限"):
             workflow.write_staged(context, "A" * 4201)
+
+    def test_architecture_intermediate_checkpoint_round_trip(self) -> None:
+        from hashlib import sha256
+        workflow = ArchitectureArtifactWorkflow(self.project_path)
+        ref = ArtifactRef.published("requirement")
+        digest = sha256(workflow._repository.load_ref(ref).encode()).hexdigest()
+        context = ExecutionContext(
+            trace_id="tr-b-tools", work_item_id="module-api", agent_id="architecture_agent",
+            execution_mode=ExecutionMode.PARTITIONED, slot="module-api",
+            input_refs=(ref,), input_digests=(digest,),
+        )
+        self.assertIn("已保存中间阶段", workflow.write_intermediate(context, "boundaries", "boundary draft"))
+        loaded = json.loads(workflow.load_intermediate(context, ["boundaries", "interfaces"]))
+        self.assertEqual(loaded["phase"], "boundaries")
+        self.assertEqual(loaded["content"], "boundary draft")
 
     def test_code_test_and_review_services_keep_distinct_workspace_permissions(self) -> None:
         code = CodeService(self.project_path)

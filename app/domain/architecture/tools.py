@@ -319,6 +319,24 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                 ),
                 (
                     ToolDef(
+                        name="load_architecture_intermediate",
+                        description="读取当前 Module Design 输入版本下最近有效的中间阶段；没有则返回空。",
+                        parameters={"type": "object", "properties": {"phases": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"}, "minItems": 1}}, "required": ["phases"], "additionalProperties": False},
+                        execution_modes=("partitioned",),
+                    ),
+                    workflow.load_intermediate,
+                ),
+                (
+                    ToolDef(
+                        name="write_architecture_intermediate",
+                        description="保存当前 Module Design 的非正式阶段产物；不能替代最终 write_module_design。",
+                        parameters={"type": "object", "properties": {"phase": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"}, "content": {"type": "string", "minLength": 1}}, "required": ["phase", "content"], "additionalProperties": False},
+                        execution_modes=("partitioned",),
+                    ),
+                    workflow.write_intermediate,
+                ),
+                (
+                    ToolDef(
                         name="load_architecture_input",
                         description="读取当前工作项已授权的冻结产物引用。",
                         parameters={

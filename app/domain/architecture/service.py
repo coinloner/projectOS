@@ -137,7 +137,47 @@ class ArchitectureArtifactWorkflow:
         ref = next((candidate for candidate in context.input_refs if candidate.ref_id == ref_id), None)
         if ref is None:
             raise PermissionError("当前工作项无权读取该产物引用")
-        return self._repository.load_ref(ref)
+        self._repository.verify_input_versions(context.input_refs, context.input_digests)
+        index = context.input_refs.index(ref)
+        digest = context.input_digests[index] if context.input_digests is not None else None
+        return self._repository.load_versioned_ref(ref, digest)
+
+    def _intermediate_input_digest(self, context: ExecutionContext) -> str:
+        """Bind a checkpoint to its authorized inputs and execution contract."""
+        if context.execution_mode is not ExecutionMode.PARTITIONED:
+            raise PermissionError("只有分区执行节点可以使用中间阶段产物")
+        if context.input_digests is None:
+            raise ValueError("中间阶段产物需要冻结的输入版本证据")
+        self._repository.verify_input_versions(context.input_refs, context.input_digests)
+        import hashlib
+        payload = {
+            "schema_version": 1,
+            "contract_digest": context.contract_digest,
+            "architecture_config_digest": context.architecture_config.digest,
+            "slot": context.slot,
+            "inputs": [
+                {"ref_id": ref.ref_id, "digest": digest}
+                for ref, digest in zip(context.input_refs, context.input_digests)
+            ],
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    def load_intermediate(self, context: ExecutionContext, phases: list[str]) -> str:
+        """Load the latest valid B checkpoint for the current input version."""
+        input_digest = self._intermediate_input_digest(context)
+        result = self._repository.latest_intermediate(
+            trace_id=context.trace_id, work_item_id=context.work_item_id,
+            phases=tuple(phases), expected_input_digest=input_digest)
+        if result is None:
+            return json.dumps({"phase": None, "content": None}, ensure_ascii=False)
+        return json.dumps({"phase": result.phase, "content": result.content}, ensure_ascii=False)
+
+    def write_intermediate(self, context: ExecutionContext, phase: str, content: str) -> str:
+        """Persist a non-deliverable B phase checkpoint for this work item."""
+        input_digest = self._intermediate_input_digest(context)
+        self._repository.write_intermediate(trace_id=context.trace_id, work_item_id=context.work_item_id,
+                                            phase=phase, input_digest=input_digest, content=content)
+        return f"已保存中间阶段: {phase}"
 
     def write_staged(self, context: ExecutionContext, content: str) -> str:
         if context.execution_mode is not ExecutionMode.PARTITIONED:
@@ -149,6 +189,9 @@ class ArchitectureArtifactWorkflow:
             artifact_key="architecture",
             slot=context.slot or "",
             content=content,
+            source_refs=context.input_refs,
+            contract_digest=context.contract_digest,
+            expected_source_digests=context.input_digests,
         )
         return f"已写入架构暂存输出: {staged.ref.ref_id}"
 
@@ -252,6 +295,9 @@ class ArchitectureArtifactWorkflow:
             artifact_key="architecture",
             slot=context.slot or "",
             content=content,
+            source_refs=context.input_refs,
+            contract_digest=context.contract_digest,
+            expected_source_digests=context.input_digests,
         )
         return f"已写入架构设计对象: {staged.ref.ref_id}; depth={parsed.depth}"
 
@@ -262,7 +308,7 @@ class ArchitectureArtifactWorkflow:
         """
         if context.execution_mode is not ExecutionMode.INTEGRATION:
             raise PermissionError("只有集成节点可以整合架构设计对象")
-        bundle = self._load_design_bundle(context)
+        bundle = self.validate_design_inputs(context)
         designs = [*([bundle.blueprint]), *bundle.modules, *bundle.implementations]
         content = _render_design_bundle(bundle)
         candidate = self.create_candidate(context, content)
@@ -272,13 +318,15 @@ class ArchitectureArtifactWorkflow:
         """将已通过架构质量门的对象直接编译为唯一 ProjectContract。"""
         if context.execution_mode is not ExecutionMode.INTEGRATION:
             raise PermissionError("只有集成节点可以编译 Project Contract")
-        bundle = self._load_design_bundle(context)
+        bundle = self.validate_design_inputs(context)
         return ArchitectureService(self._project_path).save_implementation_contract(
             bundle.to_project_contract()
         )
 
-    def _load_design_bundle(self, context: ExecutionContext) -> ArchitectureDesignBundle:
-        designs = [parse_design(self._repository.load_ref(ref)) for ref in context.input_refs]
+    def validate_design_inputs(self, context: ExecutionContext) -> ArchitectureDesignBundle:
+        """Validate authorized upstream designs without creating a candidate or publishing."""
+        self._repository.verify_input_versions(context.input_refs, context.input_digests)
+        designs = [parse_design(self.load_input(context, ref.ref_id)) for ref in context.input_refs]
         blueprint = next((item for item in designs if isinstance(item, ArchitectureBlueprint)), None)
         modules = [item for item in designs if isinstance(item, ModuleDesign)]
         implementations = [item for item in designs if isinstance(item, ImplementationDesign)]
@@ -344,6 +392,7 @@ class ArchitectureArtifactWorkflow:
             raise PermissionError("只有集成节点可以创建候选版本")
         if context.publish_target != "architecture":
             raise PermissionError("当前集成节点未获 architecture 候选创建授权")
+        self._repository.verify_input_versions(context.input_refs, context.input_digests)
         self._validate_size(content, 9000)
         # Integration may be retried after a Worker restart. Reuse the
         # already-created candidate for this work item when its content is
@@ -354,6 +403,8 @@ class ArchitectureArtifactWorkflow:
                 trace_id=context.trace_id,
                 artifact_key="architecture",
                 work_item_id=context.work_item_id,
+                expected_source_refs=context.input_refs,
+                expected_contract_digest=context.contract_digest,
             )
         except RuntimeError as error:
             if "当前为 0 个" not in str(error):
@@ -373,6 +424,8 @@ class ArchitectureArtifactWorkflow:
             artifact_key="architecture",
             content=content,
             source_refs=context.input_refs,
+            contract_digest=context.contract_digest,
+            expected_source_digests=context.input_digests,
         )
         return (
             f"已创建架构候选: {candidate.id}；"
@@ -503,12 +556,6 @@ def _normalize_interface_references(
         )
         for module in modules
     }
-    provider_ids = {
-        interface.interface_id
-        for design in implementations
-        for interface in design.provided_interfaces
-    }
-
     def parts(value: str) -> tuple[str, ...]:
         return tuple(token.lower() for token in _INTERFACE_ID_SEPARATOR.split(value) if token)
 
@@ -531,6 +578,15 @@ def _normalize_interface_references(
                 matches.append(candidate)
         return matches[0] if len(matches) == 1 else None
 
+    # Consumers must resolve against the final provider IDs, not the original
+    # aliases. Build this catalogue before iterating so input order cannot
+    # affect the identity chosen for cross-module references.
+    provider_ids = {
+        alias_for(interface.interface_id, declared_by_module.get(design.module_id, ()))
+        or interface.interface_id
+        for design in implementations
+        for interface in design.provided_interfaces
+    }
     result: list[ImplementationDesign] = []
     all_unit_ids = {
         unit.unit_id

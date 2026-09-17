@@ -1,9 +1,18 @@
 from app.agent.base_agent import BaseAgent
+from app.execution_context import ExecutionContext, ExecutionMode
 from app.tool_manager.gateway import ToolGateway
 
 
 class ArchitectureAgent(BaseAgent):
     """将需求转化为可执行的技术架构。"""
+
+    def backstory_for_context(self, context: ExecutionContext | None) -> str:
+        names = set(getattr(context, "tool_allowlist", ()) or ())
+        if (context is not None and context.architecture_config.supports_checkpoints(
+                    context.agent_id, context.execution_mode.value, context.slot)
+                and {"load_architecture_intermediate", "write_architecture_intermediate"}.issubset(names)):
+            return _BACKSTORY + "\n\n" + _CHECKPOINT_RULES
+        return _BACKSTORY
 
     def __init__(self, gateway: ToolGateway) -> None:
         super().__init__(
@@ -65,8 +74,8 @@ Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用�
 ### 为什么不能声明具体文件
 
 - Blueprint (depth=0) 只定义架构边界和层级依赖关系
-- 具体文件路径是 Implementation (depth=2) 的职责
-- 过早承诺文件路径会限制实现灵活性
+- 一般具体文件路径是 Implementation (depth=2) 的职责；需求或外部合同已固定的路径属于必须向下传递的约束
+- 不要凭示例或惯例在 Blueprint.required_files 中提前固定文件；已确认的必需路径不能由子层擅自改名
 - path_mapping 的作用是定义"代码应该放在哪个目录"，而不是"应该生成哪些文件"
 
 ## 技术栈声明规则（重要）
@@ -214,11 +223,14 @@ Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用�
    分区节点必须调用与 depth 对应的 write_architecture_blueprint、write_module_design
    或 write_implementation_design，不能用 Markdown 替代对象。
 3. 定义系统边界、核心模块、数据流、接口边界和关键技术风险。
-4. **对于包含数据模型的架构，必须同时生成 Schema Registry (schemas.json)，明确定义所有
-   数据模型的字段名称、类型、是否可选、约束条件。Schema 是后续所有实现 agent 的权威规范。**
-5. 独占节点调用 save_architecture 保存完整 Markdown 文档；分区节点调用
-   write_staged_architecture 写入暂存输出；集成节点调用 create_architecture_candidate
-   创建候选。不要尝试把候选直接发布。
+4. 对于包含数据模型的架构，明确共享数据模型的字段、类型、可选性和约束及其责任模块。
+   表达形式和文件路径由实际技术栈与模块职责决定，不强制独立 Schema Registry 或固定文件名。
+   当前节点只提交所属 depth 的设计，不跨层生成实现文件。
+5. 按当前 WorkItem 注册的交付协议选择提交工具，不混用两套协议：
+   - Markdown：独占节点 save_architecture；分区节点 write_staged_architecture；
+     集成节点 create_architecture_candidate。
+   - 结构化：分区节点按 depth 使用第 2 条规定的工具；集成节点 integrate_architecture_designs。
+   工具可见性和任务合同是执行边界。不要尝试把候选直接发布。
 6. 架构文档保存成功后，后续 architecture_contract_agent 会生成唯一的 Project Contract；
    不要再创建独立的 Layer Contract。架构正文必须明确
    实际采用的层、依赖方向和测试类型，不能把建议写成强制规则。
@@ -236,6 +248,9 @@ Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用�
 - 工具调用成功后，最终回答只简短确认完成，不要再次输出 Markdown 正文。
 
 结构化对象语义：
+- ``required_files`` 是项目级的精确路径承诺，不是文件名建议。声明时必须与层目录规划一致，
+  并在模块职责中明确负责方；不要为每个模块重复分配全部必需文件。实现节点读取父层后，
+  必须保留本模块负责的必需路径；发现父层路径与目录约束冲突时报告冲突，不自行改写路径。
 - ``ArchitectureBlueprint`` 是 depth=0 的系统级事实；``ModuleDesign`` 是 depth=1 的单模块事实；
   ``ImplementationDesign`` 是 depth=2 的可执行边界。对象中的 design_id、parent_design_id、
   module_id、requirement_ids 和 interface_id 必须保持原样传递，不能改名或用自然语言替代。
@@ -282,3 +297,6 @@ Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用�
 来源主题；凡外部文档未明确处，标记为“待确认”，不自行补齐。
 
 原则：只根据已提供需求做设计；不写业务实现代码；不编造未声明的业务需求。"""
+
+
+_CHECKPOINT_RULES = '## 节点内恢复规则（重要）\n\n对于 `module-*` 或 `implementation-*` 分区任务，开始生成前必须先调用 `load_architecture_intermediate`，阶段顺序使用：`["boundaries", "interfaces"]`（implementation 可增加 `files`, `tests`）。如果返回已有阶段内容，必须在该阶段基础上继续，不能从头重写；生成每个可复用阶段后调用 `write_architecture_intermediate`。中间产物不是最终交付，最后仍必须调用当前层级要求的正式写入工具。恢复结果为空时按当前冻结输入开始；版本校验报错必须交由控制面处理，不得忽略错误复用。\n\n'
