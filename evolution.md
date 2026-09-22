@@ -551,3 +551,23 @@ and three-way comparison; it must not replace `main` by copying this worktree.
 ```text
 45 passed, 2 subtests passed
 ```
+
+## 2026-09-23 Architecture D 迁移阶段 6：跨节点恢复控制面边界
+
+完成了 Architecture D 恢复边界的第一版落地：
+
+- `FailureSignal` 增加稳定的 `scope`、`requires_control_plane`、关联 WorkItem 和产物引用字段。
+- 新增 `ControlDecision` 与 `ControlDecisionStore`，持久化到 `.projectos/control/control-decisions.jsonl`。
+- GraphRunner 在处理失败结果时，只有 `scope=current_work_item` 且未要求控制面时才进入节点内 RetryPolicy。
+- `architecture_subgraph` 和 `upstream_stage` 信号会停止当前 WorkItem，生成可审计的控制面决策，并返回 `needs_replan`；不会自动修改父节点、兄弟节点或 Requirement。
+- 控制决策仅记录恢复请求，不在当前节点内执行跨节点重试；后续由 RunCoordinator/控制策略显式消费。
+- 新增递归快照原语，快照保存冻结的 Requirement/Blueprint 摘要、accepted recursive nodes、当前节点和失效节点，并拒绝旧 protocol version。
+- D Blueprint 写入成功后创建递归根快照；快照和控制决策均采用持久化写入，便于恢复与审计。
+
+验证：
+
+```text
+5 passed: control decision, recursive snapshot, validation receipt 定向测试
+```
+
+本阶段仍未宣称完成全新 wanfa E2E；跨节点控制决策的消费策略与完整递归动态展开仍是后续迁移工作。

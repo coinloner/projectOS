@@ -318,6 +318,10 @@ class FailureSignal:
     artifact_digest: str | None = None
     retry_hint: str | None = None
     retryable: bool = True
+    scope: str = "current_work_item"
+    requires_control_plane: bool = False
+    related_work_item_ids: tuple[str, ...] = ()
+    related_artifact_refs: tuple[str, ...] = ()
 
     @property
     def failure_fingerprint(self) -> str:
@@ -339,6 +343,10 @@ class FailureSignal:
             "artifact_digest": self.artifact_digest,
             "retry_hint": self.retry_hint,
             "retryable": self.retryable,
+            "scope": self.scope,
+            "requires_control_plane": self.requires_control_plane,
+            "related_work_item_ids": list(self.related_work_item_ids),
+            "related_artifact_refs": list(self.related_artifact_refs),
             "failure_fingerprint": self.failure_fingerprint,
         }
 
@@ -359,6 +367,10 @@ class FailureSignal:
             artifact_digest=str(payload["artifact_digest"]) if payload.get("artifact_digest") is not None else None,
             retry_hint=str(payload["retry_hint"]) if payload.get("retry_hint") is not None else None,
             retryable=payload.get("retryable", True) is not False,
+            scope=str(payload.get("scope", "current_work_item")),
+            requires_control_plane=payload.get("requires_control_plane", False) is True,
+            related_work_item_ids=tuple(str(value) for value in payload.get("related_work_item_ids", ())),
+            related_artifact_refs=tuple(str(value) for value in payload.get("related_artifact_refs", ())),
         )
 
 

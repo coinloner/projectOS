@@ -12,6 +12,7 @@ from app.artifact.repository import ArtifactRepository
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.domain.architecture.implementation_contract import ImplementationContractStore
 from app.domain.architecture.validation import ValidationReceipt, ValidationReceiptStore, digest_text
+from app.domain.architecture.recursive import RecursiveNode, RecursiveSnapshot, RecursiveSnapshotStore
 from app.domain.architecture.contract_input import ProjectContractInput
 from app.domain.architecture.design_contract import (
     ArchitectureBlueprint,
@@ -134,6 +135,7 @@ class ArchitectureArtifactWorkflow:
         self._project_path = project_path
         self._repository = ArtifactRepository(project_path)
         self._validation_receipts = ValidationReceiptStore(project_path)
+        self._recursive_snapshots = RecursiveSnapshotStore(project_path)
 
     def load_input(self, context: ExecutionContext, ref_id: str) -> str:
         ref = next((candidate for candidate in context.input_refs if candidate.ref_id == ref_id), None)
@@ -328,6 +330,35 @@ class ArchitectureArtifactWorkflow:
                 ),
                 created_at=staged.created_at,
             ))
+            if isinstance(parsed, ArchitectureBlueprint):
+                requirement_ref = next(
+                    (ref.ref_id for ref in context.input_refs if ref.artifact_key == "requirement"),
+                    "published:requirement:current",
+                )
+                requirement_digest = next(
+                    (digest for ref, digest in zip(context.input_refs, context.input_digests or ()) if ref.artifact_key == "requirement"),
+                    "",
+                )
+                self._recursive_snapshots.save(RecursiveSnapshot(
+                    schema_version=1,
+                    protocol_version=self._recursive_snapshots.protocol_version,
+                    trace_id=context.trace_id,
+                    plan_id=context.trace_id,
+                    requirement_ref=requirement_ref,
+                    requirement_digest=requirement_digest,
+                    blueprint_ref=staged.ref.ref_id,
+                    blueprint_digest=staged.digest,
+                    accepted_nodes=(RecursiveNode(
+                        node_id=parsed.design_id,
+                        parent_id=None,
+                        objective=parsed.system_boundary,
+                        boundary="split",
+                        children=tuple(module.module_id for module in parsed.modules),
+                        input_digest=requirement_digest,
+                        artifact_ref=staged.ref.ref_id,
+                    ),),
+                    current_node_ids=tuple(module.module_id for module in parsed.modules),
+                ))
         return f"已写入架构设计对象: {staged.ref.ref_id}; depth={parsed.depth}"
 
     def integrate_structured_designs(self, context: ExecutionContext) -> str:

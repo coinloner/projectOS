@@ -34,6 +34,7 @@ from app.orchestration.progress import (
 from app.orchestration.work_item import WorkItem
 from app.orchestration.work_item import DependencySource, WorkItemDependency
 from app.orchestration.delivery_registry import DeliveryContractRegistry
+from app.orchestration.control_decision import ControlDecision, ControlDecisionStore
 from app.orchestration.retry import (
     FailureKind,
     FailureSignal,
@@ -552,6 +553,7 @@ class GraphRunner:
         # checkpoint payload. It survives worker restarts and is shared by
         # parallel WorkItems through this runner-local lock.
         self._retry_ledger: RetryLedger | None = None
+        self._control_decisions: ControlDecisionStore | None = None
         self._total_retries = 0
 
     def run(
@@ -562,6 +564,10 @@ class GraphRunner:
                 RetryLedger(self._traces.project_path, plan.trace.trace_id)
                 if self._traces is not None
                 else None
+            )
+            self._control_decisions = (
+                ControlDecisionStore(self._traces.project_path)
+                if self._traces is not None else None
             )
             self._total_retries = (
                 self._retry_ledger.budget_count()
@@ -1521,6 +1527,17 @@ class GraphRunner:
                 return result
             if signal.input_digest is None:
                 signal = replace(signal, input_digest=item.contract_digest)
+            # A node may retry only itself. Signals that identify an
+            # architecture subgraph or an upstream stage are handed to the
+            # control plane and never passed through the local retry policy.
+            if signal.scope != "current_work_item" or signal.requires_control_plane:
+                self._persist_control_decision(state, item, signal)
+                return NodeResult.needs_replan(
+                    work_item_id=item.id,
+                    agent_id=item.agent_id,
+                    content=result.content,
+                    signal=signal,
+                )
             # Only schema failures currently have a stable, field-level
             # identity and an explicit unchanged-input contract.  Applying
             # this circuit breaker to broad delivery/runtime categories would
@@ -1647,6 +1664,37 @@ class GraphRunner:
                     f"{signal.summary}"
                 ),
             )
+
+    def _persist_control_decision(
+        self, state: RunState, item: WorkItem, signal: FailureSignal
+    ) -> ControlDecision | None:
+        """Record a cross-node recovery request without executing it."""
+        store = self._control_decisions
+        if store is None:
+            return None
+        action = "retry_upstream_stage" if signal.scope == "upstream_stage" else "rebuild_architecture_subgraph"
+        decision = ControlDecision(
+            decision_id=f"cd-{state.plan.trace.trace_id}-{item.id}-{signal.failure_fingerprint[:12]}",
+            trace_id=state.plan.trace.trace_id,
+            plan_id=state.plan.id,
+            plan_revision=1,
+            source_work_item_id=item.id,
+            source_failure_digest=signal.failure_fingerprint,
+            action=action,
+            target_work_item_ids=signal.related_work_item_ids,
+            invalidated_artifact_refs=signal.related_artifact_refs,
+            reason=signal.summary,
+            evidence_refs=signal.related_artifact_refs,
+        )
+        existing = {entry.decision_id for entry in store.list()}
+        if decision.decision_id not in existing:
+            store.append(decision)
+        if self._traces is not None:
+            self._traces.record_event(
+                state.plan.trace, item.id, "control_decision_required",
+                details=decision.as_dict(),
+            )
+        return decision
 
     def _recovery_action(
         self,
