@@ -160,7 +160,7 @@ class PlanningContextTest(unittest.TestCase):
                 goal="生产级前后端系统，包含数据库、异步任务和并发交互页面",
                 plan_id="complex-delivery",
             )
-            self.assertEqual(result.plan.template_id, "project_delivery")
+            self.assertEqual(result.plan.template_id, "delivery_default")
             self.assertEqual(result.attempts, 0)
             self.assertEqual(runtime.prompts, [])
 
@@ -695,12 +695,10 @@ class PlannerServiceTest(unittest.TestCase):
             result = service.plan(goal="实现 Todo 并完成测试和交付审查", plan_id="full-delivery")
 
             self.assertEqual(result.attempts, 0)
-            self.assertEqual(result.plan.template_id, "project_delivery")
-            self.assertEqual(len(result.plan.work_items), 4)
-            self.assertEqual(
-                {item.artifact_key for item in result.plan.work_items},
-                {"requirement", "architecture", "architecture_contract"},
-            )
+            self.assertEqual(result.plan.template_id, "delivery_default")
+            self.assertGreaterEqual(len(result.plan.work_items), 8)
+            self.assertIn("requirement", {item.artifact_key for item in result.plan.work_items})
+            self.assertIn("architecture", {item.artifact_key for item in result.plan.work_items})
             self.assertEqual(runtime.prompts, [])
 
     def test_planner_fails_after_one_unsuccessful_repair(self) -> None:

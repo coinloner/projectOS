@@ -184,6 +184,7 @@ class TraceStoreTest(unittest.TestCase):
                     "work_item_planned",
                     "batch_started",
                     "work_item_started",
+                    "tool_contract_preflight",
                     "work_item_completed",
                     "requirement_snapshot",
                     "batch_completed",

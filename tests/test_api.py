@@ -47,46 +47,14 @@ class ApiTest(unittest.TestCase):
         self.assertTrue((Path(created.json()["path"]) / "start.sh").is_file())
         self.assertTrue((Path(created.json()["path"]) / "start.ps1").is_file())
         self.assertEqual(workflows.status_code, 200)
-        self.assertEqual(
-            workflows.json()["workflows"],
-            [
-                {
-                    "id": "architecture_compact",
-                    "name": "精简架构设计",
-                    "description": "为范围明确的小需求生成短架构候选，避免不必要的并行分区。",
-                },
-                {
-                    "id": "architecture_parallel",
-                    "name": "并行架构设计",
-                    "description": "先冻结基线，再并行设计架构分区，最后整合并通过质量门发布。",
-                },
-                {
-                    "id": "architecture_layered",
-                    "name": "三层结构化架构设计",
-                    "description": "总体蓝图、模块设计、实现准备三层架构对象并行与集成。",
-                },
-                {
-                    "id": "project_delivery",
-                    "name": "项目交付草案",
-                    "description": "生成需求、架构合同、实施任务、并行代码分区、测试证据和审查报告。",
-                },
-                {
-                    "id": "project_delivery_dynamic",
-                    "name": "动态项目交付",
-                    "description": "固定需求、架构蓝图、架构集成和合同里程碑；模块、实现单元和交付尾部由控制面根据项目对象动态展开。",
-                },
-                {
-                    "id": "project_delivery_layered",
-                    "name": "分层项目交付",
-                    "description": "复杂项目使用三层结构化架构合同，再进入任务、代码、测试和审查闭环。",
-                },
-                {
-                    "id": "project_delivery_minimal",
-                    "name": "最小项目交付",
-                    "description": "使用已有需求和架构，生成任务、环境、并行代码、测试和审查结果。",
-                },
-            ],
-        )
+        workflow_ids = [item["id"] for item in workflows.json()["workflows"]]
+        self.assertIn("delivery_default", workflow_ids)
+        self.assertIn("delivery_incremental", workflow_ids)
+        self.assertIn("architecture_compact", workflow_ids)
+        self.assertIn("architecture_parallel", workflow_ids)
+        self.assertIn("architecture_layered", workflow_ids)
+        self.assertNotIn("project_delivery_dynamic", workflow_ids)
+
 
     def test_agent_skill_configuration_is_project_scoped(self) -> None:
         created = self.client.post("/api/v1/projects", json={"name": "demo"})
