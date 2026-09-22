@@ -1,5 +1,6 @@
 """Immutable Architecture-only execution policy; never overrides global runtime settings."""
 from dataclasses import asdict, dataclass
+from typing import Literal
 from hashlib import sha256
 import json
 
@@ -9,12 +10,19 @@ class ArchitectureExecutionConfig:
     # Named profiles keep prompt, tools and recovery policy coherent.
     mode: str = "baseline"
     schema_version: int = 1
+    scheme: Literal["D", "legacy"] = "D"
 
     def __post_init__(self):
+        if self.scheme not in ("D", "legacy"):
+            raise ValueError("Unsupported Architecture scheme")
         if self.mode not in ("baseline", "checkpointed"):
             raise ValueError("Unsupported Architecture execution mode")
         if self.schema_version != 1:
             raise ValueError("Unsupported Architecture config schema")
+
+    @property
+    def recursive_enabled(self) -> bool:
+        return self.scheme == "D"
 
     @property
     def checkpoints_enabled(self) -> bool:

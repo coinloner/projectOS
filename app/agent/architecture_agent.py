@@ -8,11 +8,20 @@ class ArchitectureAgent(BaseAgent):
 
     def backstory_for_context(self, context: ExecutionContext | None) -> str:
         names = set(getattr(context, "tool_allowlist", ()) or ())
-        if (context is not None and context.architecture_config.supports_checkpoints(
-                    context.agent_id, context.execution_mode.value, context.slot)
-                and {"load_architecture_intermediate", "write_architecture_intermediate"}.issubset(names)):
-            return _BACKSTORY + "\n\n" + _CHECKPOINT_RULES
-        return _BACKSTORY
+        scheme_note = (
+            "\n\n当前生产 Architecture 方案：D（capability-first + 递归语义单元）。"
+            "必须在结构化 Blueprint 中声明 architecture_scheme=D，并为每个顶层模块声明 boundary_role。"
+            if context is not None and context.architecture_config.recursive_enabled
+            else ""
+        )
+        checkpoint_enabled = (
+            context is not None
+            and context.architecture_config.supports_checkpoints(
+                context.agent_id, context.execution_mode.value, context.slot
+            )
+            and {"load_architecture_intermediate", "write_architecture_intermediate"}.issubset(names)
+        )
+        return _BACKSTORY + scheme_note + ("\n\n" + _CHECKPOINT_RULES if checkpoint_enabled else "")
 
     def __init__(self, gateway: ToolGateway) -> None:
         super().__init__(

@@ -487,3 +487,16 @@ and three-way comparison; it must not replace `main` by copying this worktree.
 ```
 
 当前仍未宣称 D 完成：recursive split/leaf 执行、deterministic Contract、D tasks projection、节点级 receipt/recovery 和 wanfa 全新 E2E 仍需继续迁移。
+
+
+## 2026-09-23 Architecture D 迁移阶段 2：生产方案显式化
+
+在 ArchitectureExecutionConfig 中增加显式 `scheme`，默认值为 `D`，并提供 `recursive_enabled`。Architecture Agent 在生产上下文中收到 D 方案提示，要求输出 `architecture_scheme=D` 和顶层 `boundary_role`，避免仅凭实验文件或分支名称判断当前方案。
+
+验证：
+
+```text
+69 passed, 1 warning, 2 subtests passed
+```
+
+这一步只完成了运行配置和提示边界的显式化；Contract 确定性执行、tasks projection、真正递归 split/leaf 计划和全新 wanfa E2E 尚未完成。
