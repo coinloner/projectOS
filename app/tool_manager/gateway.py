@@ -180,6 +180,18 @@ def _visible_in_execution_context(
     definition: "ToolDef", context: ExecutionContext | None
 ) -> bool:
     """模式是 Runner 发放的可信授权，不是 LLM 可选择的工具参数。"""
+    if definition.name in {
+        "load_architecture_intermediate", "write_architecture_intermediate",
+        "select_tech_stack", "select_interface_kind",
+    }:
+        if context is None or context.agent_id != "architecture_agent":
+            return False
+        if definition.name in {"load_architecture_intermediate", "write_architecture_intermediate"}:
+            if not context.architecture_config.checkpoints_enabled:
+                return False
+        if definition.name in {"select_tech_stack", "select_interface_kind"}:
+            if not context.architecture_config.recursive_enabled:
+                return False
     if context is None or definition.execution_modes is None:
         return True
     return context.execution_mode.value in definition.execution_modes

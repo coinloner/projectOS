@@ -32,7 +32,12 @@ class TemplateCompiler:
             raise ValueError(
                 f"模板 '{template.id}' 是普通模板，应由 PlanValidator 的动态路径处理"
             )
-        contracts = agent_output_keys or {}
+        contracts = dict(agent_output_keys or {})
+        # Older callers used integration_agent for the stable implementation
+        # anchor; the production template names the same control-plane role
+        # code_integration_agent. Accept the alias without changing the plan.
+        if "code_integration_agent" not in contracts and "integration_agent" in contracts:
+            contracts["code_integration_agent"] = contracts["integration_agent"]
         unknown_agents = sorted(
             {node.agent_id for node in template.nodes} - set(contracts)
         )
