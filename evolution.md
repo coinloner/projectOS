@@ -534,3 +534,20 @@ and three-way comparison; it must not replace `main` by copying this worktree.
 ```text
 85 passed, 2 warnings, 9 subtests passed
 ```
+
+
+## 2026-09-23 Architecture D 迁移阶段 5：ValidationReceipt 恢复边界
+
+为让 D 的局部恢复有可验证边界，新增 `app/domain/architecture/validation.py`：
+
+- 每个 D staged Architecture design 在 schema、depth、path、interface 和 ownership 校验通过并写入后，生成独立 `ValidationReceipt`。
+- receipt 绑定 artifact ref、artifact digest、父输入 refs/digests、validator version 和 checks。
+- receipt 采用临时文件 + fsync + `os.replace` 写入，避免 artifact 已存在但校验证据缺失。
+- D 的 Architecture 集成在读取 staged designs 时要求 receipt 状态为 passed 且 digest 匹配；旧/缺失/过期 receipt fail closed。
+- legacy 直接领域调用保留旧行为，避免历史 Trace 被静默迁移。
+
+验证：
+
+```text
+45 passed, 2 subtests passed
+```

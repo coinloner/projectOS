@@ -11,6 +11,7 @@ from app.artifact.store import ArtifactStore
 from app.artifact.repository import ArtifactRepository
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.domain.architecture.implementation_contract import ImplementationContractStore
+from app.domain.architecture.validation import ValidationReceipt, ValidationReceiptStore, digest_text
 from app.domain.architecture.contract_input import ProjectContractInput
 from app.domain.architecture.design_contract import (
     ArchitectureBlueprint,
@@ -132,6 +133,7 @@ class ArchitectureArtifactWorkflow:
     def __init__(self, project_path: str) -> None:
         self._project_path = project_path
         self._repository = ArtifactRepository(project_path)
+        self._validation_receipts = ValidationReceiptStore(project_path)
 
     def load_input(self, context: ExecutionContext, ref_id: str) -> str:
         ref = next((candidate for candidate in context.input_refs if candidate.ref_id == ref_id), None)
@@ -313,6 +315,19 @@ class ArchitectureArtifactWorkflow:
             contract_digest=context.contract_digest,
             expected_source_digests=context.input_digests,
         )
+        if context.architecture_config.recursive_enabled:
+            self._validation_receipts.save(ValidationReceipt(
+                artifact_ref=staged.ref,
+                artifact_digest=staged.digest,
+                parent_refs=tuple(ref.ref_id for ref in context.input_refs),
+                parent_digests=tuple(context.input_digests or ()),
+                validator_version="architecture-design-contract/v1",
+                checks=(
+                    "pydantic_schema", "depth_matches_slot", "path_scope",
+                    "interface_shape", "ownership_shape",
+                ),
+                created_at=staged.created_at,
+            ))
         return f"已写入架构设计对象: {staged.ref.ref_id}; depth={parsed.depth}"
 
     def integrate_structured_designs(self, context: ExecutionContext) -> str:
@@ -346,6 +361,19 @@ class ArchitectureArtifactWorkflow:
         implementations = [item for item in designs if isinstance(item, ImplementationDesign)]
         if blueprint is None:
             raise ValueError("架构设计集成缺少 depth=0 的总体蓝图")
+        if blueprint.architecture_scheme == "D":
+            # D accepts only versioned candidates with a durable validation
+            # receipt. This is the recovery boundary: without the receipt the
+            # control plane cannot safely reuse the staged artifact.
+            for index, ref in enumerate(context.input_refs):
+                if ref.layer != "staged":
+                    continue
+                digest = (context.input_digests or ())[index]
+                self._validation_receipts.verify(
+                    ref,
+                    artifact_digest=digest,
+                    parent_digests=(),
+                )
         # Layered workers receive a semantic module id (``api``, ``domain``,
         # ``runtime``), while a blueprint may use a product-qualified id such
         # as ``todo-api``.  Normalize only a unique exact suffix match; any
