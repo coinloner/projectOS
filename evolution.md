@@ -500,3 +500,21 @@ and three-way comparison; it must not replace `main` by copying this worktree.
 ```
 
 这一步只完成了运行配置和提示边界的显式化；Contract 确定性执行、tasks projection、真正递归 split/leaf 计划和全新 wanfa E2E 尚未完成。
+
+
+## 2026-09-23 Architecture D 迁移阶段 3：Contract 与 Tasks 的确定性执行入口
+
+继续迁移 D 的控制面边界：
+
+- D 的 `contract` WorkItem 在 GraphRunner 中直接调用已有 `ArchitectureArtifactWorkflow.compile_project_contract_from_designs`，从已接受的 Blueprint/ModuleDesign/ImplementationDesign 结构化输入编译 Project Contract，不再创建 Architecture Contract Agent 的模型调用。
+- 新增 `app/domain/task/projection.py`，从 Project Contract 确定性生成 `tasks.md`。D 的 `tasks_plan`、`tasks_integration`、`tasks_quality_gate` 通过控制面执行投影和确认，不调用 TaskAgent；legacy 模板节点仍保持原行为。
+- Project Contract 仍是 Code、Integration 和下游实现流程的权威事实，tasks.md 仅作为可读投影。
+- 语义单元的 1-3 文件 ownership 会继续传递到 Code WorkItem 和真实 ChangeSet 校验。
+
+验证：
+
+```text
+81 passed, 3 warnings, 7 subtests passed
+```
+
+剩余迁移项：D 的递归 split/leaf 计划执行、逐层 ValidationReceipt、节点内/跨节点恢复边界、默认流程的全新 wanfa E2E。

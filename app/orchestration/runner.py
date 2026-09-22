@@ -1854,12 +1854,47 @@ class GraphRunner:
         )
         return max((event.sequence for event in events), default=0)
 
+    def _run_deterministic_tasks(self, state: RunState, item: WorkItem) -> NodeResult:
+        """Project D's accepted contract to tasks without a TaskAgent call."""
+        try:
+            from app.domain.architecture.implementation_contract import ProjectContractStore
+            from app.domain.task.projection import project_tasks
+            contract = ProjectContractStore(self._traces.project_path).load() if self._traces else None
+            if contract is None:
+                raise FileNotFoundError("Project Contract 不可用")
+            if item.stage_id == "tasks_plan" or item.slot == "plan":
+                content = project_tasks(self._traces.project_path, contract)
+                return NodeResult.completed(work_item_id=item.id, agent_id=item.agent_id, content=content)
+            if not ArtifactStore(self._traces.project_path).exists("tasks"):
+                raise FileNotFoundError("tasks.md 尚未生成")
+            return NodeResult.completed(
+                work_item_id=item.id, agent_id=item.agent_id,
+                content="D tasks projection 已完成；该节点只确认确定性投影结果。",
+            )
+        except Exception as error:
+            return NodeResult.failed(
+                work_item_id=item.id, agent_id=item.agent_id,
+                error=f"D tasks projection failed: {error}",
+            )
+
     def _run_item(
         self, state: RunState, item: WorkItem, *, attempt: int = 1,
         retry_context: str | None = None,
     ) -> NodeResult:
         if item.execution_mode is ExecutionMode.QUALITY_GATE:
+            if (
+                self._architecture_config.recursive_enabled
+                and item.agent_id == "task_agent"
+                and item.stage_id in {"tasks_plan", "tasks_integration", "tasks_quality_gate"}
+            ):
+                return self._run_deterministic_tasks(state, item)
             return self._run_quality_gate(state, item)
+        if (
+            self._architecture_config.recursive_enabled
+            and item.agent_id == "task_agent"
+            and item.stage_id in {"tasks_plan", "tasks_integration", "tasks_quality_gate"}
+        ):
+            return self._run_deterministic_tasks(state, item)
         if item.agent_id == "task_agent" and item.execution_mode not in {
             ExecutionMode.PARTITIONED,
             ExecutionMode.INTEGRATION,
@@ -2108,6 +2143,44 @@ class GraphRunner:
                         retry_hint="repair_plan_or_tool_registration",
                     ),
                 )
+
+            if (
+                self._architecture_config.recursive_enabled
+                and item.agent_id == "architecture_contract_agent"
+                and item.stage_id == "contract"
+            ):
+                try:
+                    from app.domain.architecture.service import ArchitectureArtifactWorkflow
+                    content = ArchitectureArtifactWorkflow(
+                        self._traces.project_path
+                    ).compile_project_contract_from_designs(context)
+                    self._record_event(
+                        state.plan, item, "deterministic_action_completed",
+                        details={"action": "compile_project_contract_from_designs"},
+                    )
+                    return NodeResult.completed(
+                        work_item_id=item.id, agent_id=item.agent_id, content=content
+                    )
+                except Exception as error:
+                    self._record_event(
+                        state.plan, item, "deterministic_action_failed",
+                        details={
+                            "action": "compile_project_contract_from_designs",
+                            "error": str(error),
+                        },
+                    )
+                    return NodeResult.needs_replan(
+                        work_item_id=item.id,
+                        agent_id=item.agent_id,
+                        content=str(error),
+                        signal=FailureSignal(
+                            FailureKind.ARCHITECTURE_CONTRACT_MISSING,
+                            f"D Contract 确定性编译失败：{error}",
+                            validator="ArchitectureArtifactWorkflow",
+                            field_path=item.id,
+                            retry_hint="retry_current_work_item",
+                        ),
+                    )
 
             skill_guidance, resolved_skill_refs = self._skills.render_for(
                 item.agent_id, item.skill_refs
