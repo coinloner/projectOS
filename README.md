@@ -15,6 +15,8 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 - 统一 Agent/Tool/Workflow 注册与执行边界，TaskAgent、CodeAgent 使用标准执行模式。
 - Artifact staged/candidate/promotion 流程，以及代码分区的 Git worktree/ChangeSet 合并。
 - Docker SandboxEvidence、失败归因、有限重试和 Repair Plan。
+- 测试前会执行受信 `runtime-smoke` 入口组装探针；合同声明的后端入口无法导入或组装时，
+  运行会以 `RUNTIME_PREFLIGHT` 阻塞，不会生成误导性的通过报告。
 - 环境配置节点声明 runtime 并准备可复现依赖；交付完成后，控制平面可自动识别受支持的应用、启动数据库和应用容器。
 - Trace 级 Memory：分层事件、FTS5/可选向量召回、预算化上下文、durable 审批。
 - 版本化 checkpoint 和受校验的 `/resume` 断点恢复。
@@ -61,9 +63,14 @@ curl http://127.0.0.1:8000/api/v1/projects/<project_id>/runs/<trace_id>/progress
 `PROJECTOS_IDLE_LLM_STREAMING_SECONDS`（LLM 无 chunk 空闲阈值）、
 `PROJECTOS_IDLE_RUNNING_TOOL_SECONDS`（工具空闲阈值）、
 `PROJECTOS_IDLE_RUNNING_SANDBOX_SECONDS`（Sandbox 空闲阈值）和
-`PROJECTOS_PROVIDER_STALL_GRACE_SECONDS`（确认无真实进度后的终止宽限期）。LLM 无 chunk
-先记录 `provider_stalled`；只有在宽限期内 `last_progress_at` 始终没有变化时才终止 Worker，
-短暂慢请求或恢复的流式请求不会被误杀。
+`PROJECTOS_PROVIDER_STALL_GRACE_SECONDS`（确认无真实进度后的终止宽限期）。LLM 无传输信号
+或活动 WorkItem 无语义进展时先记录 `provider_stalled`；只有对应节点的
+`last_transport_at`/`meaningful_progress_at` 在宽限期内始终没有变化才终止 Worker，
+短暂慢请求或恢复的流式请求不会被误杀。并行节点分别监控。
+新的按活动语义停滞阈值可通过 `PROJECTOS_SEMANTIC_STALL_LLM_SECONDS`、
+`PROJECTOS_SEMANTIC_STALL_TOOL_SECONDS`、`PROJECTOS_SEMANTIC_STALL_ARTIFACT_SECONDS`、
+`PROJECTOS_SEMANTIC_STALL_SANDBOX_SECONDS` 和 `PROJECTOS_SEMANTIC_STALL_INTEGRATION_SECONDS`
+覆盖；旧的工具和 Sandbox 空闲变量仍作为兼容回退。
 设置
 `PROJECTOS_LLM_STREAM=false` 可在 Provider 不支持 SSE 时关闭流式模式。
 

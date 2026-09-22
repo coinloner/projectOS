@@ -14,11 +14,28 @@ from app.workflow.template import TaskBlueprint, WorkflowTemplate, WorkflowTempl
 from app.workflow.templates import (
     architecture_compact_template,
     architecture_parallel_template,
+    project_delivery_dynamic_template,
     project_delivery_layered_template,
 )
 
 
 class WorkflowCompilerTest(unittest.TestCase):
+    def test_dynamic_delivery_template_is_a_small_lifecycle_anchor(self) -> None:
+        template = project_delivery_dynamic_template()
+        self.assertEqual(
+            [node.id for node in template.nodes],
+            [
+                "requirement",
+                "architecture-blueprint",
+                "architecture-integration",
+                "architecture-contract",
+            ],
+        )
+        self.assertTrue(template.has_controlled_execution)
+        self.assertEqual(template.nodes[1].stage_id, "architecture_blueprint")
+        self.assertEqual(template.nodes[2].stage_id, "architecture_integration")
+        self.assertEqual(template.nodes[3].stage_id, "contract")
+
     def test_layered_delivery_template_contains_architecture_barrier(self) -> None:
         template = project_delivery_layered_template()
         self.assertEqual(template.nodes[0].id, "requirement")
@@ -54,7 +71,7 @@ class WorkflowCompilerTest(unittest.TestCase):
             ],
         )
         baseline, api, data, frontend, integration, gate = plan.work_items
-        self.assertEqual(baseline.output_slot, "baseline")
+        self.assertEqual(baseline.slot, "baseline")
         self.assertEqual(api.input_refs[0].ref_id, "staged:tr-architecture:wi-01-architecture-baseline:baseline")
         self.assertEqual(
             {ref.ref_id for ref in integration.input_refs},
@@ -88,7 +105,7 @@ class WorkflowCompilerTest(unittest.TestCase):
         )
 
         self.assertEqual(len(plan.work_items), 3)
-        self.assertEqual(plan.work_items[0].output_slot, "design")
+        self.assertEqual(plan.work_items[0].slot, "design")
         self.assertTrue(plan.work_items[0].acceptance_criteria)
         self.assertEqual(plan.work_items[-1].execution_mode, ExecutionMode.QUALITY_GATE)
 

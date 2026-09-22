@@ -24,7 +24,11 @@ class Project:
 
         # 第二步：声明默认运行时。实际依赖与测试由 Sandbox 管理，不使用宿主 .venv。
         print("📦 [2/3] 正在写入默认 sandbox 运行时声明 ...")
-        RuntimeManifest(version=1, profile="python-stdlib").save(
+        RuntimeManifest(
+            version=1,
+            profile="python-stdlib",
+            application=None
+        ).save(
             str(self.project_path)
         )
 

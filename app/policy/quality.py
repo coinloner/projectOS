@@ -8,9 +8,11 @@ import fnmatch
 from pathlib import Path
 import re
 
+import yaml
+
 from app.artifact.repository import ArtifactRef
 from app.workspace.git_repository import ChangeSet
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from app.domain.architecture.implementation_contract import ImplementationContract
@@ -72,6 +74,76 @@ def _has_database_init_entrypoint(root: Path, workspace: Path) -> bool:
     return False
 
 
+def _entrypoint_assembly_issue(
+    workspace: Path, backend_file: str | None
+) -> QualityIssue | None:
+    """Check the minimal composition contract for generated Python servers.
+
+    The generated stdlib runtime entrypoint loads an API module through one of
+    ``create_application``/``create_app``/``handle``.  Importing the modules
+    alone does not exercise that boundary, so a missing assembly function can
+    otherwise pass the unit smoke suite and only fail when the server starts.
+    This check is intentionally static: ProjectOS never executes untrusted
+    project code outside the sandbox.
+    """
+
+    if not backend_file or not backend_file.endswith(".py"):
+        return None
+    relative = backend_file.removeprefix("workspace/").lstrip("/")
+    entrypoint = workspace / relative
+    if not entrypoint.is_file():
+        return None
+    try:
+        source = entrypoint.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source, filename=str(entrypoint))
+    except (OSError, SyntaxError):
+        # Syntax validity is covered by the sandbox; do not duplicate that
+        # diagnostic here or turn an unrelated parser failure into a second
+        # quality finding.
+        return None
+    function_names = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    if "_load_application" not in function_names:
+        return None
+
+    # Resolve the conventional sibling API module used by the generated
+    # stdlib runtime.  If a custom runtime imports another module, its own
+    # integration/behavior checks remain responsible for that contract.
+    api_file = entrypoint.parent / "api.py"
+    if not api_file.is_file():
+        return QualityIssue(
+            "runtime.application_assembly_missing",
+            f"运行入口 {relative} 使用动态应用组装，但缺少相邻 api.py",
+            (backend_file,),
+        )
+    try:
+        api_tree = ast.parse(
+            api_file.read_text(encoding="utf-8", errors="replace"),
+            filename=str(api_file),
+        )
+    except (OSError, SyntaxError):
+        return None
+    api_functions = {
+        node.name
+        for node in ast.walk(api_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    expected = {"create_application", "create_app", "handle"}
+    if api_functions.isdisjoint(expected):
+        return QualityIssue(
+            "runtime.application_assembly_missing",
+            (
+                f"运行入口 {relative} 需要 api.py 提供 create_application、"
+                "create_app 或 handle，但未发现可调用的应用组装函数"
+            ),
+            (backend_file, api_file.relative_to(workspace).as_posix()),
+        )
+    return None
+
+
 class GitCodeIntegrationPolicy:
     """Git ChangeSet 版本的代码集成底线策略。
 
@@ -87,6 +159,8 @@ class GitCodeIntegrationPolicy:
         outputs: tuple[tuple[ArtifactRef, ChangeSet], ...],
         *,
         missing_refs: tuple[ArtifactRef, ...] = (),
+        common_baseline: str | None = None,
+        is_ancestor: Callable[[str, str], bool] | None = None,
     ) -> QualityReport:
         issues: list[QualityIssue] = []
         if not outputs:
@@ -107,7 +181,15 @@ class GitCodeIntegrationPolicy:
             )
 
         baselines = {change.base_commit for _, change in outputs}
-        if len(baselines) > 1:
+        compatible_baselines = (
+            len(baselines) <= 1
+            or (
+                common_baseline is not None
+                and is_ancestor is not None
+                and all(is_ancestor(base, common_baseline) for base in baselines)
+            )
+        )
+        if not compatible_baselines:
             issues.append(
                 QualityIssue(
                     rule_id="code.common_baseline_required",
@@ -294,6 +376,11 @@ class ProjectRuntimePreflight:
                             f"Project Contract 声明的 {label} 入口不存在: {relative}",
                             (".projectos/architecture/project-contract.json",),
                         ))
+            assembly_issue = _entrypoint_assembly_issue(
+                workspace, delivery_contract.entrypoints.backend_file
+            )
+            if assembly_issue is not None:
+                issues.append(assembly_issue)
         compose = next(
             (path for path in (workspace / "docker-compose.yml", root / "docker-compose.yml", workspace / "compose.yaml", root / "compose.yaml") if path.is_file()),
             None,
@@ -302,7 +389,23 @@ class ProjectRuntimePreflight:
             text = compose.read_text(encoding="utf-8", errors="replace")
             if delivery_contract is not None and delivery_contract.entrypoints.backend_command:
                 command = delivery_contract.entrypoints.backend_command
-                if command not in text:
+                # Compose accepts either a shell string or an argv list. A raw
+                # substring check rejects the valid list form generated by our
+                # launcher (``- python`` / ``- -m`` / ``- backend...``), so
+                # compare the parsed backend command semantically.
+                actual_command = ""
+                try:
+                    document = yaml.safe_load(text)
+                    services = document.get("services", {}) if isinstance(document, dict) else {}
+                    backend = services.get("backend", {}) if isinstance(services, dict) else {}
+                    value = backend.get("command") if isinstance(backend, dict) else None
+                    if isinstance(value, list):
+                        actual_command = " ".join(str(part) for part in value)
+                    elif isinstance(value, str):
+                        actual_command = value
+                except (OSError, TypeError, ValueError, yaml.YAMLError):
+                    actual_command = ""
+                if " ".join(command.split()) not in " ".join(actual_command.split()) and command not in text:
                     issues.append(QualityIssue(
                         "runtime.contract_entrypoint_command_mismatch",
                         f"Compose 未使用合同声明的后端启动命令: {command}",
@@ -472,14 +575,24 @@ class ProjectQualityPolicy:
                         ),
                     )
                 )
-            main = backend / "main.py" if application_id == "python-backend" else app / "main.py"
-            if not main.is_file():
+            # The Project Contract is the source of truth for the runtime
+            # entrypoint.  Older policy versions hard-coded ``main.py`` and
+            # rejected valid standard-library services whose contract points
+            # to ``app/server.py`` (or another explicitly owned composition
+            # root).  When no contract exists, accept only the small set of
+            # conventional entrypoint names so this remains a deterministic
+            # safety check rather than a free-form file search.
+            main = _resolve_backend_entrypoint(workspace, backend, app, contract)
+            if main is None:
                 issues.append(QualityIssue(
                     rule_id="project.backend_entrypoint_required",
                     summary=(
-                        "纯 Python 后端缺少 workspace/backend/main.py"
-                        if application_id == "python-backend"
-                        else "FastAPI 后端缺少 workspace/backend/app/main.py，受信运行时无法启动 app.main:app"
+                        "后端缺少 Project Contract 声明或受信约定的启动入口"
+                        if contract is None
+                        else (
+                            "Project Contract 声明的后端启动入口不存在: "
+                            + str(contract.entrypoints.backend_file)
+                        )
                     ),
                 ))
             api_init = app / "api" / "__init__.py"
@@ -491,14 +604,14 @@ class ProjectQualityPolicy:
                     rule_id="project.backend_api_router_required",
                     summary="backend/app/api/__init__.py 引用了 router，但缺少 backend/app/api/router.py",
                 ))
-            if main.is_file() and len(main.read_text(encoding="utf-8", errors="replace").splitlines()) > 240:
+            if main is not None and len(main.read_text(encoding="utf-8", errors="replace").splitlines()) > 240:
                 issues.append(
                     QualityIssue(
                         rule_id="project.backend_entrypoint_size",
-                        summary="后端 main.py 超过 240 行，入口文件疑似承载过多业务逻辑",
+                        summary=f"后端入口 {main.relative_to(workspace)} 超过 240 行，入口文件疑似承载过多业务逻辑",
                     )
                 )
-            if application_id != "python-backend" and contract is not None and main.is_file():
+            if application_id != "python-backend" and contract is not None and main is not None:
                 main_text = main.read_text(encoding="utf-8", errors="replace")
                 api_sources = "\n".join(
                     path.read_text(encoding="utf-8", errors="replace")
@@ -538,6 +651,25 @@ class ProjectQualityPolicy:
         lines = [f"policy_id={report.policy_id}", "status=failed"]
         lines.extend(f"- {issue.rule_id}: {issue.summary}" for issue in report.issues)
         return "\n".join(lines)
+
+
+def _resolve_backend_entrypoint(
+    workspace: Path,
+    backend: Path,
+    app: Path,
+    contract: "ImplementationContract | None",
+) -> Path | None:
+    """Resolve a backend entrypoint without imposing a filename convention."""
+    if contract is not None:
+        relative = contract.entrypoints.backend_file
+        if relative:
+            candidate = workspace / relative.removeprefix("workspace/").lstrip("/")
+            return candidate if candidate.is_file() else None
+        return None
+    for candidate in (backend / "main.py", app / "main.py", app / "server.py"):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _evaluate_project_contract(workspace: Path, contract: ImplementationContract) -> list[QualityIssue]:

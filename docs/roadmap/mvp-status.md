@@ -14,7 +14,7 @@
 | Artifact Repository | architecture staged output、candidate、IntegrationReport、质量门 promotion 和版本化兼容投影 | 未接 LLM Review 或接口语义检查；代码交付使用独立 Git ChangeSet | 扩展统一产物质量报告 |
 | Code Parallel | backend/frontend Git task worktree、ChangeSet、路径隔离、Policy 三方合并并发布到正式 workspace | 目前只覆盖两个固定代码分区；冲突会阻止发布，未支持受限冲突解决 | 增加代码变更质量规则与失败返工 |
 | ToolGateway | 静态本地注册、动态 source 授权、CrewAI 适配 | 真实 MCP client 未接入 | MCP connector 与审批恢复 |
-| Sandbox | Docker 受控 unit 检查、`SandboxEvidence` 持久化；`python-stdlib` 已真实跑通 | 固定 unittest discovery，无 check catalog | check catalog |
+| Sandbox | Docker 受控 unit 检查、`runtime-smoke` 入口组装探针、`SandboxEvidence` 持久化；`python-stdlib` unit 已真实跑通 | `health_path` 响应级探测尚未接入；Docker credential/daemon 仍是主机前置条件 | 增加受信 health/readiness smoke 与更完整 check catalog |
 | Dependencies | `python-pip` 声明、依赖格式校验、hash wheel cache resolver | 需要所有者显式批准；通过 capabilities approve + resume 接入 | 外部队列和跨进程授权持久化 |
 | Review | 可读取受限 artifact、runtime 摘要、workspace 与当前 Trace 原始证据 | 未把失败证据转成修复决策 | 接入 PlanPatch |
 | Quality / Memory | Trace 级事件 MemoryStore、raw/temporary/working/episodic/durable 分层、candidate 生命周期、SQLite/FTS5 与可选向量混合召回、受控 durable 跨 Trace 召回、预算化 Prompt、运行摘要校验、checkpoint、候选审批/过期控制面和 Memory API | durable 候选仍依赖外部人工或 Review 调用控制接口 | 接入 Review/人工审批 UI 和归档策略 |

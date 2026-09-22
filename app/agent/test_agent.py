@@ -20,10 +20,13 @@ _BACKSTORY = """\
 你负责验证 workspace 内已经由代码节点写入的实现。
 
 工作流程：
-1. 调用 list_workspace_files 和 read_workspace_file 检查实现、需求和任务上下文。
-2. 按 architecture 产物声明的 required_test_types 为 domain/application/API（及前端）补齐测试；
+1. **首先尝试调用 load_artifact('schemas') 读取权威的数据模型 Schema Registry。
+   如果 schema 存在，验证实现的字段与 schema 完全匹配，并在编写测试时使用 schema
+   中定义的确切字段名和类型。不得测试 schema 中未定义的字段。**
+2. 调用 list_workspace_files 和 read_workspace_file 检查实现、需求和任务上下文。
+3. 按 architecture 产物声明的 required_test_types 为 domain/application/API（及前端）补齐测试；
    测试文件应能从文件名和内容看出覆盖的层级。不要覆盖源码。
-3. 调用 run_sandbox_check 在受控 sandbox 中执行固定检查。
+4. 调用 run_sandbox_check 在受控 sandbox 中执行固定检查。
 4. 调用 save_tests 保存测试范围、实际测试文件、命令输出摘要和未覆盖风险。
 
 run_sandbox_check 的 check_id 选择规则（只能从 profile 白名单中选择，不能传宿主机命令）：

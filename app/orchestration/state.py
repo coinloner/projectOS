@@ -14,17 +14,45 @@ class RunState:
     plan: ExecutionPlan
     node_results: dict[str, NodeResult] = field(default_factory=dict)
     artifacts: dict[str, str] = field(default_factory=dict)
+    # A narrowly scoped control-plane recovery may require one completed
+    # WorkItem to execute again instead of reusing its durable staged output.
+    # This never changes the plan or its sealed contracts.
+    forced_rerun_work_item_ids: set[str] = field(default_factory=set)
+    recovery_diagnostics: dict[str, str] = field(default_factory=dict)
+    # Derived from RetryLedger at resume time. This stays out of checkpoints:
+    # it is advisory guidance for the next attempt, not a completed fact.
+    retry_recovery_contexts: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def as_checkpoint(self) -> dict[str, object]:
-        """序列化可恢复状态；快照不是 Artifact 的事实来源。"""
+        """序列化可恢复状态；产物正文由 ArtifactRepository 唯一持有。"""
+        completed = {
+            item_id: result
+            for item_id, result in self.node_results.items()
+            if result.status is NodeStatus.COMPLETED
+        }
+        artifact_refs = {
+            plan_item.output_key: {
+                "artifact_key": plan_item.artifact_key or plan_item.output_key,
+                "work_item_id": plan_item.id,
+                "contract_digest": plan_item.contract_digest,
+            }
+            for plan_item in self.plan.work_items
+            if plan_item.id in completed
+        }
         return {
             "schema_version": 1,
             "plan_id": self.plan.id,
             "trace_id": self.plan.trace.trace_id,
             "node_results": [
-                result.as_dict() for result in self.node_results.values()
+                {
+                    **result.as_dict(),
+                    # Keep only a bounded summary in the checkpoint.  The
+                    # authoritative content remains in ArtifactRepository.
+                    "content": None,
+                }
+                for result in self.node_results.values()
             ],
-            "artifacts": dict(self.artifacts),
+            "artifact_refs": artifact_refs,
             "completed_work_items": sorted(
                 item_id
                 for item_id, result in self.node_results.items()
@@ -35,6 +63,8 @@ class RunState:
                 for item in self.plan.work_items
                 if item.id not in self.node_results
             ],
+            "forced_rerun_work_item_ids": sorted(self.forced_rerun_work_item_ids),
+            "recovery_diagnostics": dict(self.recovery_diagnostics),
         }
 
     @classmethod
@@ -56,20 +86,56 @@ class RunState:
             if not isinstance(raw_result, dict):
                 raise ValueError("checkpoint 包含无效 NodeResult")
             result = NodeResult.from_dict(raw_result)
-            item = plan.work_item(result.node_id)
+            item = plan.work_item(result.work_item_id)
             if item is None or item.agent_id != result.agent_id:
                 raise ValueError("checkpoint 包含不属于当前计划的 NodeResult")
-            if result.node_id in seen_ids:
+            if result.work_item_id in seen_ids:
                 raise ValueError("checkpoint 包含重复 NodeResult")
-            seen_ids.add(result.node_id)
+            seen_ids.add(result.work_item_id)
             # 只有 completed 结果可以跨进程信任；失败、等待和 replan 节点恢复时
             # 必须重新执行，避免把半完成副作用误判为已完成。
             if result.status is NodeStatus.COMPLETED:
-                results[result.node_id] = result
+                results[result.work_item_id] = result
+        # ``artifacts`` is the pre-migration inline-content format.  New
+        # checkpoints carry only artifact_refs and reconstruct presence from
+        # completed WorkItems; old checkpoints remain readable.
         raw_artifacts = checkpoint.get("artifacts", {})
         if not isinstance(raw_artifacts, dict):
             raise ValueError("checkpoint.artifacts 格式无效")
         artifacts = {str(key): str(value) for key, value in raw_artifacts.items()}
+        raw_refs = checkpoint.get("artifact_refs", {})
+        if raw_refs and not isinstance(raw_refs, dict):
+            raise ValueError("checkpoint.artifact_refs 格式无效")
+        if isinstance(raw_refs, dict):
+            for output_key, raw_ref in raw_refs.items():
+                if not isinstance(raw_ref, dict):
+                    raise ValueError("checkpoint.artifact_refs 包含无效引用")
+                work_item_id = raw_ref.get("work_item_id")
+                item = plan.work_item(str(work_item_id)) if work_item_id else None
+                if item is None:
+                    raise ValueError("checkpoint.artifact_refs 包含不属于当前计划的 WorkItem")
+                if str(output_key) != item.output_key:
+                    raise ValueError("checkpoint.artifact_refs 的 output_key 与 WorkItem 不匹配")
+                digest = raw_ref.get("contract_digest")
+                # Historical checkpoints predate contract_digest.  They remain
+                # readable, while every new checkpoint is checked strictly.
+                if digest is not None and str(digest) != item.contract_digest:
+                    raise ValueError(
+                        f"checkpoint WorkItem 合同指纹不匹配: {item.id}"
+                    )
+            if "artifact_refs" in checkpoint:
+                referenced_work_items = {
+                    str(raw_ref.get("work_item_id"))
+                    for raw_ref in raw_refs.values()
+                    if isinstance(raw_ref, dict) and raw_ref.get("work_item_id")
+                }
+                if referenced_work_items != set(results):
+                    missing = sorted(set(results) - referenced_work_items)
+                    extra = sorted(referenced_work_items - set(results))
+                    raise ValueError(
+                        "checkpoint completed WorkItem 与 artifact_refs 不一致"
+                        f"; missing={missing}; extra={extra}"
+                    )
         completed_output_keys = {
             plan.work_item(item_id).output_key
             for item_id, result in results.items()
@@ -78,7 +144,46 @@ class RunState:
         }
         if not set(artifacts).issubset(completed_output_keys):
             raise ValueError("checkpoint.artifacts 包含未完成节点或未知产物")
-        state = cls(plan=plan, node_results=results, artifacts=artifacts)
+        raw_forced_ids = checkpoint.get("forced_rerun_work_item_ids", [])
+        if not isinstance(raw_forced_ids, list) or any(
+            not isinstance(item_id, str) or not item_id.strip()
+            for item_id in raw_forced_ids
+        ):
+            raise ValueError("checkpoint.forced_rerun_work_item_ids 格式无效")
+        forced_rerun_work_item_ids = set(raw_forced_ids)
+        known_item_ids = {item.id for item in plan.work_items}
+        unknown_forced_ids = forced_rerun_work_item_ids - known_item_ids
+        if unknown_forced_ids:
+            raise ValueError("checkpoint.forced_rerun_work_item_ids 包含未知 WorkItem")
+        if forced_rerun_work_item_ids & set(results):
+            raise ValueError("checkpoint.forced_rerun_work_item_ids 不能包含已完成 WorkItem")
+        raw_diagnostics = checkpoint.get("recovery_diagnostics", {})
+        if not isinstance(raw_diagnostics, dict) or any(
+            not isinstance(item_id, str)
+            or item_id not in forced_rerun_work_item_ids
+            or not isinstance(diagnostic, str)
+            or not diagnostic.strip()
+            for item_id, diagnostic in raw_diagnostics.items()
+        ):
+            raise ValueError("checkpoint.recovery_diagnostics 格式无效")
+        if set(raw_diagnostics) != forced_rerun_work_item_ids:
+            raise ValueError("checkpoint.recovery_diagnostics 与 forced_rerun_work_item_ids 不一致")
+        state = cls(
+            plan=plan,
+            node_results=results,
+            artifacts=artifacts,
+            forced_rerun_work_item_ids=forced_rerun_work_item_ids,
+            recovery_diagnostics={
+                item_id: str(diagnostic)
+                for item_id, diagnostic in raw_diagnostics.items()
+            },
+        )
+        for item_id in results:
+            item = plan.work_item(item_id)
+            if item is not None and item.output_key not in state.artifacts:
+                # Presence is enough for dependency scheduling.  Consumers
+                # read the actual body through the repository by ArtifactRef.
+                state.artifacts[item.output_key] = ""
         for item_id, result in results.items():
             if result.status is NodeStatus.COMPLETED and item_id not in state.artifacts:
                 item = plan.work_item(item_id)
@@ -100,12 +205,15 @@ class RunState:
         )
 
     def record(self, item: WorkItem, result: NodeResult) -> None:
-        if result.node_id != item.id or result.agent_id != item.agent_id:
+        if result.work_item_id != item.id or result.agent_id != item.agent_id:
             raise ValueError("NodeResult 与 WorkItem 不匹配")
         if item.id in self.node_results:
             raise ValueError(f"工作项 '{item.id}' 已有运行结果")
 
         self.node_results[item.id] = result
+        self.forced_rerun_work_item_ids.discard(item.id)
+        self.recovery_diagnostics.pop(item.id, None)
+        self.retry_recovery_contexts.pop(item.id, None)
         if result.status is NodeStatus.COMPLETED and result.content is not None:
             self.artifacts[item.output_key] = result.content
 

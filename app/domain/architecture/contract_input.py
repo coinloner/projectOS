@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.orchestration.field_semantics import normalize_aliases
+
 
 class _ContractModel(BaseModel):
     """Closed wire object shared by all contract DTOs."""
@@ -38,6 +40,20 @@ class ContractEntrypointInput(_ContractModel):
     frontend_file: str | None = Field(default=None, max_length=512)
     health_path: str = Field(default="/health", min_length=1, max_length=256)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_health_path(cls, value: Any) -> Any:
+        """Normalize an unspecified probe route before strict field validation."""
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        health_path = data.get("health_path", "/health")
+        if health_path is None or (
+            isinstance(health_path, str) and not health_path.strip()
+        ):
+            data["health_path"] = "/health"
+        return data
+
 
 class ContractInterfaceInput(_ContractModel):
     interface_id: str = Field(min_length=1, max_length=128)
@@ -50,21 +66,68 @@ class ContractInterfaceInput(_ContractModel):
     output_schema: str | None = Field(default=None, max_length=4000)
     errors: list[str] = Field(default_factory=list, max_length=32)
     constraints: list[str] = Field(default_factory=list, max_length=32)
+    consumption_type: Literal["import_code", "http_call", "process_spawn", "shared_schema"] | None = Field(
+        default=None,
+        description="接口的消费方式"
+    )
+    confidence: Literal["high", "medium", "low"] | None = Field(
+        default=None,
+        description="消费方式推断的置信度"
+    )
+    to_be_verified: bool = Field(
+        default=False,
+        description="是否需要在 Code 阶段验证"
+    )
+
+
+class ConsumedInterfaceRefInput(_ContractModel):
+    """A reference to an interface owned by another implementation unit."""
+
+    interface_id: str = Field(min_length=1, max_length=128)
+    usage: str | None = Field(default=None, max_length=1000)
+    required: bool = True
+    consumption_type: Literal["import_code", "http_call", "process_spawn", "shared_schema"] | None = Field(
+        default=None,
+        description="接口的消费方式：import_code(代码导入), http_call(HTTP调用), process_spawn(启动进程), shared_schema(共享数据定义)"
+    )
+    confidence: Literal["high", "medium", "low"] | None = Field(
+        default=None,
+        description="消费方式推断的置信度"
+    )
+    to_be_verified: bool = Field(
+        default=False,
+        description="是否需要在 Code 阶段验证实际的消费方式"
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_direction_summary(cls, value: Any) -> Any:
+        """Accept the old shared interface shape only at the wire boundary."""
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "usage" not in data and data.get("summary"):
+            data["usage"] = data["summary"]
+        data.pop("direction", None)
+        data.pop("summary", None)
+        return data
 
 
 class ContractImplementationUnitInput(_ContractModel):
     """One complete-file implementation scope.
 
-    ``required_files`` is the public wire name.  ``required_paths`` remains an
-    accepted compatibility alias during migration; the DTO rejects conflicting
-    values so the canonical contract never has two different meanings.
+    ``required_paths`` is the canonical field. ``required_files`` is accepted
+    only as a wire-level migration alias and is removed by the pre-validator;
+    it never exists on the validated object or in persisted contracts.
     """
 
     unit_id: str = Field(min_length=1, max_length=128)
     layer: str = Field(min_length=1, max_length=64)
     objective: str = Field(min_length=1, max_length=1000)
     allowed_paths: list[str] = Field(min_length=1, max_length=64)
-    required_files: list[str] = Field(default_factory=list, max_length=64)
+    # ``required_paths`` is the only field exposed in the canonical wire schema.
+    # ``required_files`` is normalized and discarded by ``normalize_wire_aliases``
+    # before strict validation, so the model cannot emit two names for one meaning.
     required_paths: list[str] = Field(default_factory=list, max_length=64)
     forbidden_paths: list[str] = Field(default_factory=list, max_length=64)
     depends_on: list[str] = Field(default_factory=list, max_length=64)
@@ -76,7 +139,7 @@ class ContractImplementationUnitInput(_ContractModel):
     skill_refs: list[str] = Field(default_factory=list, max_length=32)
     parallel_group: str | None = Field(default=None, max_length=128)
     output_key: str | None = Field(default=None, max_length=128)
-    output_slot: str | None = Field(default=None, max_length=64)
+    slot: str | None = Field(default=None, max_length=64)
     requirement_ids: list[str] = Field(default_factory=list, max_length=64)
     wave: int | None = Field(default=None, ge=0, le=1000)
     owned_files: list[str] = Field(default_factory=list, max_length=64)
@@ -85,14 +148,21 @@ class ContractImplementationUnitInput(_ContractModel):
     provided_symbols: list[str] = Field(default_factory=list, max_length=128)
     required_symbols: list[str] = Field(default_factory=list, max_length=128)
 
-    @model_validator(mode="after")
-    def normalize_required_alias(self) -> "ContractImplementationUnitInput":
-        if self.required_files and self.required_paths and self.required_files != self.required_paths:
-            raise ValueError("required_files 与 required_paths 不能表示不同文件")
-        if not self.required_paths and self.required_files:
-            self.required_paths = list(self.required_files)
-        return self
-
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_wire_aliases(cls, value: Any) -> Any:
+        # All downstream objects use slot/required_paths/provides_interfaces/
+        # consumes_interfaces.  Keep aliases at this single wire boundary so
+        # retry and resume code never has to guess which spelling was used.
+        return normalize_aliases(
+            value,
+            {
+                "slot": ("output_slot",),
+                "required_paths": ("required_files",),
+                "provides_interfaces": ("provides",),
+                "consumes_interfaces": ("consumes",),
+            },
+        )
 
 class ProjectContractInput(_ContractModel):
     """唯一 Project Contract 的结构化工具输入。"""
@@ -151,6 +221,7 @@ class ProjectContractInput(_ContractModel):
 
 
 __all__ = [
+    "ConsumedInterfaceRefInput",
     "ContractEntrypointInput",
     "ContractImplementationUnitInput",
     "ContractInterfaceInput",

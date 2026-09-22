@@ -44,13 +44,14 @@ class BootstrapRuntimeTest(unittest.TestCase):
                     "write_module_design",
                     "write_implementation_design",
                     "integrate_architecture_designs",
+                    "report_progress",
                 },
             )
             self.assertEqual(
                 {tool.name for tool in container.gateway.tools_for("architecture_contract")},
                 {
                     "load_architecture", "load_requirement", "save_implementation_contract",
-                    "compile_project_contract_from_designs",
+                    "compile_project_contract_from_designs", "report_progress",
                 },
             )
             self.assertIsNotNone(container.planner)

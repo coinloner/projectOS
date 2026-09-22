@@ -13,6 +13,8 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+from app.orchestration.field_semantics import coalesce_alias
+
 
 @dataclass(frozen=True)
 class EntrypointContract:
@@ -85,8 +87,11 @@ class InterfaceContract:
         # capability request.  Unknown values remain hard validation errors.
         aliases = {
             "endpoint": "api",
+            "rest": "api",
             "http": "api",
             "http_endpoint": "api",
+            "http_api": "api",
+            "rest_api": "api",
             "api_endpoint": "api",
             "route": "api",
             "class": "symbol",
@@ -98,11 +103,27 @@ class InterfaceContract:
             "topic": "event",
             "repository": "service",
             "repo": "service",
+            "in_process_repository": "service",
+            "repository_port": "service",
+            "port": "service",
+            "use_case": "service",
+            "application_service": "service",
+            "domain": "service",
+            "service_interface": "service",
+            "python_service": "service",
+            "python_callable": "symbol",
+            "python-callable": "symbol",
+            "internal_service": "service",
+            "worker": "service",
             "router": "api",
             "route_handler": "api",
+            "http_handler_factory": "api",
             "controller": "api",
             "dto": "data",
             "model_schema": "data",
+            "database": "data",
+            "storage": "data",
+            "orm": "data",
             "queue": "event",
             # Architecture workers sometimes use ``provided``/``consumed``
             # as a direction label in the contract's ``kind`` field.  The
@@ -113,13 +134,37 @@ class InterfaceContract:
             "consumed": "service",
             "exception": "symbol",
             "entrypoint": "api",
+            "process_entrypoint": "api",
+            "process-entrypoint": "api",
             "lifecycle": "service",
             "dependency": "service",
         }
-        normalized_kind = aliases.get(self.kind.strip().lower(), self.kind.strip().lower())
+        raw_kind = self.kind.strip().lower()
+        normalized_kind = aliases.get(raw_kind, aliases.get(raw_kind.replace("-", "_"), raw_kind))
         object.__setattr__(self, "kind", normalized_kind)
         if normalized_kind not in {"symbol", "service", "api", "data", "event"}:
-            raise ValueError("InterfaceContract.kind 必须是 symbol/service/api/data/event")
+            # 提供友好的错误提示
+            common_mistakes = {
+                "python_module": "symbol",
+                "json_schema": "data",
+                "browser_ui": "service",
+                "http_api": "api",
+                "rest_api": "api",
+                "frontend": "service",
+                "backend": "service",
+            }
+            suggestion = common_mistakes.get(raw_kind)
+            error_msg = (
+                f"InterfaceContract.kind 必须是 symbol/service/api/data/event，"
+                f"当前值: '{raw_kind}'"
+            )
+            if suggestion:
+                error_msg += f"\n提示: '{raw_kind}' 应该使用 '{suggestion}'"
+            error_msg += (
+                "\n\n请调用 select_interface_kind 工具获取可用的接口类型。"
+                "\n不要创造新的类型名称，必须从标准的 5 种中选择。"
+            )
+            raise ValueError(error_msg)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -170,7 +215,7 @@ class ImplementationUnit:
     skill_refs: tuple[str, ...] = ()
     parallel_group: str | None = None
     output_key: str | None = None
-    output_slot: str | None = None
+    slot: str | None = None
     requirement_ids: tuple[str, ...] = ()
     wave: int | None = None
     owned_files: tuple[str, ...] = ()
@@ -228,7 +273,7 @@ class ImplementationUnit:
             "skill_refs": list(self.skill_refs),
             "parallel_group": self.parallel_group,
             "output_key": self.output_key,
-            "output_slot": self.output_slot,
+            "slot": self.slot,
             "requirement_ids": list(self.requirement_ids),
             "wave": self.wave,
             "owned_files": list(self.owned_files),
@@ -250,9 +295,10 @@ class ImplementationUnit:
             root.rstrip("/") + "/**" for root in allowed_roots
         )
         allowed_paths = tuple(dict.fromkeys((*allowed_paths, *normalized_roots)))
-        required_value = raw.get("required_paths")
-        if required_value in (None, []):
-            required_value = raw.get("required_files", [])
+        required_value = coalesce_alias(raw, "required_paths", "required_files", default=[])
+        slot_value = coalesce_alias(raw, "slot", "output_slot")
+        provides_value = coalesce_alias(raw, "provides_interfaces", "provides", default=[])
+        consumes_value = coalesce_alias(raw, "consumes_interfaces", "consumes", default=[])
         return cls(
             unit_id=str(raw.get("unit_id", "")).strip(),
             layer=str(raw.get("layer", "")).strip(),
@@ -269,12 +315,12 @@ class ImplementationUnit:
             skill_refs=_strings(raw.get("skill_refs", []), "skill_refs", allow_empty=True),
             parallel_group=_optional_string(raw.get("parallel_group")),
             output_key=_optional_string(raw.get("output_key")),
-            output_slot=_optional_string(raw.get("output_slot")),
+            slot=_optional_string(slot_value),
             requirement_ids=_strings(raw.get("requirement_ids", []), "requirement_ids", allow_empty=True),
             wave=_optional_int(raw.get("wave")),
             owned_files=_strings(raw.get("owned_files", []), "owned_files", allow_empty=True),
-            provides_interfaces=_strings(raw.get("provides_interfaces", raw.get("provides", [])), "provides_interfaces", allow_empty=True),
-            consumes_interfaces=_strings(raw.get("consumes_interfaces", raw.get("consumes", [])), "consumes_interfaces", allow_empty=True),
+            provides_interfaces=_strings(provides_value, "provides_interfaces", allow_empty=True),
+            consumes_interfaces=_strings(consumes_value, "consumes_interfaces", allow_empty=True),
             provided_symbols=_strings(raw.get("provided_symbols", []), "provided_symbols", allow_empty=True),
             required_symbols=_strings(raw.get("required_symbols", []), "required_symbols", allow_empty=True),
         )

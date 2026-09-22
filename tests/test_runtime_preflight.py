@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.policy.quality import ProjectRuntimePreflight
+from app.policy.quality import ProjectRuntimePreflight, _entrypoint_assembly_issue
 
 
 class RuntimePreflightTest(unittest.TestCase):
@@ -57,6 +57,40 @@ class RuntimePreflightTest(unittest.TestCase):
             )
             report = ProjectRuntimePreflight().evaluate(directory)
             self.assertNotIn("runtime.database_init_missing", {issue.rule_id for issue in report.issues})
+
+    def test_detects_missing_application_assembly_for_generated_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            app = workspace / "backend" / "app"
+            app.mkdir(parents=True)
+            (app / "server.py").write_text(
+                "def _load_application():\n    return None\n", encoding="utf-8"
+            )
+            (app / "api.py").write_text("class TodoApi: pass\n", encoding="utf-8")
+
+            issue = _entrypoint_assembly_issue(
+                workspace, "backend/app/server.py"
+            )
+
+            self.assertIsNotNone(issue)
+            self.assertEqual(issue.rule_id, "runtime.application_assembly_missing")
+
+    def test_application_assembly_function_satisfies_runtime_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            app = workspace / "backend" / "app"
+            app.mkdir(parents=True)
+            (app / "server.py").write_text(
+                "def _load_application():\n    return None\n", encoding="utf-8"
+            )
+            (app / "api.py").write_text(
+                "def create_application(domain):\n    return lambda request: None\n",
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(
+                _entrypoint_assembly_issue(workspace, "backend/app/server.py")
+            )
 
 
 if __name__ == "__main__":

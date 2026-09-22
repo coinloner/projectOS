@@ -39,6 +39,20 @@ class FailingPlannerService(FakeRunService):
         raise RuntimeError("provider HTTP 402: balance insufficient")
 
 
+class TracedFailingPlannerService(FakeRunService):
+    def start_dynamic_plan(self, *, project_path: str, goal: str, plan_id: str) -> StartedRun:
+        from app.orchestration.retry import FailureKind, FailureSignal
+
+        raise PlannerFailure(
+            "Planner Provider 调用失败",
+            trace_id="tr-planner-failure",
+            signal=FailureSignal(
+                kind=FailureKind.PROVIDER_EMPTY_RESPONSE,
+                summary="LLM Provider 返回 None 或空响应",
+            ),
+        )
+
+
 class ConversationTest(unittest.TestCase):
     def test_intent_classifier_prioritizes_inspection_and_modification(self) -> None:
         self.assertEqual(classify_intent("查看运行结果"), ConversationIntent.INSPECT_RESULT)
@@ -118,6 +132,22 @@ class ConversationTest(unittest.TestCase):
                 )
             turns = ConversationStore(directory).turns(conversation.id)
             self.assertIn("provider HTTP 402", turns[-1].content)
+
+    def test_traced_planner_failure_is_linked_to_conversation_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConversationStore(directory)
+            conversation = store.create("demo")
+            service = ConversationService(run_service=TracedFailingPlannerService())
+            with self.assertRaises(PlannerFailure):
+                service.send_message(
+                    project_path=directory,
+                    conversation_id=conversation.id,
+                    content="设计一个 API",
+                )
+            turns = ConversationStore(directory).turns(conversation.id)
+            self.assertEqual(turns[-1].trace_id, "tr-planner-failure")
+            self.assertIn("tr-planner-failure", turns[-1].content)
+            self.assertIn("provider_empty_response", turns[-1].content)
 
     def test_follow_up_message_gets_minimal_plan_with_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

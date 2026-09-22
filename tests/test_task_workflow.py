@@ -25,7 +25,7 @@ class TaskWorkflowTest(unittest.TestCase):
                 work_item_id="task-plan",
                 agent_id="task_agent",
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot="plan",
+                slot="plan",
             )
             self.assertEqual(
                 {tool.name for tool in gateway.tools_for("task", context=partitioned)},
@@ -43,7 +43,7 @@ class TaskWorkflowTest(unittest.TestCase):
                 agent_id="task_agent",
                 execution_mode=ExecutionMode.PARTITIONED,
                 input_refs=(input_ref,),
-                output_slot="plan",
+                slot="plan",
             )
             self.assertEqual(workflow.load_input(partitioned, input_ref.ref_id), "# Requirement")
             workflow.write_staged(partitioned, "# Tasks")

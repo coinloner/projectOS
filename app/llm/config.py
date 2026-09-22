@@ -43,11 +43,34 @@ _PROVIDERS: dict[str, dict[str, str]] = {
         "api_key_env": "ANTHROPIC_API_KEY",
         "crewai_provider": "anthropic",
     },
+    "portdan": {
+        "base_url": "https://portdan.com",
+        "model": "gpt-5.5",
+        "api_key_env": "PORTDAN_API_KEY",
+        "crewai_provider": "openai",
+        "wire_api": "responses",
+    },
+    "totoken": {
+        "base_url": "https://totokens.cc",
+        "model": "gpt-5.6-sol",
+        "api_key_env": "TOTOKEN_API_KEY",
+        "crewai_provider": "openai",
+        "wire_api": "responses",
+        "http_headers": (("x-openai-actor-authorization", "local-image-extension"),),
+    },
+    "uuapi": {
+        "base_url": "https://uuapi.io/v1",
+        "model": "gpt-5.6-terra",
+        "api_key_env": "UUAPI_API_KEY",
+        "crewai_provider": "openai",
+        "wire_api": "responses",
+        "http_headers": (("x-openai-actor-authorization", "local-image-extension"),),
+    },
 }
 
 # ── 当前激活厂商 ──────────────────────────────
 # 环境变量 PROJECTOS_LLM_PROVIDER 的优先级高于此默认值。
-ACTIVE_PROVIDER: str = "fhl"
+ACTIVE_PROVIDER: str = "uuapi"
 
 
 @dataclass(frozen=True)
@@ -59,6 +82,8 @@ class LLMSelection:
     base_url: str
     api_key_env: str
     crewai_provider: str
+    wire_api: str = "chat_completions"
+    http_headers: tuple[tuple[str, str], ...] = ()
 
     def as_dict(self) -> dict[str, str]:
         return {
@@ -67,6 +92,7 @@ class LLMSelection:
             "base_url": self.base_url,
             "api_key_env": self.api_key_env,
             "crewai_provider": self.crewai_provider,
+            "wire_api": self.wire_api,
         }
 
 
@@ -113,6 +139,8 @@ def resolve_llm_selection(
         base_url=config["base_url"],
         api_key_env=config["api_key_env"],
         crewai_provider=config["crewai_provider"],
+        wire_api=config.get("wire_api", "chat_completions"),
+        http_headers=tuple(config.get("http_headers", ())),
     )
 
 
@@ -133,7 +161,7 @@ def discover_provider_models(provider: str) -> tuple[str, ...]:
     """从 OpenAI 兼容 provider 动态发现模型 ID，不返回任何凭证。"""
     name = provider.strip().lower()
     config = get_provider_config(name)
-    if name not in {"openai", "siliconflow", "fhl"}:
+    if name not in {"openai", "siliconflow", "fhl", "portdan"}:
         return (config["model"],)
 
     load_dotenv(override=False)

@@ -319,11 +319,17 @@ class ConversationService:
             if llm_overrides:
                 kwargs["llm_overrides"] = llm_overrides
             started = self._run_service.start_dynamic_plan(**kwargs)
-        except PlannerFailure:
+        except PlannerFailure as error:
+            diagnostic = "Planner 无法为本轮请求生成合法执行计划。"
+            if error.trace_id:
+                diagnostic += f" Trace：{error.trace_id}。"
+            if error.signal is not None:
+                diagnostic += f" 失败类型：{error.signal.kind.value}。"
             store.append(
                 conversation_id,
                 role="system",
-                content="Planner 无法为本轮请求生成合法执行计划。",
+                content=diagnostic,
+                trace_id=error.trace_id,
             )
             raise
         except Exception as error:

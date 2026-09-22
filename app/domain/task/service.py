@@ -32,7 +32,7 @@ class TaskArtifactWorkflow:
             trace_id=context.trace_id,
             work_item_id=context.work_item_id,
             artifact_key="tasks",
-            slot=context.output_slot or "",
+            slot=context.slot or "",
             content=content,
         )
         return f"已写入任务暂存输出: {staged.ref.ref_id}"

@@ -19,6 +19,7 @@ from app.orchestration.trace import TraceContext
 from app.orchestration.trace import TraceStore
 from app.orchestration.node_result import NodeResult
 from app.orchestration.runner import GraphRunner
+from app.orchestration.work_item import DependencySource, WorkItem, WorkItemDependency
 from app.agent.registry import AgentRegistry
 from app.tool_manager.gateway import ToolGateway
 from app.workflow.compiler import ImplementationContractCompiler
@@ -44,7 +45,7 @@ def contract_payload():
                 "objective": "实现订单领域模型",
                 "allowed_paths": ["workspace/backend/app/domain/**"],
                 "required_paths": ["backend/app/domain/order.py"],
-                "output_slot": "backend",
+                "slot": "backend",
                 "acceptance_criteria": ["领域对象可被应用层调用"],
                 "policy_refs": ["architecture.layer-boundary.v1"],
                 "skill_refs": ["python.domain-model.v1"],
@@ -57,7 +58,7 @@ def contract_payload():
                 "objective": "实现订单页面壳",
                 "allowed_paths": ["workspace/frontend/**"],
                 "depends_on": ["backend-domain"],
-                "output_slot": "frontend",
+                "slot": "frontend",
                 "owned_files": ["frontend/src/main.ts"],
             },
         ],
@@ -89,6 +90,22 @@ def root_path_contract_payload():
 
 
 class ImplementationContractTest(unittest.TestCase):
+    def test_interface_kind_architecture_vocabulary_is_normalized(self) -> None:
+        expected = {
+            "rest": "api",
+            "application_service": "service",
+            "domain": "service",
+            "storage": "data",
+        }
+        for raw, canonical in expected.items():
+            interface = InterfaceContract(
+                interface_id=f"i-{raw}",
+                kind=raw,
+                name=f"{raw}.boundary",
+                owner_unit="u",
+            )
+            self.assertEqual(interface.kind, canonical)
+
     def test_interface_kind_aliases_are_normalized_at_contract_boundary(self) -> None:
         payload = {
             "schema_version": 1,
@@ -104,11 +121,30 @@ class ImplementationContractTest(unittest.TestCase):
                 "objective": "提供房间接口",
                 "allowed_paths": ["backend/app/api/routes.py"],
                 "owned_files": ["backend/app/api/routes.py"],
-                "output_slot": "backend",
+                "slot": "backend",
             }],
         }
         contract = ImplementationContract.parse(payload)
         self.assertEqual(contract.interfaces[0].kind, "api")
+
+    def test_common_architecture_interface_kinds_are_normalized(self) -> None:
+        for raw_kind, expected in (
+            ("rest_api", "api"),
+            ("http_handler_factory", "api"),
+            ("in_process_repository", "service"),
+            ("python_service", "service"),
+            ("python-callable", "symbol"),
+            ("process-entrypoint", "api"),
+            ("worker", "service"),
+            ("database", "data"),
+        ):
+            interface = InterfaceContract(
+                interface_id=f"i-{raw_kind}",
+                kind=raw_kind,
+                name="interface",
+                owner_unit="unit",
+            )
+            self.assertEqual(interface.kind, expected)
 
     def test_disjoint_owned_files_can_share_a_directory_grant(self) -> None:
         payload = {
@@ -120,7 +156,7 @@ class ImplementationContractTest(unittest.TestCase):
                     "objective": "实现领域模型",
                     "allowed_paths": ["backend/app/domain/**"],
                     "owned_files": ["backend/app/domain/models.py"],
-                    "output_slot": "backend",
+                    "slot": "backend",
                 },
                 {
                     "unit_id": "domain-errors",
@@ -128,7 +164,7 @@ class ImplementationContractTest(unittest.TestCase):
                     "objective": "实现领域异常",
                     "allowed_paths": ["backend/app/domain/**"],
                     "owned_files": ["backend/app/domain/errors.py"],
-                    "output_slot": "backend",
+                    "slot": "backend",
                 },
             ],
         }
@@ -181,6 +217,29 @@ class ImplementationContractTest(unittest.TestCase):
         self.assertEqual(contract.entrypoints.backend_import, "app.main:app")
         self.assertEqual(contract.entrypoints.frontend_file, "frontend/src/main.ts")
         self.assertEqual(contract.required_files, ("backend/app/main.py", "frontend/src/main.ts"))
+
+    def test_compiler_omits_control_plane_denies_but_keeps_business_exclusions(self) -> None:
+        payload = {
+            "schema_version": 1,
+            "implementation_units": [{
+                "unit_id": "runtime",
+                "layer": "runtime",
+                "objective": "实现运行时入口",
+                "allowed_paths": ["workspace/backend/app/**"],
+                "forbidden_paths": [
+                    "workspace/**",
+                    ".projectos/**",
+                    "workspace/backend/app/private.py",
+                ],
+                "owned_files": ["backend/app/main.py"],
+                "slot": "backend",
+            }],
+        }
+        plan = ImplementationContractCompiler().compile(
+            ImplementationContract.parse(payload), goal="运行时", plan_id="control-plane-denies",
+            trace=TraceContext(requirement_id="req-control-plane", trace_id="tr-control-plane"),
+        )
+        self.assertEqual(plan.work_items[0].forbidden_paths, ("backend/app/private.py",))
 
     def test_contract_service_reads_published_architecture(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -245,7 +304,7 @@ class ImplementationContractTest(unittest.TestCase):
             contract, goal="交付订单系统", plan_id="contract-plan", trace=trace
         )
         self.assertEqual(plan.template_id, "implementation-contract")
-        self.assertEqual([item.output_slot for item in plan.work_items], ["backend", "frontend"])
+        self.assertEqual([item.slot for item in plan.work_items], ["backend", "frontend"])
         self.assertEqual(plan.work_items[1].dependency_ids, ("wi-code-backend-domain",))
         self.assertEqual(plan.work_items[0].execution_mode, ExecutionMode.PARTITIONED)
         self.assertEqual(plan.work_items[0].wave, 0)
@@ -270,7 +329,7 @@ class ImplementationContractTest(unittest.TestCase):
                     "backend/interfaces/routes.py",
                     "backend/interfaces/schemas.py",
                 ],
-                "output_slot": "backend",
+                "slot": "backend",
             }],
         }
         plan = ImplementationContractCompiler().compile(
@@ -296,7 +355,7 @@ class ImplementationContractTest(unittest.TestCase):
                     "backend/interfaces/main.py",
                     "backend/interfaces/routes.py",
                 ],
-                "output_slot": "backend",
+                "slot": "backend",
             }],
         }
         plan = ImplementationContractCompiler().compile(
@@ -334,7 +393,7 @@ async def health() -> dict:
                 "objective": "交付运行配置",
                 "allowed_paths": ["workspace/**"],
                 "owned_files": ["scripts/**"],
-                "output_slot": "root",
+                "slot": "root",
             }],
         }
         with self.assertRaisesRegex(ValueError, "owned_files.*具体文件"):
@@ -349,7 +408,7 @@ async def health() -> dict:
                 "objective": "交付运行配置",
                 "allowed_paths": ["workspace/**"],
                 "owned_files": ["docker-compose.yml", ".env.example"],
-                "output_slot": "root",
+                "slot": "root",
             }],
         }
         plan = ImplementationContractCompiler().compile(
@@ -360,7 +419,7 @@ async def health() -> dict:
             [item.owned_files for item in plan.work_items],
             [("docker-compose.yml",), (".env.example",)],
         )
-        self.assertEqual({item.output_slot for item in plan.work_items}, {"root"})
+        self.assertEqual({item.slot for item in plan.work_items}, {"root"})
         for item in plan.work_items:
             self.assertRegex(item.id, r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
@@ -389,13 +448,28 @@ async def health() -> dict:
         dependent = plan.work_items[1]
         self.assertIn("staged:tr-contract:wi-code-backend-domain:backend", {ref.ref_id for ref in dependent.input_refs})
 
+    def test_compiler_normalizes_legacy_architecture_input_alias(self) -> None:
+        payload = contract_payload()
+        payload["implementation_units"][0]["input_refs"] = [
+            "todo-architecture-module-runtime"
+        ]
+        contract = ImplementationContract.parse(payload)
+        plan = ImplementationContractCompiler().compile(
+            contract,
+            goal="兼容旧架构引用",
+            plan_id="legacy-input-alias",
+            trace=TraceContext(requirement_id="req-alias", trace_id="tr-alias"),
+        )
+        first = plan.work_items[0]
+        self.assertIn("published:architecture:current", {ref.ref_id for ref in first.input_refs})
+
     def test_wave_is_a_barrier_while_same_wave_units_remain_parallel(self) -> None:
         payload = {
             "schema_version": 1,
             "implementation_units": [
-                {"unit_id": "domain-a", "layer": "domain", "objective": "a", "allowed_paths": ["backend/app/domain/a.py"], "owned_files": ["backend/app/domain/a.py"], "wave": 0, "output_slot": "backend"},
-                {"unit_id": "domain-b", "layer": "domain", "objective": "b", "allowed_paths": ["backend/app/domain/b.py"], "owned_files": ["backend/app/domain/b.py"], "wave": 0, "output_slot": "backend"},
-                {"unit_id": "application", "layer": "application", "objective": "app", "allowed_paths": ["backend/app/application/app.py"], "owned_files": ["backend/app/application/app.py"], "wave": 1, "output_slot": "backend"},
+                {"unit_id": "domain-a", "layer": "domain", "objective": "a", "allowed_paths": ["backend/app/domain/a.py"], "owned_files": ["backend/app/domain/a.py"], "wave": 0, "slot": "backend"},
+                {"unit_id": "domain-b", "layer": "domain", "objective": "b", "allowed_paths": ["backend/app/domain/b.py"], "owned_files": ["backend/app/domain/b.py"], "wave": 0, "slot": "backend"},
+                {"unit_id": "application", "layer": "application", "objective": "app", "allowed_paths": ["backend/app/application/app.py"], "owned_files": ["backend/app/application/app.py"], "wave": 1, "slot": "backend"},
             ],
         }
         plan = ImplementationContractCompiler().compile(
@@ -426,7 +500,7 @@ async def health() -> dict:
                     "owned_files": ["backend/app/api/routes.py"],
                     "provides_interfaces": ["http-api"],
                     "wave": 3,
-                    "output_slot": "backend",
+                    "slot": "backend",
                 },
                 {
                     "unit_id": "frontend",
@@ -437,7 +511,7 @@ async def health() -> dict:
                     "consumes_interfaces": ["http-api"],
                     # Deliberately inconsistent: compiler must promote it.
                     "wave": 1,
-                    "output_slot": "frontend",
+                    "slot": "frontend",
                 },
             ],
         }
@@ -456,10 +530,10 @@ async def health() -> dict:
             contract, goal="交付分层项目", plan_id="root-plan", trace=trace
         )
         domain, tests = plan.work_items
-        self.assertEqual(domain.output_slot, "backend")
+        self.assertEqual(domain.slot, "backend")
         self.assertEqual(domain.allowed_paths, ("backend/app/domain/",))
         self.assertEqual(domain.required_paths, ("backend/app/domain/entities.py",))
-        self.assertEqual(tests.output_slot, "root")
+        self.assertEqual(tests.slot, "root")
         self.assertEqual(tests.allowed_paths, ("tests/",))
 
     def test_contract_rejects_cycles(self) -> None:
@@ -487,7 +561,7 @@ async def health() -> dict:
                 "objective": "维护项目文档",
                 "allowed_paths": ["requirement.md", "architecture.md", "architecture_contract.md", "tasks.md", "environment.md", "implementation.md", "tests.md", "review.md"],
                 "required_paths": ["requirement.md", "architecture.md", "architecture_contract.md", "tasks.md", "environment.md", "implementation.md", "tests.md", "review.md"],
-                "output_slot": "root",
+                "slot": "root",
             }],
         }
         contract = ImplementationContract.parse(payload)
@@ -523,7 +597,7 @@ async def health() -> dict:
             state.record(
                 contract_item,
                 NodeResult.completed(
-                    node_id=contract_item.id,
+                    work_item_id=contract_item.id,
                     agent_id=contract_item.agent_id,
                     content="合同已发布",
                 ),
@@ -538,6 +612,82 @@ async def health() -> dict:
             self.assertEqual(len([item for item in state.plan.work_items if item.id == "implementation"]), 0)
             self.assertEqual([item.implementation_unit_id for item in traces.load_plan(trace.trace_id).work_items if item.agent_id == "code_agent"], ["backend-domain", "frontend-shell"])
 
+            # Phase 6 hand-off: replacing the template's single implementation
+            # placeholder must not detach the fixed downstream delivery stages.
+            tasks = next(item for item in state.plan.work_items if item.id.endswith("-tasks-plan"))
+            environment = next(item for item in state.plan.work_items if item.id.endswith("-environment"))
+            tests = next(item for item in state.plan.work_items if item.id.endswith("-tests"))
+            review = next(item for item in state.plan.work_items if item.id.endswith("-review"))
+            self.assertIsNotNone(tasks)
+            self.assertIsNotNone(environment)
+            self.assertIsNotNone(tests)
+            self.assertIsNotNone(review)
+            assert tasks is not None and environment is not None
+            assert tests is not None and review is not None
+            self.assertIn(contract_item.id, tasks.dependency_ids)
+            quality = next(item for item in state.plan.work_items if item.id.endswith("-tasks-quality-gate"))
+            self.assertIn(quality.id, environment.dependency_ids)
+            self.assertIn(integration.id, tests.dependency_ids)
+            self.assertIn(tests.id, review.dependency_ids)
+
+    def test_dynamic_plan_without_template_id_expands_contract_into_code_items(self) -> None:
+        """Phase 5 must work for a Planner-generated DAG, not only templates."""
+        with tempfile.TemporaryDirectory() as directory:
+            traces = TraceStore(directory)
+            trace = traces.start_trace("动态合同交付")
+            contract = ImplementationContract.parse(contract_payload())
+            ImplementationContractStore(directory).save(contract.as_dict())
+            contract_item = WorkItem(
+                id="wi-contract",
+                agent_id="architecture_contract_agent",
+                objective="保存实现合同",
+                output_key="architecture_contract",
+                artifact_key="architecture_contract",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture_contract",
+            )
+            integration = WorkItem(
+                id="wi-code-integration",
+                agent_id="code_integration_agent",
+                objective="整合代码分区",
+                output_key="implementation_merge",
+                artifact_key="implementation",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="workspace",
+                dependencies=(WorkItemDependency("wi-contract", DependencySource.SYSTEM),),
+            )
+            plan = ExecutionPlan(
+                id="dynamic-contract-plan",
+                goal="动态合同交付",
+                work_items=(contract_item, integration),
+                template_id=None,
+                trace=trace,
+            )
+            state = RunState(plan=plan)
+            state.record(
+                contract_item,
+                NodeResult.completed(
+                    work_item_id=contract_item.id,
+                    agent_id=contract_item.agent_id,
+                    content="合同已发布",
+                ),
+            )
+            runner = GraphRunner(
+                AgentRegistry(),
+                ToolGateway(),
+                traces=traces,
+            )
+            runner._expand_implementation_plan_if_ready(state)
+
+            code_items = [item for item in state.plan.work_items if item.agent_id == "code_agent"]
+            self.assertEqual(
+                {item.implementation_unit_id for item in code_items},
+                {"backend-domain", "frontend-shell"},
+            )
+            merged = state.plan.work_item("wi-code-integration")
+            assert merged is not None
+            self.assertEqual(set(merged.dependency_ids), {item.id for item in code_items})
+
     def test_review_artifact_unit_is_left_to_review_agent(self) -> None:
         payload = contract_payload()
         payload["implementation_units"].append({
@@ -547,7 +697,7 @@ async def health() -> dict:
             "allowed_paths": ["review.md"],
             "required_paths": ["review.md"],
             "owned_files": ["review.md"],
-            "output_slot": "root",
+            "slot": "root",
         })
         contract = ImplementationContract.parse(payload)
         plan = ImplementationContractCompiler().compile(

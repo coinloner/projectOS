@@ -49,6 +49,41 @@ class StartupScriptTest(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(before, tuple(path.read_text(encoding="utf-8") for path in second))
 
+    def test_stdlib_compose_consumes_contract_backend_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "runtime.yaml").write_text(
+                "version: 1\nprofile: python-stdlib\napplication: python-backend\n",
+                encoding="utf-8",
+            )
+            contract = root / ".projectos" / "architecture"
+            contract.mkdir(parents=True)
+            (contract / "project-contract.json").write_text(
+                '{"entrypoints":{"backend_command":"python -m backend.app.server"}}\n',
+                encoding="utf-8",
+            )
+            ensure_startup_scripts(directory, project_id="demo")
+            compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+            self.assertIn("    - python\n    - -m\n    - backend.app.server", compose)
+            self.assertIn("./workspace:/workspace:ro", compose)
+
+    def test_stdlib_compose_accepts_safe_module_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "runtime.yaml").write_text(
+                "version: 1\nprofile: python-stdlib\napplication: python-backend\n",
+                encoding="utf-8",
+            )
+            contract = root / ".projectos" / "architecture"
+            contract.mkdir(parents=True)
+            (contract / "project-contract.json").write_text(
+                '{"entrypoints":{"backend_command":"python -m runtime.server"}}\n',
+                encoding="utf-8",
+            )
+            ensure_startup_scripts(directory, project_id="demo")
+            compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+            self.assertIn("    - runtime.server", compose)
+
 
 if __name__ == "__main__":
     unittest.main()

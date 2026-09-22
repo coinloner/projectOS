@@ -50,7 +50,7 @@ class TemplateCompiler:
                 artifact_key=self._artifact_key(node),
                 trace_id=trace.trace_id,
                 work_item_id=item_id_by_blueprint[node.id],
-                slot=node.output_slot or "",
+                slot=node.slot or "",
             )
             for node in template.nodes
             if node.execution_mode is ExecutionMode.PARTITIONED
@@ -88,15 +88,16 @@ class TemplateCompiler:
                     agent_id=node.agent_id,
                     objective=node.objective,
                     output_key=node.output_key,
+                    stage_id=node.stage_id,
                     artifact_key=self._artifact_key(node),
                     dependencies=dependencies,
                     acceptance_criteria=node.acceptance_criteria,
                     constraints=node.constraints,
                     non_goals=node.non_goals,
-                    policy_id=node.policy_id,
+                    policy_refs=node.policy_refs,
                     execution_mode=node.execution_mode,
                     input_refs=input_refs,
-                    output_slot=node.output_slot,
+                    slot=node.slot,
                     publish_target=node.publish_target,
                     candidate_from_work_item_id=candidate_from,
                     implementation_unit_id=node.implementation_unit_id,
@@ -104,7 +105,6 @@ class TemplateCompiler:
                     forbidden_paths=node.forbidden_paths,
                     required_paths=node.required_paths,
                     owned_files=node.owned_files,
-                    policy_refs=node.policy_refs,
                     skill_refs=node.skill_refs,
                 )
             )
@@ -114,13 +114,25 @@ class TemplateCompiler:
             goal=goal,
             work_items=tuple(work_items),
             template_id=template.id,
+            process_id=template.process_id,
             trace=trace,
         )
         if template.id == "project_delivery" and any(
             getattr(item, "implementation_unit_id", None) == "project-documents"
             for item in plan.work_items
         ):
-            DeliveryContract.project_delivery().validate_plan(plan.work_items)
+            DeliveryContract.project_delivery().validate_plan(
+                plan.work_items,
+                bindings={
+                    "project-documents": item_id_by_blueprint.get("project-documents", ""),
+                    "environment": item_id_by_blueprint.get("environment", ""),
+                    "code-integration": item_id_by_blueprint.get("code-integration", ""),
+                    "tests": item_id_by_blueprint.get("tests", ""),
+                    "review": item_id_by_blueprint.get("review", ""),
+                    "code": item_id_by_blueprint.get("code-integration", ""),
+                    "test": item_id_by_blueprint.get("tests", ""),
+                },
+            )
         return plan
 
     @staticmethod
@@ -135,7 +147,7 @@ class TemplateCompiler:
         item_id_by_blueprint: Mapping[str, str],
         staged_refs: Mapping[str, ArtifactRef],
     ) -> tuple[ArtifactRef, ...]:
-        refs = [ArtifactRef.published(artifact_key) for artifact_key in node.input_artifacts]
+        refs = [ArtifactRef.published(artifact_key) for artifact_key in node.input_refs]
         for source_id in node.input_from:
             if source_id not in item_id_by_blueprint:
                 raise ValueError(
@@ -202,6 +214,13 @@ class ImplementationContractCompiler:
                 )
             if len(parts) == 3 and parts[0] == "published":
                 return ArtifactRef.published(parts[1], revision_id=None if parts[2] == "current" else parts[2])
+            # Early architecture agents emitted semantic aliases such as
+            # ``todo-architecture-module-runtime`` instead of the canonical
+            # published artifact key.  Keep the persisted contract strict at
+            # the boundary, but normalize this known alias family while
+            # compiling so CodeAgent receives a usable, auditable reference.
+            if text.lower().startswith(("todo-architecture-", "architecture-module-")):
+                return ArtifactRef.published("architecture")
             return ArtifactRef.published(text)
         original_children: dict[str, tuple[str, ...]] = {}
         for original in contract.units:
@@ -261,11 +280,11 @@ class ImplementationContractCompiler:
             wave_for(unit.unit_id)
         items: list[WorkItem] = []
         for unit in units:
-            slot = unit.output_slot or self._infer_slot(
+            slot = unit.slot or self._infer_slot(
                 unit.allowed_paths, layer=unit.layer, unit_id=unit.unit_id
             )
             allowed_paths = self._normalize_paths(unit.allowed_paths, slot)
-            forbidden_paths = self._normalize_paths(unit.forbidden_paths, slot)
+            forbidden_paths = self._project_forbidden_paths(unit.forbidden_paths, slot)
             required_paths = self._normalize_paths(unit.required_paths, slot)
             # 项目文档单元位于代码集成之前，只能要求它自己负责的规划文档。
             # environment/implementation/tests/review 是后续节点的证据产物，
@@ -332,7 +351,7 @@ class ImplementationContractCompiler:
                     artifact_key="implementation",
                     trace_id=trace.trace_id,
                     work_item_id=ids[dep],
-                    slot=(units_by_id[dep].output_slot or self._infer_slot(
+                    slot=(units_by_id[dep].slot or self._infer_slot(
                         units_by_id[dep].allowed_paths,
                         layer=units_by_id[dep].layer,
                         unit_id=units_by_id[dep].unit_id,
@@ -353,7 +372,7 @@ class ImplementationContractCompiler:
                     non_goals=unit.non_goals,
                     execution_mode=ExecutionMode.PARTITIONED,
                     input_refs=tuple(artifact_ref(ref) for ref in unit.input_refs) + dependency_refs,
-                    output_slot=slot,
+                    slot=slot,
                     implementation_unit_id=unit.unit_id,
                     allowed_paths=allowed_paths,
                     forbidden_paths=forbidden_paths,
@@ -441,12 +460,12 @@ class ImplementationContractCompiler:
                         depends_on=(),
                         owned_files=(path,),
                         output_key=f"{unit.output_key or unit.unit_id}_{suffix}",
-                        # ``output_slot`` is a physical partition (backend,
+                        # ``slot`` is a physical partition (backend,
                         # frontend or root), not an artifact id.  Keep it
                         # stable across file children so path normalization and
                         # staging authorization remain identical to the parent
                         # unit; WorkItem/output_key already provide uniqueness.
-                        output_slot=unit.output_slot,
+                        slot=unit.slot,
                         # Public symbols are file-scoped.  A legacy multi-file
                         # unit has no unambiguous symbol-to-file mapping, so it
                         # must omit symbols (or be split by Architecture) rather
@@ -530,3 +549,35 @@ class ImplementationContractCompiler:
                 value = f"frontend/{value}"
             normalized.append(value)
         return tuple(dict.fromkeys(normalized))
+
+    @classmethod
+    def _project_forbidden_paths(cls, paths: tuple[str, ...], slot: str) -> tuple[str, ...]:
+        """Project unit-level denies without duplicating control-plane policy.
+
+        Architecture agents commonly include ``workspace/**`` and
+        ``.projectos/**`` in every implementation unit.  The former normalizes
+        to ``**`` at the physical-partition boundary, which is a global deny
+        and is correctly rejected by :class:`WorkItem`.  Both patterns describe
+        the runner's control plane, already protected by workspace staging and
+        sandbox policy, rather than an implementation-unit exclusion.  Remove
+        only these canonical control-plane grants; retain all business-path
+        exclusions for the CodeAgent contract.
+        """
+        business_paths = tuple(
+            path
+            for path in paths
+            if not cls._is_control_plane_forbidden_path(path)
+        )
+        return cls._normalize_paths(business_paths, slot)
+
+    @staticmethod
+    def _is_control_plane_forbidden_path(path: str) -> bool:
+        normalized = path.replace("\\", "/").lstrip("/").rstrip("/")
+        return normalized in {
+            "workspace",
+            "workspace/*",
+            "workspace/**",
+            ".projectos",
+            ".projectos/*",
+            ".projectos/**",
+        }

@@ -2,8 +2,16 @@ from app.planner.context import PlanningContext
 from app.planner.draft import PlanDraft, PlannedStep
 from app.planner.errors import PlanValidationError
 from app.planner.planner import CrewAIPlannerRuntime, PlannerRuntime
-from app.planner.service import PlannerFailure, PlannerResult, PlannerService
+from app.planner.service import PlannerFailure, PlannerResult, RepairPlannerResult, PlannerService
 from app.planner.validator import PlanValidator
+from app.planner.dynamic_builder import (
+    BlueprintExpansion,
+    BlueprintValidationError,
+    BlueprintValidator,
+    DynamicPlanBuilder,
+    ImplementationExpansion,
+)
+from app.planner.delivery_tail import DeliveryTailExpansion, DynamicDeliveryTailBuilder
 from app.planner.evaluation import (
     PlannerEvaluationReport,
     PlannerEvaluator,
@@ -18,6 +26,8 @@ from app.planner.patch import (
     PlanPatch,
     PlanPatchError,
     PatchOperation,
+    RepairPlanPatch,
+    apply_repair_patch,
     apply_patch,
 )
 
@@ -26,12 +36,20 @@ __all__ = [
     "PlanDraft",
     "PlannerFailure",
     "PlannerResult",
+    "RepairPlannerResult",
     "PlannerRuntime",
     "PlannerService",
     "PlanningContext",
     "PlannedStep",
     "PlanValidationError",
     "PlanValidator",
+    "BlueprintExpansion",
+    "BlueprintValidationError",
+    "BlueprintValidator",
+    "DynamicPlanBuilder",
+    "ImplementationExpansion",
+    "DeliveryTailExpansion",
+    "DynamicDeliveryTailBuilder",
     "PlannerEvaluationReport",
     "PlannerEvaluator",
     "PlannerScenario",
@@ -43,5 +61,7 @@ __all__ = [
     "PlanPatch",
     "PlanPatchError",
     "PatchOperation",
+    "RepairPlanPatch",
+    "apply_repair_patch",
     "apply_patch",
 ]

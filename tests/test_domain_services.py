@@ -1,4 +1,5 @@
 import tempfile
+import json
 import unittest
 from pathlib import Path
 
@@ -55,7 +56,7 @@ class DomainServiceTest(unittest.TestCase):
             agent_id="task_agent",
             execution_mode=ExecutionMode.PARTITIONED,
             input_refs=(ArtifactRef.published("architecture"),),
-            output_slot="plan",
+            slot="plan",
         )
         self.assertEqual(
             task.load_input(context, "published:architecture:current"), "# Updated"
@@ -69,11 +70,26 @@ class DomainServiceTest(unittest.TestCase):
         context = ExecutionContext(
             trace_id="tr-architecture", work_item_id="architecture-api",
             agent_id="architecture_agent", execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="api",
+            slot="api",
         )
 
         with self.assertRaisesRegex(ValueError, "字符上限"):
             workflow.write_staged(context, "A" * 4201)
+
+    def test_architecture_intermediate_checkpoint_round_trip(self) -> None:
+        from hashlib import sha256
+        workflow = ArchitectureArtifactWorkflow(self.project_path)
+        ref = ArtifactRef.published("requirement")
+        digest = sha256(workflow._repository.load_ref(ref).encode()).hexdigest()
+        context = ExecutionContext(
+            trace_id="tr-b-tools", work_item_id="module-api", agent_id="architecture_agent",
+            execution_mode=ExecutionMode.PARTITIONED, slot="module-api",
+            input_refs=(ref,), input_digests=(digest,),
+        )
+        self.assertIn("已保存中间阶段", workflow.write_intermediate(context, "boundaries", "boundary draft"))
+        loaded = json.loads(workflow.load_intermediate(context, ["boundaries", "interfaces"]))
+        self.assertEqual(loaded["phase"], "boundaries")
+        self.assertEqual(loaded["content"], "boundary draft")
 
     def test_code_test_and_review_services_keep_distinct_workspace_permissions(self) -> None:
         code = CodeService(self.project_path)
@@ -98,6 +114,28 @@ class DomainServiceTest(unittest.TestCase):
             (Path(self.project_path) / "review.md").read_text(encoding="utf-8"),
             "# Review",
         )
+
+    def test_test_service_adds_smoke_suite_only_when_no_executable_tests_exist(self) -> None:
+        workspace = Path(self.project_path) / "workspace"
+        (workspace / "backend" / "app").mkdir(parents=True)
+        (workspace / "backend" / "app" / "domain.py").write_text(
+            "class InMemoryTaskRepository:\n"
+            "    def __init__(self): self.items = {}\n"
+            "    def create_task(self, attrs): return type('Task', (), {'id': '1', 'completed': False})()\n"
+            "    def list_tasks(self): return []\n"
+            "    def complete_task(self, task_id): return type('Task', (), {'completed': True})()\n"
+            "    def delete_task(self, task_id): return True\n",
+            encoding="utf-8",
+        )
+        service = TestService(self.project_path)
+
+        generated = service.ensure_minimum_test_suite()
+
+        self.assertEqual(generated, ("tests/test_projectos_smoke.py",))
+        smoke = workspace / "tests" / "test_projectos_smoke.py"
+        self.assertTrue(smoke.is_file())
+        self.assertIn("InMemoryTaskRepository", smoke.read_text(encoding="utf-8"))
+        self.assertEqual(service.ensure_minimum_test_suite(), ())
 
     def test_review_persists_deterministic_quality_report_for_runtime_projects(self) -> None:
         RuntimeManifest(version=1, profile="python-stdlib").save(self.project_path)

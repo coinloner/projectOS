@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+import fnmatch
+import hashlib
+import json
 
 from app.artifact.repository import ArtifactRef
 from app.execution_context import ExecutionMode
 from app.orchestration.retry import FailurePackage
+from app.orchestration.delivery_registry import DeliveryContractRegistry
 
 
 class DependencySource(str, Enum):
@@ -45,10 +49,9 @@ class WorkItem:
     acceptance_criteria: tuple[str, ...] = ()
     constraints: tuple[str, ...] = ()
     non_goals: tuple[str, ...] = ()
-    policy_id: str | None = None
     execution_mode: ExecutionMode = ExecutionMode.EXCLUSIVE
     input_refs: tuple[ArtifactRef, ...] = ()
-    output_slot: str | None = None
+    slot: str | None = None
     publish_target: str | None = None
     candidate_from_work_item_id: str | None = None
     implementation_unit_id: str | None = None
@@ -61,6 +64,19 @@ class WorkItem:
     wave: int = 0
     owned_files: tuple[str, ...] = ()
     delivery_contract: dict[str, object] | None = None
+    # Stable identity of the execution contract.  This is populated when a
+    # plan is compiled and carried across retries/restores; failure diagnostics
+    # are deliberately excluded so a repair can attach new evidence without
+    # changing the authorization envelope.
+    output_kind: str | None = None
+    # Optional process-stage identity.  Unlike ``agent_id`` this identifies
+    # the lifecycle role (for example architecture_blueprint) and lets the
+    # control plane safely expand project-specific stages without asking the
+    # model to provide execution permissions.
+    stage_id: str | None = None
+    required_tools: tuple[str, ...] = ()
+    contract_digest: str | None = None
+    _legacy_contract_digest: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for field_name in ("id", "agent_id", "objective", "output_key"):
@@ -71,15 +87,39 @@ class WorkItem:
             object.__setattr__(self, "artifact_key", self.output_key)
         elif not self.artifact_key.strip():
             raise ValueError("WorkItem.artifact_key 不能为空")
-        if self.policy_id is not None and not self.policy_id.strip():
-            raise ValueError("WorkItem.policy_id 不能是空字符串")
-        for field_name in ("implementation_unit_id",):
+        for field_name in ("implementation_unit_id", "stage_id"):
             value = getattr(self, field_name)
             if value is not None and not value.strip():
                 raise ValueError(f"WorkItem.{field_name} 不能是空字符串")
         for field_name in ("allowed_paths", "forbidden_paths", "required_paths", "policy_refs", "skill_refs", "requirement_ids"):
             if any(not value.strip() for value in getattr(self, field_name)):
                 raise ValueError(f"WorkItem.{field_name} 不能包含空字符串")
+        # A retry/repair overlay must never turn a scoped grant into a global
+        # deny (for example forbidden_paths=["**"]).  Reject broad deny
+        # patterns and any concrete ownership collision before a Worker is
+        # started; otherwise the failure only appears after the Agent has
+        # generated content and attempted to persist it.
+        if self.allowed_paths and any(path in {"*", "**"} for path in self.forbidden_paths):
+            raise ValueError("WorkItem.forbidden_paths 不能使用全局通配符")
+        for allowed in self.allowed_paths:
+            # A directory grant may intentionally carry explicit exclusions
+            # (for example ``backend/app/**`` with
+            # ``backend/app/server.py`` denied).  Reject only a deny pattern
+            # that covers the entire grant; file-level ownership checks below
+            # still reject an owned file that falls inside an exclusion.
+            if any(_forbidden_covers_allowed(allowed, forbidden) for forbidden in self.forbidden_paths):
+                raise ValueError(
+                    f"WorkItem.allowed_paths 与 forbidden_paths 重叠：禁止范围覆盖整个授权范围: {allowed}"
+                )
+        for owned in self.owned_files:
+            normalized = owned.replace("\\", "/").lstrip("/")
+            if any(
+                fnmatch.fnmatch(normalized, pattern.replace("**", "*"))
+                for pattern in self.forbidden_paths
+            ):
+                raise ValueError(
+                    f"WorkItem.owned_files 命中 forbidden_paths: {owned}"
+                )
         if self.wave < 0:
             raise ValueError("WorkItem.wave 不能小于 0")
         if (
@@ -103,6 +143,29 @@ class WorkItem:
                 )
         if self.delivery_contract is not None and not isinstance(self.delivery_contract, dict):
             raise ValueError("WorkItem.delivery_contract 必须是对象")
+        if any(not tool.strip() for tool in self.required_tools):
+            raise ValueError("WorkItem.required_tools 不能包含空字符串")
+        if len(set(self.required_tools)) != len(self.required_tools):
+            raise ValueError("WorkItem.required_tools 不能重复")
+        derived_tools = DeliveryContractRegistry.required_tools_for(
+            agent_id=self.agent_id,
+            execution_mode=self.execution_mode,
+            slot=self.slot,
+            work_item_id=self.id,
+            stage_id=self.stage_id,
+            publish_target=self.publish_target,
+        )
+        if not self.required_tools and derived_tools:
+            object.__setattr__(self, "required_tools", derived_tools)
+        elif derived_tools and self.required_tools != derived_tools:
+            raise ValueError(
+                f"WorkItem '{self.id}' 的 required_tools 与交付合同不一致: "
+                f"expected={derived_tools!r}, actual={self.required_tools!r}"
+            )
+        if self.output_kind is None:
+            object.__setattr__(self, "output_kind", _default_output_kind(self.execution_mode))
+        elif not self.output_kind.strip():
+            raise ValueError("WorkItem.output_kind 不能是空字符串")
         dependency_ids = self.dependency_ids
         if len(set(dependency_ids)) != len(dependency_ids):
             raise ValueError(f"WorkItem '{self.id}' 包含重复依赖")
@@ -115,22 +178,129 @@ class WorkItem:
         if any(not non_goal.strip() for non_goal in self.non_goals):
             raise ValueError("WorkItem.non_goals 不能包含空字符串")
         self._validate_execution_grant()
+        computed_digest = self._compute_contract_digest()
+        if self.contract_digest is None:
+            object.__setattr__(self, "contract_digest", computed_digest)
+        elif self.contract_digest != computed_digest:
+            # Historical plans did not seal the tool contract. Accept their
+            # legacy digest once so durable traces remain resumable; every new
+            # WorkItem and every explicitly rebuilt contract uses the stronger
+            # digest below.
+            legacy_digest = self._compute_contract_digest(include_required_tools=False)
+            if self.contract_digest == legacy_digest:
+                object.__setattr__(self, "_legacy_contract_digest", True)
+            else:
+                raise ValueError("WorkItem.contract_digest 与执行合同不匹配")
 
     @property
     def dependency_ids(self) -> tuple[str, ...]:
         return tuple(dependency.work_item_id for dependency in self.dependencies)
 
+    def _compute_contract_digest(self, *, include_required_tools: bool | None = None) -> str:
+        """Return the digest of fields that define execution authorization.
+
+        Objective/failure evidence are mutable diagnostics and are not part of
+        this identity.  Controlled repair that narrows paths or adds denies
+        must explicitly clear ``contract_digest`` so the new contract is
+        re-sealed after deterministic boundary checks.
+        """
+        if include_required_tools is None:
+            include_required_tools = not self._legacy_contract_digest
+        payload = {
+            "agent_id": self.agent_id,
+            "execution_mode": self.execution_mode.value,
+            "input_refs": [ref.ref_id for ref in self.input_refs],
+            "dependencies": [
+                {
+                    "work_item_id": dep.work_item_id,
+                    "source": dep.source.value,
+                    "rule_id": dep.rule_id,
+                }
+                for dep in self.dependencies
+            ],
+            "output_key": self.output_key,
+            "artifact_key": self.artifact_key,
+            "slot": self.slot,
+            "publish_target": self.publish_target,
+            "candidate_from_work_item_id": self.candidate_from_work_item_id,
+            "implementation_unit_id": self.implementation_unit_id,
+            "required_paths": list(self.required_paths),
+            "owned_files": list(self.owned_files),
+            "allowed_paths": list(self.allowed_paths),
+            "forbidden_paths": list(self.forbidden_paths),
+            "acceptance_criteria": list(self.acceptance_criteria),
+            "constraints": list(self.constraints),
+            "non_goals": list(self.non_goals),
+            "policy_refs": list(self.policy_refs),
+            "skill_refs": list(self.skill_refs),
+            "requirement_ids": list(self.requirement_ids),
+            "delivery_contract": self.delivery_contract,
+            "output_kind": self.output_kind,
+        }
+        if include_required_tools:
+            payload["required_tools"] = list(self.required_tools)
+        # Historical plans without a process-stage identity retain their
+        # original contract digest; dynamic stages opt into this extra field.
+        if self.stage_id is not None:
+            payload["stage_id"] = self.stage_id
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    @property
+    def contract(self) -> dict[str, object]:
+        """Read-only contract projection used by retry and audit validators."""
+        return {
+            "contract_digest": self.contract_digest,
+            "agent_id": self.agent_id,
+            "stage_id": self.stage_id,
+            "execution_mode": self.execution_mode.value,
+            "output_kind": self.output_kind,
+            "required_tools": list(self.required_tools),
+            "input_refs": [ref.ref_id for ref in self.input_refs],
+            "dependencies": list(self.dependency_ids),
+            "allowed_paths": list(self.allowed_paths),
+            "forbidden_paths": list(self.forbidden_paths),
+            "required_paths": list(self.required_paths),
+            "owned_files": list(self.owned_files),
+        }
+
+    def validate_scope_transition(self, revised: "WorkItem") -> None:
+        """Ensure a repair never expands this WorkItem's filesystem authority."""
+        if self.agent_id != revised.agent_id or self.execution_mode != revised.execution_mode:
+            raise ValueError("修复不能改变 WorkItem 的 Agent 或 execution_mode")
+        if self.output_kind != revised.output_kind:
+            raise ValueError("修复不能改变 WorkItem.output_kind")
+        if self.owned_files != revised.owned_files:
+            raise ValueError("修复不能改变 WorkItem.owned_files")
+        if not set(self.forbidden_paths).issubset(set(revised.forbidden_paths)):
+            raise ValueError("修复不能减少 forbidden_paths")
+        if not self.allowed_paths and revised.allowed_paths:
+            # EXCLUSIVE repair nodes may start without a path declaration. In
+            # that case the control plane can materialize only concrete paths
+            # extracted from trusted failure evidence; wildcard expansion is
+            # still forbidden.
+            if any(any(token in path for token in ("*", "?", "[", "]")) for path in revised.allowed_paths):
+                raise ValueError("修复不能从未授权范围扩大通配 allowed_paths")
+        if self.allowed_paths:
+            for path in revised.allowed_paths:
+                if any(token in path for token in ("*", "?", "[", "]")):
+                    if path not in self.allowed_paths:
+                        raise ValueError("修复 allowed_paths 只能收窄，不能扩大通配范围")
+                elif not any(fnmatch.fnmatch(path, pattern.replace("**", "*")) for pattern in self.allowed_paths):
+                    raise ValueError(f"修复路径超出原 allowed_paths: {path}")
+
     def _validate_execution_grant(self) -> None:
         if self.execution_mode is ExecutionMode.PARTITIONED:
-            if not self.output_slot or not self.output_slot.strip():
-                raise ValueError("PARTITIONED WorkItem 必须指定 output_slot")
+            if not self.slot or not self.slot.strip():
+                raise ValueError("PARTITIONED WorkItem 必须指定 slot")
             if self.publish_target is not None or self.candidate_from_work_item_id is not None:
                 raise ValueError("PARTITIONED WorkItem 不能携带发布授权")
             return
         if self.execution_mode is ExecutionMode.INTEGRATION:
             if not self.publish_target or not self.publish_target.strip():
                 raise ValueError("INTEGRATION WorkItem 必须指定 publish_target")
-            if self.output_slot is not None or self.candidate_from_work_item_id is not None:
+            if self.slot is not None or self.candidate_from_work_item_id is not None:
                 raise ValueError("INTEGRATION WorkItem 不能携带暂存或质量门授权")
             return
         if self.execution_mode is ExecutionMode.QUALITY_GATE:
@@ -138,8 +308,98 @@ class WorkItem:
                 raise ValueError("QUALITY_GATE WorkItem 必须指定 publish_target")
             if not self.candidate_from_work_item_id or not self.candidate_from_work_item_id.strip():
                 raise ValueError("QUALITY_GATE WorkItem 必须指定候选来源工作项")
-            if self.output_slot is not None:
+            if self.slot is not None:
                 raise ValueError("QUALITY_GATE WorkItem 不能携带暂存 slot")
             return
-        if any(value is not None for value in (self.output_slot, self.publish_target, self.candidate_from_work_item_id)):
+        if any(value is not None for value in (self.slot, self.publish_target, self.candidate_from_work_item_id)):
             raise ValueError("EXCLUSIVE WorkItem 不能携带分区、集成或发布授权")
+
+
+def _default_output_kind(execution_mode: ExecutionMode) -> str:
+    return {
+        ExecutionMode.PARTITIONED: "partition_artifact",
+        ExecutionMode.INTEGRATION: "integrated_artifact",
+        ExecutionMode.QUALITY_GATE: "quality_report",
+        ExecutionMode.EXCLUSIVE: "exclusive_artifact",
+    }[execution_mode]
+
+
+def _forbidden_covers_allowed(allowed: str, forbidden: str) -> bool:
+    """Return whether a deny pattern subsumes an allow pattern.
+
+    ``allowed_paths`` is a grant and ``forbidden_paths`` is an optional deny
+    overlay.  They are expected to intersect when a project protects one or
+    more files inside an otherwise writable directory.  The unsafe case is a
+    deny that makes the grant empty: an exact file match, an equal glob, or a
+    broader deny directory/pattern.  A narrower deny (``backend/app/main.py``
+    inside ``backend/app/**``) is therefore valid and is enforced at write
+    time by the normal matcher.
+    """
+    left = _normalize_path_pattern(allowed)
+    right = _normalize_path_pattern(forbidden)
+    if not left or not right:
+        return False
+
+    # An exact grant is covered when the deny matches that exact path.
+    if not _has_glob(left):
+        return _pattern_matches(right, left)
+
+    # Equal patterns (including a directory root normalized to ``/**``) are a
+    # complete deny.  A concrete deny below an allowed glob is only an
+    # exclusion and must remain valid.
+    if left == right:
+        return True
+
+    allowed_prefix = _literal_prefix(left)
+    if not allowed_prefix:
+        # The only safe global grant is rejected elsewhere when a global deny
+        # is present.  Keep this conservative for unusual patterns such as
+        # ``*`` or ``?``.
+        return _has_glob(right) and right in {"*", "**"}
+
+    # A recursive deny can cover the whole grant when its directory prefix is
+    # an ancestor of the grant's literal prefix.  A narrower file/pattern deny
+    # below the grant remains a valid explicit exclusion.
+    if right == "**":
+        return True
+    if not right.endswith("/**"):
+        return False
+    forbidden_root = right[:-3].rstrip("/")
+    if not forbidden_root:
+        return True
+    return allowed_prefix == forbidden_root or allowed_prefix.startswith(forbidden_root + "/")
+
+
+def _normalize_path_pattern(value: str) -> str:
+    raw = value.replace("\\", "/").removeprefix("workspace/").lstrip("/")
+    directory = raw.endswith("/")
+    normalized = raw.rstrip("/")
+    if directory and normalized:
+        normalized += "/**"
+    if normalized and normalized.endswith("/**/**"):
+        normalized = normalized[:-3]
+    return normalized
+
+
+def _has_glob(pattern: str) -> bool:
+    return any(token in pattern for token in ("*", "?", "[", "]"))
+
+
+def _literal_prefix(pattern: str) -> str:
+    """Return the path prefix before the first glob token."""
+    prefix = pattern
+    for token in ("*", "?", "[", "]"):
+        prefix = prefix.split(token, 1)[0]
+    return prefix.rstrip("/")
+
+
+def _pattern_matches(pattern: str, path: str) -> bool:
+    """Match the same normalized path forms used by the Git gateway."""
+    candidates = (path, f"workspace/{path}")
+    normalized = pattern + "**" if pattern.endswith("/") else pattern
+    return any(
+        fnmatch.fnmatch(candidate, current)
+        or fnmatch.fnmatch(candidate, current.replace("**", "*"))
+        for candidate in candidates
+        for current in (normalized,)
+    )

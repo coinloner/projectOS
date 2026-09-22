@@ -1,6 +1,7 @@
 """架构领域的本地产物能力。"""
 
 import json
+import re
 from typing import Any
 
 from pydantic import ValidationError
@@ -99,6 +100,15 @@ class ArchitectureService:
             for key, value in defaults.items():
                 raw.setdefault(key, value)
         contract = self._implementation_contract.save(raw)
+        # Persist the applicable quality dimensions alongside the contract so
+        # Review and API metrics can explain which checks were project-specific.
+        try:
+            from app.orchestration.delivery import DeliveryStore
+            DeliveryStore(self._project_path).snapshot_quality(contract=contract)
+        except Exception:
+            # Quality snapshot is observability metadata; contract persistence
+            # remains authoritative and must not be rolled back for it.
+            pass
         return json.dumps(
             {
                 "ok": True,
@@ -127,18 +137,61 @@ class ArchitectureArtifactWorkflow:
         ref = next((candidate for candidate in context.input_refs if candidate.ref_id == ref_id), None)
         if ref is None:
             raise PermissionError("当前工作项无权读取该产物引用")
-        return self._repository.load_ref(ref)
+        self._repository.verify_input_versions(context.input_refs, context.input_digests)
+        index = context.input_refs.index(ref)
+        digest = context.input_digests[index] if context.input_digests is not None else None
+        return self._repository.load_versioned_ref(ref, digest)
+
+    def _intermediate_input_digest(self, context: ExecutionContext) -> str:
+        """Bind a checkpoint to its authorized inputs and execution contract."""
+        if context.execution_mode is not ExecutionMode.PARTITIONED:
+            raise PermissionError("只有分区执行节点可以使用中间阶段产物")
+        if context.input_digests is None:
+            raise ValueError("中间阶段产物需要冻结的输入版本证据")
+        self._repository.verify_input_versions(context.input_refs, context.input_digests)
+        import hashlib
+        payload = {
+            "schema_version": 1,
+            "contract_digest": context.contract_digest,
+            "architecture_config_digest": context.architecture_config.digest,
+            "slot": context.slot,
+            "inputs": [
+                {"ref_id": ref.ref_id, "digest": digest}
+                for ref, digest in zip(context.input_refs, context.input_digests)
+            ],
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    def load_intermediate(self, context: ExecutionContext, phases: list[str]) -> str:
+        """Load the latest valid B checkpoint for the current input version."""
+        input_digest = self._intermediate_input_digest(context)
+        result = self._repository.latest_intermediate(
+            trace_id=context.trace_id, work_item_id=context.work_item_id,
+            phases=tuple(phases), expected_input_digest=input_digest)
+        if result is None:
+            return json.dumps({"phase": None, "content": None}, ensure_ascii=False)
+        return json.dumps({"phase": result.phase, "content": result.content}, ensure_ascii=False)
+
+    def write_intermediate(self, context: ExecutionContext, phase: str, content: str) -> str:
+        """Persist a non-deliverable B phase checkpoint for this work item."""
+        input_digest = self._intermediate_input_digest(context)
+        self._repository.write_intermediate(trace_id=context.trace_id, work_item_id=context.work_item_id,
+                                            phase=phase, input_digest=input_digest, content=content)
+        return f"已保存中间阶段: {phase}"
 
     def write_staged(self, context: ExecutionContext, content: str) -> str:
         if context.execution_mode is not ExecutionMode.PARTITIONED:
             raise PermissionError("只有分区执行节点可以写入暂存产物")
-        self._validate_size(content, _STAGED_CHAR_LIMITS.get(context.output_slot or "", 4500))
+        self._validate_size(content, _STAGED_CHAR_LIMITS.get(context.slot or "", 4500))
         staged = self._repository.write_staged(
             trace_id=context.trace_id,
             work_item_id=context.work_item_id,
             artifact_key="architecture",
-            slot=context.output_slot or "",
+            slot=context.slot or "",
             content=content,
+            source_refs=context.input_refs,
+            contract_digest=context.contract_digest,
+            expected_source_digests=context.input_digests,
         )
         return f"已写入架构暂存输出: {staged.ref.ref_id}"
 
@@ -156,19 +209,21 @@ class ArchitectureArtifactWorkflow:
         # the whole run into an avoidable retry/block. Interfaces remain owned
         # by the first split unit unless they explicitly target a split id.
         design = _normalize_file_granular_units(design)
-        # ``health_path`` has a control-plane default. Treat an explicit empty
-        # value like an omitted optional field so a model cannot block the
-        # entire architecture hand-off over an unspecified probe route.
+        # ``health_path`` has a control-plane default. Treat explicit null or
+        # an empty value like an omitted optional field so a model cannot
+        # block the entire architecture hand-off over an unspecified probe
+        # route. The canonical domain model remains non-null after this wire
+        # boundary normalization.
         if isinstance(design, dict) and isinstance(design.get("entrypoints"), dict):
             entrypoints = dict(design["entrypoints"])
-            if entrypoints.get("health_path") == "":
+            if entrypoints.get("health_path") in (None, ""):
                 entrypoints["health_path"] = "/health"
                 design = {**design, "entrypoints": entrypoints}
         try:
             parsed = parse_design(design)
         except (ValidationError, TypeError, ValueError) as error:
             raise ValueError(_structured_design_error(error)) from error
-        slot = context.output_slot or ""
+        slot = context.slot or ""
         expected_depth = (
             0
             if slot == "blueprint"
@@ -189,7 +244,7 @@ class ArchitectureArtifactWorkflow:
                         "expected_depth": expected_depth,
                         "actual_depth": parsed.depth,
                         "message": (
-                            f"架构设计 slot={context.output_slot} 要求 depth={expected_depth}，"
+                            f"架构设计 slot={context.slot} 要求 depth={expected_depth}，"
                             f"实际为 {parsed.depth}"
                         ),
                     },
@@ -199,7 +254,25 @@ class ArchitectureArtifactWorkflow:
         import json
 
         content = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2)
-        limit = _design_limit_for_slot(context.output_slot or "")
+        limit = _design_limit_for_slot(context.slot or "")
+        try:
+            _validate_design_budget(parsed, content, context.slot or "")
+        except ValueError as error:
+            raise ValueError(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error_type": "artifact_budget",
+                        "retryable": True,
+                        "expected_tool": _expected_design_tool(context.slot or ""),
+                        "limit": implementation_design_budget(len(parsed.implementation_units))
+                        if isinstance(parsed, ImplementationDesign)
+                        else limit,
+                        "message": str(error),
+                    },
+                    ensure_ascii=False,
+                )
+            ) from error
         try:
             self._validate_size(content, limit)
         except ValueError as error:
@@ -209,7 +282,7 @@ class ArchitectureArtifactWorkflow:
                         "ok": False,
                         "error_type": "artifact_size",
                         "retryable": True,
-                        "expected_tool": _expected_design_tool(context.output_slot or ""),
+                        "expected_tool": _expected_design_tool(context.slot or ""),
                         "limit": limit,
                         "message": str(error),
                     },
@@ -220,8 +293,11 @@ class ArchitectureArtifactWorkflow:
             trace_id=context.trace_id,
             work_item_id=context.work_item_id,
             artifact_key="architecture",
-            slot=context.output_slot or "",
+            slot=context.slot or "",
             content=content,
+            source_refs=context.input_refs,
+            contract_digest=context.contract_digest,
+            expected_source_digests=context.input_digests,
         )
         return f"已写入架构设计对象: {staged.ref.ref_id}; depth={parsed.depth}"
 
@@ -232,7 +308,7 @@ class ArchitectureArtifactWorkflow:
         """
         if context.execution_mode is not ExecutionMode.INTEGRATION:
             raise PermissionError("只有集成节点可以整合架构设计对象")
-        bundle = self._load_design_bundle(context)
+        bundle = self.validate_design_inputs(context)
         designs = [*([bundle.blueprint]), *bundle.modules, *bundle.implementations]
         content = _render_design_bundle(bundle)
         candidate = self.create_candidate(context, content)
@@ -242,13 +318,15 @@ class ArchitectureArtifactWorkflow:
         """将已通过架构质量门的对象直接编译为唯一 ProjectContract。"""
         if context.execution_mode is not ExecutionMode.INTEGRATION:
             raise PermissionError("只有集成节点可以编译 Project Contract")
-        bundle = self._load_design_bundle(context)
+        bundle = self.validate_design_inputs(context)
         return ArchitectureService(self._project_path).save_implementation_contract(
             bundle.to_project_contract()
         )
 
-    def _load_design_bundle(self, context: ExecutionContext) -> ArchitectureDesignBundle:
-        designs = [parse_design(self._repository.load_ref(ref)) for ref in context.input_refs]
+    def validate_design_inputs(self, context: ExecutionContext) -> ArchitectureDesignBundle:
+        """Validate authorized upstream designs without creating a candidate or publishing."""
+        self._repository.verify_input_versions(context.input_refs, context.input_digests)
+        designs = [parse_design(self.load_input(context, ref.ref_id)) for ref in context.input_refs]
         blueprint = next((item for item in designs if isinstance(item, ArchitectureBlueprint)), None)
         modules = [item for item in designs if isinstance(item, ModuleDesign)]
         implementations = [item for item in designs if isinstance(item, ImplementationDesign)]
@@ -277,6 +355,30 @@ class ArchitectureArtifactWorkflow:
             return target if len(matches) == 1 else module_id
         modules = [item.model_copy(update={"module_id": canonical(item.module_id)}) for item in modules]
         implementations = [item.model_copy(update={"module_id": canonical(item.module_id)}) for item in implementations]
+        # ModuleDesign is the canonical source for interface identity.  LLMs
+        # occasionally shorten a reference (for example
+        # ``domain.todo_operations`` vs ``domain.todo_task_operations``) while
+        # preserving the same namespace and semantic tokens.  Resolve only a
+        # unique, conservative alias here; ambiguous or unrelated references
+        # remain hard validation errors in ArchitectureDesignBundle.
+        implementations = _normalize_interface_references(modules, implementations)
+        # Alias normalization can make two independently emitted references
+        # point at the same canonical interface.  A consumption declaration is
+        # an edge, not a call count, so collapse that duplicate deterministically
+        # before the bundle performs its one-reference-per-interface check.
+        implementations = _dedupe_consumed_interface_references(implementations)
+        implementations = _dedupe_interface_declarations(implementations)
+        implementations = _normalize_interface_dependencies(implementations)
+        implementations = _normalize_unit_waves(implementations)
+        from app.process import default_process_registry
+        process = default_process_registry().get("software_delivery")
+        if process is not None:
+            unit_count = sum(len(item.implementation_units) for item in implementations)
+            if unit_count > process.limits.max_implementation_units:
+                raise ValueError(
+                    f"实现单元数量 {unit_count} 超过流程上限 "
+                    f"{process.limits.max_implementation_units}"
+                )
         return ArchitectureDesignBundle(
             schema_version=1,
             blueprint=blueprint,
@@ -284,18 +386,46 @@ class ArchitectureArtifactWorkflow:
             implementations=implementations,
         )
 
+
     def create_candidate(self, context: ExecutionContext, content: str) -> str:
         if context.execution_mode is not ExecutionMode.INTEGRATION:
             raise PermissionError("只有集成节点可以创建候选版本")
         if context.publish_target != "architecture":
             raise PermissionError("当前集成节点未获 architecture 候选创建授权")
+        self._repository.verify_input_versions(context.input_refs, context.input_digests)
         self._validate_size(content, 9000)
+        # Integration may be retried after a Worker restart. Reuse the
+        # already-created candidate for this work item when its content is
+        # identical; conflicting duplicates remain a hard error so the
+        # one-candidate completion gate cannot be bypassed.
+        try:
+            existing = self._repository.candidate_for_work_item(
+                trace_id=context.trace_id,
+                artifact_key="architecture",
+                work_item_id=context.work_item_id,
+                expected_source_refs=context.input_refs,
+                expected_contract_digest=context.contract_digest,
+            )
+        except RuntimeError as error:
+            if "当前为 0 个" not in str(error):
+                raise
+        else:
+            if existing.content != content:
+                raise ValueError(
+                    f"集成工作项 '{context.work_item_id}' 已存在不同内容的架构候选"
+                )
+            return (
+                f"已复用架构候选: {existing.id}；"
+                f"集成状态: {existing.report.status}"
+            )
         candidate = self._repository.create_candidate(
             trace_id=context.trace_id,
             work_item_id=context.work_item_id,
             artifact_key="architecture",
             content=content,
             source_refs=context.input_refs,
+            contract_digest=context.contract_digest,
+            expected_source_digests=context.input_digests,
         )
         return (
             f"已创建架构候选: {candidate.id}；"
@@ -310,6 +440,295 @@ class ArchitectureArtifactWorkflow:
             )
 
 
+def _normalize_interface_dependencies(
+    implementations: list[ImplementationDesign],
+) -> list[ImplementationDesign]:
+    """Map model-emitted interface IDs in ``depends_on`` to owning units."""
+    owners: dict[str, str] = {}
+    for design in implementations:
+        for interface in design.provided_interfaces:
+            owners.setdefault(interface.interface_id, interface.owner_unit)
+    result: list[ImplementationDesign] = []
+    for design in implementations:
+        units = []
+        for unit in design.implementation_units:
+            dependencies = tuple(dict.fromkeys(owners.get(dep, dep) for dep in unit.depends_on))
+            units.append(unit.model_copy(update={"depends_on": list(dependencies)}))
+        result.append(design.model_copy(update={"implementation_units": units}))
+    return result
+
+
+def _normalize_unit_waves(
+    implementations: list[ImplementationDesign],
+) -> list[ImplementationDesign]:
+    """Raise dependent units to a later wave when a model used the same wave.
+
+    Wave numbers are an execution hint, while ``depends_on`` is the source of
+    truth for ordering.  A model can reasonably assign every unit in a module
+    to wave 1 and still express a dependency between two of them.  Before the
+    integration DTO validates the ordering, deterministically propagate each
+    dependency's wave + 1.  Cycles and unknown ids are left untouched so the
+    normal hard validator can report them instead of being hidden here.
+    """
+    units = [unit for design in implementations for unit in design.implementation_units]
+    by_id = {unit.unit_id: unit for unit in units}
+    if len(by_id) != len(units):
+        return implementations
+    visiting: set[str] = set()
+    resolved: dict[str, int] = {}
+
+    def required_wave(unit_id: str) -> int:
+        if unit_id in resolved:
+            return resolved[unit_id]
+        if unit_id in visiting:
+            raise RuntimeError("实现单元依赖存在循环")
+        unit = by_id[unit_id]
+        visiting.add(unit_id)
+        value = int(unit.wave or 0)
+        for dependency in unit.depends_on:
+            if dependency not in by_id:
+                # Let ArchitectureDesignBundle produce the canonical unknown
+                # dependency diagnostic.
+                continue
+            value = max(value, required_wave(dependency) + 1)
+        visiting.remove(unit_id)
+        resolved[unit_id] = value
+        return value
+
+    try:
+        for unit in units:
+            required_wave(unit.unit_id)
+    except RuntimeError:
+        return implementations
+
+    result: list[ImplementationDesign] = []
+    for design in implementations:
+        result.append(
+            design.model_copy(
+                update={
+                    "implementation_units": [
+                        unit.model_copy(update={"wave": resolved[unit.unit_id]})
+                        for unit in design.implementation_units
+                    ]
+                }
+            )
+        )
+    return result
+
+
+_INTERFACE_ID_SEPARATOR = re.compile(r"[.\-_:]+")
+
+
+def design_module_dependencies(
+    design: ImplementationDesign,
+    modules: list[ModuleDesign],
+) -> tuple[str, ...]:
+    """Return the Blueprint-owned dependencies for an implementation module."""
+    return next(
+        (
+            tuple(module.depends_on_modules)
+            for module in modules
+            if module.module_id == design.module_id
+        ),
+        (),
+    )
+
+
+def _normalize_interface_references(
+    modules: list[ModuleDesign],
+    implementations: list[ImplementationDesign],
+) -> list[ImplementationDesign]:
+    """Canonicalize safe interface-id aliases emitted by layered workers.
+
+    ModuleDesign owns the public interface catalogue.  At depth 2 an agent
+    may enrich an interface with schemas/signatures, but it must not rename
+    that catalogue.  We therefore map an implementation id to the unique
+    module declaration when all of its semantic tokens are contained in the
+    declaration (same namespace, at least two shared non-namespace tokens).
+    No fuzzy choice is made when zero or multiple candidates exist.
+    """
+    declared_by_module: dict[str, tuple[str, ...]] = {
+        module.module_id: tuple(
+            dict.fromkeys(
+                interface.interface_id
+                for interface in module.provided_interfaces
+            )
+        )
+        for module in modules
+    }
+    def parts(value: str) -> tuple[str, ...]:
+        return tuple(token.lower() for token in _INTERFACE_ID_SEPARATOR.split(value) if token)
+
+    def alias_for(reference: str, candidates: tuple[str, ...] | set[str]) -> str | None:
+        if reference in candidates:
+            return reference
+        reference_parts = parts(reference)
+        if len(reference_parts) < 2:
+            return None
+        namespace = reference_parts[0]
+        semantic = set(reference_parts[1:])
+        matches: list[str] = []
+        for candidate in candidates:
+            candidate_parts = parts(candidate)
+            if not candidate_parts or candidate_parts[0] != namespace:
+                continue
+            candidate_semantic = set(candidate_parts[1:])
+            overlap = semantic & candidate_semantic
+            if len(overlap) >= 2 and (semantic <= candidate_semantic or candidate_semantic <= semantic):
+                matches.append(candidate)
+        return matches[0] if len(matches) == 1 else None
+
+    # Consumers must resolve against the final provider IDs, not the original
+    # aliases. Build this catalogue before iterating so input order cannot
+    # affect the identity chosen for cross-module references.
+    provider_ids = {
+        alias_for(interface.interface_id, declared_by_module.get(design.module_id, ()))
+        or interface.interface_id
+        for design in implementations
+        for interface in design.provided_interfaces
+    }
+    result: list[ImplementationDesign] = []
+    all_unit_ids = {
+        unit.unit_id
+        for design in implementations
+        for unit in design.implementation_units
+    }
+    for design in implementations:
+        module_candidates = declared_by_module.get(design.module_id, ())
+        provided = []
+        for interface in design.provided_interfaces:
+            canonical = alias_for(interface.interface_id, module_candidates)
+            provided.append(
+                interface.model_copy(update={"interface_id": canonical})
+                if canonical is not None
+                else interface
+            )
+        # Include implementation providers in the global catalogue so a
+        # consumer can resolve a shortened id even when its module declaration
+        # did not list the interface explicitly.
+        known = provider_ids | {item.interface_id for item in provided}
+        consumed = []
+        dependency_namespaces = design_module_dependencies(design, modules)
+
+        def canonical_reference(reference_id: str) -> str | None:
+            # Prefer the unique provider exposed by a declared dependency's
+            # namespace.  This handles semantically equivalent names such as
+            # ``api.todo_request_handler`` and ``api.todo_http`` even when the
+            # model chose different descriptive suffixes.  If a dependency
+            # exposes multiple interfaces, fall back to the stricter token
+            # subset rule and otherwise keep the id for hard validation.
+            namespace = parts(reference_id)[:1]
+            dependency_candidates = tuple(
+                interface_id
+                for dependency in dependency_namespaces
+                for interface_id in declared_by_module.get(dependency, ())
+                if parts(interface_id)[:1] == namespace
+            )
+            canonical = (
+                dependency_candidates[0]
+                if len(set(dependency_candidates)) == 1
+                else alias_for(reference_id, known)
+            )
+            return canonical
+
+        for reference in design.consumed_interfaces:
+            canonical = canonical_reference(reference.interface_id)
+            consumed.append(
+                reference.model_copy(update={"interface_id": canonical})
+                if canonical is not None
+                else reference
+            )
+        units = []
+        for unit in design.implementation_units:
+            consumed_ids = []
+            for interface_id in unit.consumes_interfaces:
+                canonical = canonical_reference(interface_id)
+                consumed_ids.append(canonical or interface_id)
+            dependencies = []
+            for dependency in unit.depends_on:
+                # ``depends_on`` is normally a unit id after contract
+                # compilation, but early model output may put an interface id
+                # there.  Preserve real unit ids and canonicalize only the
+                # latter form; the next normalization pass maps providers to
+                # their owning unit ids.
+                if dependency in all_unit_ids:
+                    dependencies.append(dependency)
+                else:
+                    dependencies.append(canonical_reference(dependency) or dependency)
+            units.append(
+                unit.model_copy(
+                    update={
+                        "consumes_interfaces": list(dict.fromkeys(consumed_ids)),
+                        "depends_on": list(dict.fromkeys(dependencies)),
+                    }
+                )
+            )
+        result.append(
+            design.model_copy(
+                update={
+                    "provided_interfaces": provided,
+                    "consumed_interfaces": consumed,
+                    "implementation_units": units,
+                }
+            )
+        )
+    return result
+
+
+def _dedupe_interface_declarations(
+    implementations: list[ImplementationDesign],
+) -> list[ImplementationDesign]:
+    """Keep one canonical declaration when agents repeat a shared interface."""
+    seen: dict[str, dict[str, Any]] = {}
+    result: list[ImplementationDesign] = []
+    for design in implementations:
+        kept = []
+        for interface in design.provided_interfaces:
+            payload = interface.model_dump(mode="json")
+            previous = seen.get(interface.interface_id)
+            if previous is None:
+                seen[interface.interface_id] = payload
+                kept.append(interface)
+            elif previous != payload:
+                raise ValueError(f"接口 {interface.interface_id} 在多个实现设计中定义冲突")
+        result.append(design.model_copy(update={"provided_interfaces": kept}))
+    return result
+
+
+def _dedupe_consumed_interface_references(
+    implementations: list[ImplementationDesign],
+) -> list[ImplementationDesign]:
+    """Collapse duplicate canonical consumption edges within one module.
+
+    The staged design is parsed before this point, so this only handles the
+    safe case introduced by ``_normalize_interface_references``: two distinct
+    model-emitted aliases resolve to the same declared interface.  Preserve
+    the first non-empty usage and make the merged edge required if either
+    original reference was required.  Unknown references are deliberately not
+    removed, so the bundle continues to reject them with its normal contract
+    diagnostic.
+    """
+    result: list[ImplementationDesign] = []
+    for design in implementations:
+        by_interface_id: dict[str, int] = {}
+        consumed = []
+        for reference in design.consumed_interfaces:
+            previous_index = by_interface_id.get(reference.interface_id)
+            if previous_index is None:
+                by_interface_id[reference.interface_id] = len(consumed)
+                consumed.append(reference)
+                continue
+            previous = consumed[previous_index]
+            consumed[previous_index] = previous.model_copy(
+                update={
+                    "usage": previous.usage or reference.usage,
+                    "required": previous.required or reference.required,
+                }
+            )
+        result.append(design.model_copy(update={"consumed_interfaces": consumed}))
+    return result
+
+
 _STAGED_CHAR_LIMITS = {
     "baseline": 3200,
     "api": 4200,
@@ -321,19 +740,90 @@ _STAGED_CHAR_LIMITS = {
 _DESIGN_CHAR_LIMITS = {
     "blueprint": 7000,
     "module": 6000,
-    "implementation": 9000,
 }
+
+# Implementation designs are file-granular.  The envelope must account for
+# both the unit payload and the top-level interface/test metadata; a count-only
+# 5k minimum rejected otherwise valid two-file module designs around 6.5k.
+# Keep a hard per-unit cap and a bounded total envelope so this is still a
+# quality gate rather than an invitation to emit unbounded prose.
+_IMPLEMENTATION_MIN_CHARS = 5_000
+_IMPLEMENTATION_METADATA_CHARS = 2_500
+_IMPLEMENTATION_EXPECTED_UNIT_CHARS = 3_500
+_IMPLEMENTATION_EXTRA_PER_UNIT_CHARS = 1_000
+_IMPLEMENTATION_MAX_CHARS = 24_000
+_IMPLEMENTATION_UNIT_MAX_CHARS = 4_500
 
 
 def _design_limit_for_slot(slot: str) -> int:
     """Resolve exact slots and prefixed layered slots to their depth limit."""
+    if slot == "implementation" or slot.startswith("implementation-"):
+        return _IMPLEMENTATION_MAX_CHARS
     if slot in _DESIGN_CHAR_LIMITS:
         return _DESIGN_CHAR_LIMITS[slot]
-    if slot.startswith("implementation-"):
-        return _DESIGN_CHAR_LIMITS["implementation"]
     if slot.startswith("module-"):
         return _DESIGN_CHAR_LIMITS["module"]
     return 8000
+
+
+def implementation_design_budget(unit_count: int) -> int:
+    """Return a bounded serialized-character budget for N implementation units.
+
+    The first term reserves a fixed envelope for interfaces, tests and
+    cross-unit metadata.  The second term gives each file unit a realistic
+    planning allowance.  A separate floor preserves the product rule that
+    budgets never fall below 5k and grow by at least 1k per unit after the
+    third; the final cap prevents a large fan-out from turning one node into a
+    free-form document generator.
+    """
+    count = max(1, int(unit_count))
+    envelope_budget = (
+        _IMPLEMENTATION_METADATA_CHARS
+        + count * _IMPLEMENTATION_EXPECTED_UNIT_CHARS
+    )
+    three_plus_floor = _IMPLEMENTATION_MIN_CHARS + max(0, count - 3) * _IMPLEMENTATION_EXTRA_PER_UNIT_CHARS
+    return min(
+        _IMPLEMENTATION_MAX_CHARS,
+        max(_IMPLEMENTATION_MIN_CHARS, envelope_budget, three_plus_floor),
+    )
+
+
+def implementation_unit_budget() -> int:
+    """Maximum serialized size of one file-granular implementation unit."""
+    return _IMPLEMENTATION_UNIT_MAX_CHARS
+
+
+def llm_token_budget_for_design(slot: str | None, *, unit_count: int = 3) -> int | None:
+    """Map the architecture character budget to a conservative token cap.
+
+    Provider tokenization differs by language, so this is intentionally a
+    safety budget, not a byte/token conversion.  Explicit deployment env
+    settings still override it in ``build_llm``.
+    """
+    value = (slot or "").strip()
+    if not value.startswith("implementation-") and value not in {"implementation"}:
+        return None
+    chars = implementation_design_budget(unit_count)
+    return min(24_000, max(4_000, int(chars * 1.5)))
+
+
+def _validate_design_budget(parsed: Any, content: str, slot: str) -> None:
+    if not (slot == "implementation" or slot.startswith("implementation-")):
+        return
+    units = list(getattr(parsed, "implementation_units", ()))
+    total_limit = implementation_design_budget(len(units))
+    if len(content) > total_limit:
+        raise ValueError(
+            f"当前架构实现设计包含 {len(units)} 个 unit，产物超过动态上限 "
+            f"{total_limit} 字符"
+        )
+    for unit in units:
+        serialized = json.dumps(unit.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":"))
+        if len(serialized) > _IMPLEMENTATION_UNIT_MAX_CHARS:
+            raise ValueError(
+                f"实现单元 '{unit.unit_id}' 超过单 unit 上限 "
+                f"{_IMPLEMENTATION_UNIT_MAX_CHARS} 字符"
+            )
 
 
 def _expected_design_tool(slot: str) -> str | None:
@@ -395,6 +885,11 @@ def _normalize_file_granular_units(design: dict[str, Any]) -> dict[str, Any]:
             split = dict(raw)
             split["unit_id"] = f"{base_id}-{index}"
             split["owned_files"] = [file_path]
+            # ``required_paths`` describes this unit's own concrete output,
+            # not imports produced by siblings.  Once a legacy multi-file
+            # unit is split, give each child its exact owned file so the
+            # file-granular invariant is true before DTO validation.
+            split["required_paths"] = [file_path]
             normalized.append(split)
         owner_map[base_id] = f"{base_id}-1"
     result = dict(design)
@@ -428,18 +923,22 @@ def _render_design_bundle(bundle: ArchitectureDesignBundle) -> str:
         lines.append(f"- {layer.name}: 允许依赖 {dependencies}")
     lines.extend(["", "## Modules"])
     for module in bundle.blueprint.modules:
-        lines.append(f"- {module.module_id}: {module.responsibility}")
+        lines.append(f"- {module.module_id}: {module.purpose or module.responsibility}")
+        if module.depends_on_modules:
+            lines.append("  依赖模块：" + "；".join(module.depends_on_modules))
     lines.extend(["", "## Module Decisions"])
     for design in bundle.modules:
         lines.append(f"### {design.module_id}")
+        if design.purpose:
+            lines.append("业务目的：" + design.purpose)
         lines.append("职责：" + "；".join(design.responsibilities))
         if design.entities:
             lines.append("实体：" + "；".join(design.entities))
-        if design.dependencies:
-            lines.append("依赖：" + "；".join(design.dependencies))
+        if design.depends_on_modules:
+            lines.append("依赖模块：" + "；".join(design.depends_on_modules))
     lines.extend(["", "## Interfaces"])
     for design in bundle.implementations:
-        for interface in design.interfaces:
+        for interface in design.provided_interfaces:
             lines.append(f"- {interface.interface_id}: {interface.name} ({interface.kind})")
     if bundle.blueprint.entrypoints.backend_file or bundle.blueprint.entrypoints.frontend_file:
         lines.extend(["", "## Entrypoints"])

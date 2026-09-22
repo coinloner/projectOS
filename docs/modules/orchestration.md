@@ -18,11 +18,27 @@ ExecutionPlan
 | `ExecutionPlan` | 本次运行的合法 WorkItem DAG |
 | `GraphRunner` | 找到 ready WorkItem，创建 Agent，执行并处理失败/能力缺口 |
 | `RunState` | 当前执行结果和 artifact 文本，并可从版本化 checkpoint 重建 |
-| `ExecutionContext` | GraphRunner 为单个 WorkItem 创建的可信身份，以及 `execution_mode/input_refs/output_slot/publish_target` 授权 |
+| `ExecutionContext` | GraphRunner 为单个 WorkItem 创建的可信身份，以及 `execution_mode/input_refs/slot/publish_target` 授权 |
 | `TaskInputPackage` | 执行前生成的结构化任务合同：输入用途、资源 scope、输出合同、前置状态、约束和非目标 |
 | `TraceStore` | 持久化计划、事件、终态、requirement 修订和 sandbox evidence |
 | `SandboxEvidence` | Docker check 的状态、退出码、耗时和原始受限输出，绑定到 Trace 与 WorkItem |
 | `ProgressTracker` | 接收 LLM 流式、工具和节点事件，写入 Worker 最近进度快照，不保存模型正文 |
+
+架构动态线路由 `architecture_blueprint` WorkItem 触发控制面扩展：
+`DynamicPlanBuilder` 读取已校验的 Blueprint，为每个模块生成独立的
+`architecture_module` WorkItem。模块的业务 `purpose` 只作为任务语义传递，
+`depends_on_modules` 才会转换为 DAG 依赖；模块节点完成后扩展 provenance 会写入 Trace。
+
+当所有 `architecture_module` 节点完成后，Runner 再触发第二次动态扩展：
+`expand_implementations()` 为每个模块生成一个 `architecture_implementation` WorkItem。
+这些节点只依赖对应的 ModuleDesign，模块依赖通过输入引用传递，不把未完成的实现设计
+强行串成同级依赖。架构集成节点会被控制面补齐实现设计依赖和引用，只有 Blueprint、
+ModuleDesign、ImplementationDesign 三层对象齐备后才允许生成 `ArchitectureDesignBundle`。
+每次扩展都记录 `kind`、父计划 revision、模块到 WorkItem 映射和 wave，断点恢复直接复用
+已持久化的 DAG。
+
+`ExecutionPlan` 同时记录 `process_id`（稳定的流程规则）和可选的 `template_id`（历史或兼容
+适配器）。流程规则不等同于某个项目的节点数量；后续动态计划编译会在流程约束下生成项目专属 DAG。
 
 ## 边界
 
@@ -31,7 +47,7 @@ ExecutionPlan
 - Orchestration 不保存可复用流程经验，这是 Workflow 的职责。
 - Agent 和 Domain Service 不直接修改 WorkItem 状态或 Trace；只有 GraphRunner 与 TraceStore 可以写入。
 - `ExecutionContext` 经 ToolGateway 绑定到工具对象，不会写入 Agent task 文本或 ToolDef schema。
-- `PARTITIONED` WorkItem 必须有唯一 `output_slot`，只能写暂存输出；`INTEGRATION` 必须有
+- `PARTITIONED` WorkItem 必须有唯一 `slot`，只能写暂存输出；`INTEGRATION` 必须有
   `publish_target`，只能创建候选；`QUALITY_GATE` 必须依赖一个集成 WorkItem，由 GraphRunner
   调用确定性质量门发布。三者均不能由 Planner 的自由文本直接授予。
 
@@ -49,11 +65,20 @@ Docker 失败会按测试失败、超时、环境配置失败和 Agent 运行异
 每个节点结果后都会写入版本化 checkpoint；恢复时只信任已完成节点，失败、等待和 replan 节点重新调度，
 避免把中断时的半成品副作用误当成完成结果。
 
-Worker 监管同时使用硬截止、阶段级空闲阈值和独立 heartbeat。默认 LLM 120 秒、工具 300 秒、Sandbox 600 秒；
-发现 LLM 无 chunk 时先写入 `worker_idle_suspected`/`provider_stalled`，并进入可配置的
-`PROJECTOS_PROVIDER_STALL_GRACE_SECONDS` 宽限期；只有 `last_progress_at` 在整个宽限期内
-没有变化才终止 Worker，真实进度恢复会重置计时。API 可通过
-`/runs/{trace_id}/progress` 查询 `last_progress_at` 与 `heartbeat_at` 两类时间戳。
+Worker 监管使用硬截止、活动级 transport stall 阈值、语义停滞阈值和独立 heartbeat。
+监控快照使用 v3 分层对象，而不是一个平面状态：
+
+```text
+run         运行生命周期和 Worker 进程观察；子节点执行期间保持 running
+batches     同一最早 wave 的并行 fan-out/fan-in 屏障；所有成员返回后才汇聚
+work_items  单节点 LLM、工具、产物或 Sandbox 活动
+```
+
+Watchdog 只读取 `work_items[*].clocks.transport_at`、`last_meaningful_at` 和
+`run.heartbeat_at`；它写审计事件并收口 run/batch/work item，不把 heartbeat 或传输分片当作
+业务完成。强制终止时根因节点记录为 `failed`，同 batch 的其他开放节点记录为 `interrupted`。
+并行节点分别计时，不会因某个兄弟节点完成而停止监管。API 可通过
+`/runs/{trace_id}/progress` 查询三类时间戳和聚合进度。
 
 `FailurePackage` 是编排层由 Trace evidence 生成的受控输入。Planner 只看到失败种类、摘要、证据 ID、check/runtime/exit code；修复用 Code/Test WorkItem 可看到受长度限制的 stdout/stderr，并且该文本被标记为不可信程序输出。TestAgent 必须产生当前 WorkItem 的 SandboxEvidence，否则不会被记为完成；代码分区先提交 ChangeSet，`CodeIntegrationAgent` 合并成功后生成实现摘要（implementation.md）。
 
@@ -83,7 +108,7 @@ GraphRunner 不再只把 `objective` 拼成一段任务字符串，而是为每�
 | 字段 | 作用 |
 |---|---|
 | `InputBinding` | 说明 `ArtifactRef` 的用途和读取方式，不注入正文 |
-| `TaskScope` | 表达 execution mode、output slot、允许路径和禁止路径 |
+| `TaskScope` | 表达 execution mode、canonical `slot`、允许路径和禁止路径 |
 | `OutputContract` | 表达 output/artifact key、发布目标和预期路径 |
 | `DependencySummary` | 只传递前置 WorkItem 的状态和产物是否可用 |
 | `constraints` / `non_goals` | 把必须遵守的技术边界和明确不做的内容从大段背景中分离出来 |
@@ -144,3 +169,31 @@ CodeAgent WorkItem；CodeAgent 只执行当前单元，不重新拆分架构。�
 
 TestAgent 的 `SandboxEvidence.status=setup_failed` 同样属于环境阻塞，不是完成状态。原始证据仍
 持久化，Trace 会停在 `blocked`，避免在没有执行测试的情况下生成误导性的最终 Review。
+
+## 状态机与职责
+
+状态字段按层隔离，不能把不同层的 `status` 直接比较：
+
+```text
+LLM call:  idle -> started -> streaming -> completed | failed
+WorkItem:  planned -> started -> completed | needs_replan | failed
+Graph:     running -> completed | waiting_for_capability_approval
+                    -> needs_replan | blocked | failed
+Worker:    started -> running -> completed | failed | timed_out
+```
+
+`ProgressTracker` 只维护单个 WorkItem 内一次 LLM/工具调用的进度与终态标记；
+`GraphRunner` 根据 DAG 依赖和 `NodeResult` 驱动 WorkItem 状态，并把失败归因转换成
+有界 retry 或局部 `RepairPlanPatch`；`RunCoordinator` 位于更外层，负责 Worker 线程的
+启动、硬截止、Provider stall watchdog、checkpoint 恢复和 API 级运行生命周期。它不参与
+节点业务判断，也不替代 GraphRunner 的 DAG 调度。`TraceStore` 是跨进程恢复的事实来源，
+`RunState` 是一次 GraphRunner 执行中的内存投影。
+
+## 修复输出协议
+
+每次重试遵循固定的六步：`observe -> classify -> narrow -> act -> verify -> report`。
+Agent 必须先读取受控 `FailurePackage`，将失败归类为工具、传输、环境或业务测试问题；
+随后只能在 `repair_paths`/`owned_files` 范围内修改，并调用当前 WorkItem 已授权的写入或
+测试工具。只有新的工具证据满足输出合同后才可报告完成。Planner 输出 `RepairPlanPatch`
+只允许追加 `code_agent`/`test_agent` 修复节点，`repair_scope` 必须与控制面窗口一致，
+最多 10 个操作，不能授予新权限、重做未受影响节点或输出业务代码。

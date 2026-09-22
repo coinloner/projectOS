@@ -6,6 +6,7 @@ from app.llm.factory import build_llm
 from app.execution_context import ExecutionContext
 from app.tool_manager.gateway import ToolGateway
 from app.tool_manager.source import ToolExecutionError, ToolResult, ToolResultStatus
+from app.domain.architecture.service import llm_token_budget_for_design
 import json
 import re
 
@@ -74,6 +75,10 @@ class BaseAgent:
 
     # ── 入口 ──────────────────────────────────
 
+    def backstory_for_context(self, context: ExecutionContext | None) -> str:
+        """Return policy text appropriate for this execution context."""
+        return self._backstory
+
     def run(
         self, task: str, *, context: ExecutionContext | None = None
     ) -> AgentResult:
@@ -100,14 +105,24 @@ class BaseAgent:
 
         available_tools = self._gateway.tools_for(self._domain, context=context)
         visible_tool_names = {str(tool.name) for tool in available_tools}
+        backstory = self.backstory_for_context(context)
         crew_agent = Agent(
             role=self._role,
             goal=self._goal,
-            backstory=f"{self._backstory}\n\n{_LANGUAGE_PROMPT}\n\n{_CAPABILITY_REQUEST_PROMPT}",
+            backstory=(
+                f"{backstory}\n\n{_LANGUAGE_PROMPT}\n\n"
+                f"{_CAPABILITY_REQUEST_PROMPT}\n\n{_PROGRESS_REPORT_PROMPT}"
+            ),
             # Respect the deployment/request-level stream setting.  Forcing SSE
             # here breaks providers whose CrewAI adapter cannot parse streamed
             # responses from some OpenAI-compatible gateways.
-            llm=build_llm(selection=getattr(context, "llm_selection", None)),
+            llm=build_llm(
+                selection=getattr(context, "llm_selection", None),
+                max_tokens=llm_token_budget_for_design(
+                    getattr(context, "slot", None),
+                    unit_count=getattr(context, "implementation_unit_count", None) or 3,
+                ),
+            ),
             tools=available_tools,
             max_iter=self._max_iterations,
             verbose=False,
@@ -130,6 +145,13 @@ class BaseAgent:
             if progress is not None:
                 progress.llm_failed(type("Event", (), {"error": str(error)})())
                 progress.failed(str(error))
+            if isinstance(error, ToolExecutionError):
+                # Preserve typed tool failures across the CrewAI boundary so
+                # GraphRunner can select a domain-specific recovery path.
+                raise
+            architecture_error = _architecture_tool_validation_error(error, context)
+            if architecture_error is not None:
+                raise architecture_error from error
             raise RuntimeError(f"❌ CrewAI Agent 执行失败: {error}") from error
         finally:
             if progress is not None:
@@ -139,17 +161,42 @@ class BaseAgent:
             # signal when CrewAI did not emit its completed callback.
             progress.llm_completed_from_agent_return()
             progress.completed()
-        output_text = str(output)
+        output_text = str(output or "").strip()
+        if not output_text:
+            # A provider can close an SSE stream without emitting a terminal
+            # message or a tool result. Treat an empty return as transport
+            # failure; never allow it to become a completed NodeResult.
+            raise RuntimeError("Provider stream ended without terminal signal: empty response")
         # Some OpenAI-compatible gateways return a textual representation of
         # CrewAI's tool-call envelope instead of dispatching the function call.
         # Execute only the known local tools that are currently exposed by the
         # Gateway; unauthorized or external tools are never inferred from text.
         _execute_serialized_local_tools(output_text, self._gateway, self._domain, context)
+        # Some OpenAI-compatible relays preserve the model's structured design
+        # payload but drop the native function-call envelope.  Layered
+        # architecture nodes have a single deterministic writer, so replay a
+        # bare, schema-valid object through that already-authorized tool.  This
+        # is intentionally narrower than the textual tool-call compatibility
+        # path: only architecture PARTITIONED slots are eligible, and ordinary
+        # JSON/natural-language output is left untouched.
+        _replay_structured_architecture_output(
+            output_text,
+            available_tools,
+            context=context,
+        )
         result = from_llm_content(output_text)
         if (
             result.capability_request is not None
             and result.capability_request.capability in visible_tool_names
         ):
+            # Controlled partition/integration nodes have a domain-specific
+            # recovery path in GraphRunner (architecture/code/test local
+            # tools must never become external capability grants).  Return
+            # the typed AgentResult there so that path can classify the
+            # request and issue the correct bounded retry.  Keep the legacy
+            # protocol exception for unscoped/direct Agent callers.
+            if context is not None and context.execution_mode.value != "exclusive":
+                return result
             request = result.capability_request
             protocol_result = ToolResult(
                 tool_name=request.capability,
@@ -164,6 +211,128 @@ class BaseAgent:
             )
             raise ToolExecutionError(protocol_result)
         return result
+
+
+def _replay_structured_architecture_output(
+    output: str,
+    available_tools: list[object],
+    *,
+    context: ExecutionContext | None,
+) -> str | None:
+    """Replay a bare architecture design object through its writer tool.
+
+    Providers occasionally return the JSON arguments they intended to pass to
+    a function without emitting a function-call message.  Treating that text
+    as a completed node loses the staged artifact.  The replay is a bounded
+    transport fallback, not a second planner: the WorkItem determines the
+    only expected writer and CrewAI's tool wrapper performs the same argument
+    validation and authorization as a native call.
+    """
+    if context is None or context.execution_mode.value != "partitioned":
+        return None
+    if context.agent_id != "architecture_agent" or context.slot is None:
+        return None
+    expected = _expected_architecture_writer(context)
+    if expected is None:
+        return None
+
+    payload = _strict_json_object(output)
+    if payload is None or payload.get("type") == "capability_request":
+        return None
+    expected_depth = 0 if expected == "write_architecture_blueprint" else 1 if expected == "write_module_design" else 2
+    if payload.get("depth") != expected_depth:
+        return None
+
+    tool = next(
+        (candidate for candidate in available_tools if getattr(candidate, "name", None) == expected),
+        None,
+    )
+    if tool is None:
+        # The gateway did not expose the writer for this attempt.  Do not infer
+        # or call an unauthorized tool; Runner will classify the missing
+        # staged output and schedule its normal bounded retry.
+        return None
+    try:
+        return str(tool.run(design=payload))
+    except ToolExecutionError:
+        raise
+    except Exception as error:
+        typed = _architecture_tool_validation_error(error, context)
+        if typed is not None:
+            raise typed from error
+        raise
+
+
+def _strict_json_object(output: str) -> dict[str, object] | None:
+    """Parse one leading JSON object, accepting a known trailing capability envelope."""
+    candidate = output.strip()
+    if candidate.startswith("```") and candidate.endswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) >= 3:
+            candidate = "\n".join(lines[1:-1]).strip()
+    try:
+        payload = json.loads(candidate)
+        return payload if isinstance(payload, dict) else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        # A relay may concatenate the intended tool arguments and its textual
+        # capability fallback.  Recover only the first complete object when
+        # the remainder is a capability_request envelope; arbitrary prose is
+        # never treated as structured output.
+        decoder = json.JSONDecoder()
+        try:
+            payload, end = decoder.raw_decode(candidate)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        remainder = candidate[end:].strip()
+        if not remainder:
+            return payload
+        try:
+            trailing = json.loads(remainder)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if isinstance(trailing, dict) and trailing.get("type") == "capability_request":
+            return payload
+        return None
+
+
+def _expected_architecture_writer(context: ExecutionContext | None) -> str | None:
+    """Return the sole writer allowed for a layered architecture slot."""
+    if context is None or context.agent_id != "architecture_agent":
+        return None
+    if context.execution_mode.value != "partitioned" or context.slot is None:
+        return None
+    if context.slot == "blueprint":
+        return "write_architecture_blueprint"
+    if context.slot.startswith("module-"):
+        return "write_module_design"
+    if context.slot.startswith("implementation-"):
+        return "write_implementation_design"
+    return None
+
+
+def _architecture_tool_validation_error(
+    error: BaseException,
+    context: ExecutionContext | None,
+) -> ToolExecutionError | None:
+    """Convert CrewAI's pre-dispatch argument error into a typed tool failure."""
+    expected = _expected_architecture_writer(context)
+    if expected is None:
+        return None
+    message = str(error)
+    marker = f"Tool '{expected}' arguments validation failed"
+    if marker not in message:
+        return None
+    result = ToolResult(
+        tool_name=expected,
+        status=ToolResultStatus.RETRYABLE,
+        message=message,
+        error_type="tool_validation",
+        retryable=True,
+        expected_tool=expected,
+    )
+    return ToolExecutionError(result, cause=error)
 
 
 def _execute_serialized_local_tools(
@@ -227,6 +396,13 @@ _CAPABILITY_REQUEST_PROMPT = """\
 请只返回以下 JSON，不要使用 Markdown 代码块或附加文字：
 {"type": "capability_request", "capability": "能力标识", "reason": "缺少该能力的原因"}
 若当前工具足以完成任务，则按正常方式回答。
+"""
+
+_PROGRESS_REPORT_PROMPT = """\
+过程状态要求：在开始较长的分析或实现，以及工作阶段发生变化时，可以调用
+report_progress 提交简短、可公开的工作摘要和下一步。摘要不得包含内部思维链、
+prompt、源码正文或工具参数；重复状态不要反复报告。report_progress 只用于可观测性，
+不能代替当前任务要求的写入、集成、测试或保存工具，也不能宣告节点完成。
 """
 
 _LANGUAGE_PROMPT = """\

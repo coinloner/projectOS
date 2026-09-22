@@ -49,6 +49,12 @@ class RequirementRecord:
     implementation_units: tuple[str, ...] = ()
     test_evidence_ids: tuple[str, ...] = ()
     runtime_evidence_ids: tuple[str, ...] = ()
+    actor: str | None = None
+    action: str | None = None
+    preconditions: tuple[str, ...] = ()
+    expected_outputs: tuple[str, ...] = ()
+    error_cases: tuple[str, ...] = ()
+    priority: str = "must"
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -58,6 +64,12 @@ class RequirementRecord:
             "implementation_units": list(self.implementation_units),
             "test_evidence_ids": list(self.test_evidence_ids),
             "runtime_evidence_ids": list(self.runtime_evidence_ids),
+            "actor": self.actor,
+            "action": self.action,
+            "preconditions": list(self.preconditions),
+            "expected_outputs": list(self.expected_outputs),
+            "error_cases": list(self.error_cases),
+            "priority": self.priority,
         }
 
 
@@ -90,6 +102,32 @@ class TraceabilityMatrix:
 
     def as_dict(self) -> dict[str, object]:
         return {"schema_version": 1, "requirements": [record.as_dict() for record in self.requirements.values()]}
+
+    def coverage_summary(self) -> dict[str, object]:
+        total = len(self.requirements)
+        implemented = sum(bool(item.implementation_units) for item in self.requirements.values())
+        tested = sum(bool(item.test_evidence_ids) for item in self.requirements.values())
+        runtime = sum(bool(item.runtime_evidence_ids) for item in self.requirements.values())
+        return {
+            "total": total,
+            "implemented": implemented,
+            "tested": tested,
+            "runtime_verified": runtime,
+            "implementation_rate": implemented / total if total else None,
+            "test_rate": tested / total if total else None,
+            "runtime_rate": runtime / total if total else None,
+            "complete": not self.incomplete(),
+        }
+
+
+@dataclass(frozen=True)
+class QualityMatrix:
+    """项目级质量维度快照，规则由 Contract/Runtime 动态声明。"""
+
+    dimensions: dict[str, str] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, object]:
+        return {"schema_version": 1, "dimensions": dict(sorted(self.dimensions.items()))}
 
 
 class DeliveryStore:
@@ -137,7 +175,50 @@ class DeliveryStore:
                     implementation_units=tuple(str(value) for value in raw.get("implementation_units", [])),
                     test_evidence_ids=tuple(str(value) for value in raw.get("test_evidence_ids", [])),
                     runtime_evidence_ids=tuple(str(value) for value in raw.get("runtime_evidence_ids", [])),
+                    actor=str(raw["actor"]) if raw.get("actor") else None,
+                    action=str(raw["action"]) if raw.get("action") else None,
+                    preconditions=tuple(str(value) for value in raw.get("preconditions", [])),
+                    expected_outputs=tuple(str(value) for value in raw.get("expected_outputs", [])),
+                    error_cases=tuple(str(value) for value in raw.get("error_cases", [])),
+                    priority=str(raw.get("priority", "must")),
                 ))
+        return matrix
+
+    def save_quality_matrix(self, matrix: QualityMatrix) -> None:
+        self._root.mkdir(parents=True, exist_ok=True)
+        (self._root / "quality-matrix.json").write_text(
+            json.dumps(matrix.as_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+    def load_quality_matrix(self) -> QualityMatrix:
+        path = self._root / "quality-matrix.json"
+        if not path.is_file():
+            return QualityMatrix()
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            dimensions = payload.get("dimensions", {}) if isinstance(payload, dict) else {}
+            return QualityMatrix({str(key): str(value) for key, value in dimensions.items()})
+        except (OSError, ValueError, TypeError):
+            return QualityMatrix()
+
+    def snapshot_quality(self, *, contract: object | None = None, runtime: object | None = None) -> QualityMatrix:
+        """Derive applicable quality dimensions without inventing business rules."""
+        dimensions: dict[str, str] = {}
+        contract_tests = getattr(contract, "required_test_types", ()) if contract is not None else ()
+        for test_type in contract_tests or ():
+            dimensions[f"test:{test_type}"] = "required"
+        if contract is not None:
+            entrypoints = getattr(contract, "entrypoints", None)
+            if entrypoints is not None and getattr(entrypoints, "backend_file", None):
+                dimensions["runtime:backend_entrypoint"] = "required"
+            if entrypoints is not None and getattr(entrypoints, "frontend_file", None):
+                dimensions["runtime:frontend_entrypoint"] = "required"
+        if runtime is not None:
+            profile = getattr(runtime, "profile", None) or (runtime.get("profile") if isinstance(runtime, dict) else None)
+            if profile:
+                dimensions["runtime:profile"] = str(profile)
+        matrix = QualityMatrix(dimensions)
+        self.save_quality_matrix(matrix)
         return matrix
 
     def initialize_from_markdown(self, content: str) -> TraceabilityMatrix:

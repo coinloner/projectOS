@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 from threading import Barrier
 import tempfile
@@ -9,18 +10,24 @@ from app.agent.result import AgentResult
 from app.artifact.repository import ArtifactRef, ArtifactRepository
 from app.memory.store import MemoryStore
 from app.domain.architecture.service import ArchitectureArtifactWorkflow
+from app.domain.architecture.tools import register_architecture_tools
 from app.orchestration.retry import FailureKind, FailurePackage, FailureSignal, RecoveryAction, RetryPolicy
+from app.orchestration.node_result import NodeResult
 from app.tool_manager.gateway import ToolGateway
-from app.tool_manager.source import MCPToolSource
+from app.tool_manager.source import MCPToolSource, ToolExecutionError, ToolResult, ToolResultStatus
 from app.orchestration.plan import ExecutionPlan
+from app.orchestration.state import RunState
 from app.orchestration.runner import (
     GraphRunner,
+    GraphRunResult,
     GraphRunStatus,
     _architecture_tool_allowlist,
+    _architecture_retry_contract_prompt,
     _expected_architecture_tool,
     _partitioned_code_retry_prompt,
     _refresh_review_quality_section,
     _summarize_sandbox_evidence,
+    _tool_allowlist_for_attempt,
 )
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.orchestration.trace import TraceContext, TraceStore
@@ -95,6 +102,15 @@ class ReviewQualityRefreshTest(unittest.TestCase):
         self.assertIn("evidence_id=new", summary)
         self.assertNotIn("evidence_id=old", summary)
 
+    def test_architecture_retry_contract_is_depth_specific(self) -> None:
+        prompt = _architecture_retry_contract_prompt(
+            "implementation-frontend", "write_implementation_design"
+        )
+        self.assertIn("schema_version", prompt)
+        self.assertIn("owned_files", prompt)
+        self.assertIn("不要写 layers", prompt)
+        self.assertIn("不要写 consumed_interface_ids", prompt)
+
     def test_provider_transport_failure_is_classified_for_bounded_retry(self) -> None:
         agents = AgentRegistry()
         agents.register(
@@ -111,6 +127,80 @@ class ReviewQualityRefreshTest(unittest.TestCase):
         )
         self.assertEqual(result.status, GraphRunStatus.FAILED)
         self.assertIn("provider_transport", result.error or "")
+
+    def test_integration_adapter_failure_requests_replan(self) -> None:
+        agents = AgentRegistry()
+        agents.register(
+            AgentDefinition(
+                "code_integration_agent", "code_integration", "集成", "implementation"
+            ),
+            lambda: FakeAgent(RuntimeError(
+                "Integration Review 需要适配 ChangeSet，但适配文件尚未由实现节点提供: "
+                "workspace/backend/domain/todo_operations.py"
+            )),
+        )
+        plan = ExecutionPlan(
+            id="integration-adapter-replan",
+            goal="集成适配",
+            trace=TraceContext.ephemeral(),
+            work_items=(WorkItem(
+                id="integration",
+                agent_id="code_integration_agent",
+                objective="集成代码",
+                output_key="implementation",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="workspace",
+            ),),
+        )
+        result = GraphRunner(agents, ToolGateway()).run(plan)
+        self.assertEqual(result.status, GraphRunStatus.NEEDS_REPLAN)
+        self.assertIsNotNone(result.failure_signal)
+        self.assertEqual(result.failure_signal.kind, FailureKind.CODE_DELIVERY_INCOMPLETE)
+
+    def test_architecture_tool_validation_is_retried_with_field_context(self) -> None:
+        agents = AgentRegistry()
+
+        class InvalidArchitectureAgent:
+            def run(self, task: str, *, context: ExecutionContext | None = None) -> AgentResult:
+                raise ToolExecutionError(
+                    ToolResult(
+                        tool_name="write_module_design",
+                        status=ToolResultStatus.RETRYABLE,
+                        message="design.layers Extra inputs are not permitted",
+                        error_type="tool_validation",
+                        retryable=True,
+                        expected_tool="write_module_design",
+                    )
+                )
+
+        agents.register(
+            AgentDefinition("architecture_agent", "architecture", "架构", "architecture"),
+            InvalidArchitectureAgent,
+        )
+        gateway = ToolGateway()
+        with tempfile.TemporaryDirectory() as project_path:
+            register_architecture_tools(gateway, project_path)
+            result = GraphRunner(agents, gateway).run(
+                ExecutionPlan(
+                    id="architecture-tool-validation",
+                    goal="测试架构工具校验错误",
+                    trace=TraceContext.ephemeral(),
+                    work_items=(
+                        WorkItem(
+                            id="module-api",
+                            agent_id="architecture_agent",
+                            objective="生成模块设计",
+                            output_key="module-api",
+                            execution_mode=ExecutionMode.PARTITIONED,
+                            slot="module-api",
+                        ),
+                    ),
+                )
+            )
+        self.assertEqual(result.status, GraphRunStatus.FAILED)
+        self.assertIn("architecture_schema_validation", result.error or "")
+        self.assertIn("expected_tool=write_module_design", result.error or "")
+        self.assertIn("design.layers", result.error or "")
 
 
 def make_node(
@@ -177,7 +267,7 @@ class ArchitectureToolNarrowingTest(unittest.TestCase):
                 objective="架构设计",
                 output_key="architecture",
                 execution_mode=ExecutionMode.PARTITIONED,
-                output_slot=slot,
+                slot=slot,
             )
             self.assertEqual(
                 _architecture_tool_allowlist(item),
@@ -185,19 +275,233 @@ class ArchitectureToolNarrowingTest(unittest.TestCase):
             )
             self.assertEqual(_expected_architecture_tool(item), expected)
 
-    def test_legacy_architecture_slots_keep_legacy_tools(self) -> None:
+    def test_markdown_architecture_slot_has_explicit_writer_contract(self) -> None:
         item = WorkItem(
             id="architecture-api",
             agent_id="architecture_agent",
             objective="架构 API 决策包",
             output_key="architecture_api",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="api",
+            slot="api",
         )
-        self.assertEqual(_architecture_tool_allowlist(item), ())
+        self.assertEqual(
+            _architecture_tool_allowlist(item),
+            ("load_architecture_input", "write_staged_architecture"),
+        )
+
+    def test_contract_retry_is_narrowed_to_terminal_writer(self) -> None:
+        item = WorkItem(
+            id="architecture-contract",
+            agent_id="architecture_contract_agent",
+            objective="保存 Project Contract",
+            output_key="architecture_contract",
+            execution_mode=ExecutionMode.EXCLUSIVE,
+        )
+        self.assertEqual(
+            _tool_allowlist_for_attempt(
+                item,
+                attempt=1,
+                prior_delivery_failure=False,
+                prior_worker_abort=False,
+            ),
+            (),
+        )
+        self.assertEqual(
+            _tool_allowlist_for_attempt(
+                item,
+                attempt=2,
+                prior_delivery_failure=False,
+                prior_worker_abort=False,
+            ),
+            ("save_implementation_contract",),
+        )
 
 
 class GraphRunnerTest(unittest.TestCase):
+    def test_checkpoint_revalidation_invalidates_descendants_not_unrelated_work(self):
+        with tempfile.TemporaryDirectory() as project_path:
+            repository = ArtifactRepository(project_path)
+            trace = TraceContext(requirement_id="req-checkpoint", trace_id="tr-checkpoint")
+            source_args = dict(trace_id="tr-source", work_item_id="source",
+                               artifact_key="architecture", slot="baseline")
+            source = repository.write_staged(**source_args, content="v1").ref
+            parent = WorkItem(id="design", agent_id="architecture_agent", objective="Design",
+                              output_key="architecture", artifact_key="architecture",
+                              execution_mode=ExecutionMode.PARTITIONED, slot="design",
+                              input_refs=(source,))
+            child = WorkItem(id="child", agent_id="test_agent", objective="Dependent",
+                             output_key="tests", dependencies=(WorkItemDependency(
+                                 work_item_id=parent.id, source=DependencySource.SYSTEM),))
+            unrelated = WorkItem(id="other", agent_id="test_agent", objective="Independent",
+                                 output_key="review")
+            plan = ExecutionPlan(id="checkpoint", goal="Design", trace=trace,
+                                 work_items=(parent, child, unrelated))
+            state = RunState(plan)
+            for item in plan.work_items:
+                state.record(item, NodeResult.completed(work_item_id=item.id,
+                             agent_id=item.agent_id, content="done"))
+            repository.write_staged(trace_id=trace.trace_id, work_item_id=parent.id,
+                                    artifact_key="architecture", slot="design", content="# Design",
+                                    source_refs=parent.input_refs, contract_digest=parent.contract_digest)
+            runner = GraphRunner(AgentRegistry(), ToolGateway(), artifacts=repository,
+                                 traces=TraceStore(project_path))
+            restored = RunState.from_checkpoint(plan, state.as_checkpoint())
+            self.assertIsNone(runner._validate_restored_architecture(restored))
+            repository.write_staged(**source_args, content="v2")
+            with patch.object(runner, "_record_event"):
+                result = runner._validate_restored_architecture(restored)
+            self.assertFalse(result.failure_signal.retryable)
+            self.assertEqual(result.failure_signal.validator, "ArchitectureCheckpointPreflight")
+            self.assertEqual(set(restored.node_results), {"other"})
+            self.assertNotIn("architecture", restored.artifacts)
+            self.assertNotIn("tests", restored.artifacts)
+            self.assertIn("review", restored.artifacts)
+            self.assertFalse(restored.is_complete())
+
+    def test_partition_recovery_requires_current_input_versions(self):
+        with tempfile.TemporaryDirectory() as project_path:
+            repository = ArtifactRepository(project_path)
+            source_args = dict(trace_id="tr-source", work_item_id="source",
+                               artifact_key="architecture", slot="baseline")
+            source = repository.write_staged(**source_args, content="baseline v1").ref
+            item = WorkItem(id="design", agent_id="architecture_agent", objective="Design",
+                            output_key="architecture", artifact_key="architecture",
+                            execution_mode=ExecutionMode.PARTITIONED, slot="design",
+                            input_refs=(source,))
+            trace = TraceContext(requirement_id="req-version", trace_id="tr-version")
+            plan = ExecutionPlan(id="plan-version", goal="Design", work_items=(item,), trace=trace)
+            state = SimpleNamespace(plan=plan, forced_rerun_work_item_ids=set())
+            runner = GraphRunner(AgentRegistry(), ToolGateway(),
+                                 artifacts=repository, traces=TraceStore(project_path))
+            output_args = dict(trace_id=trace.trace_id, work_item_id=item.id,
+                               artifact_key="architecture", slot="design", content="# Design")
+            repository.write_staged(**output_args)
+            self.assertIsNone(runner._recover_durable_work_item(state, item))
+            repository.write_staged(**output_args, source_refs=item.input_refs,
+                                    contract_digest=item.contract_digest)
+            self.assertIsNotNone(runner._recover_durable_work_item(state, item))
+            repository.write_staged(**source_args, content="baseline v2")
+            self.assertIsNone(runner._recover_durable_work_item(state, item))
+
+    def test_architecture_integration_falls_back_when_agent_completed_without_candidate(self) -> None:
+        """A terminal model response must not strand deterministic integration."""
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = TraceContext(requirement_id="req-fallback", trace_id="tr-fallback")
+            traces._write_json(  # seed the private trace store for this focused runner test
+                Path(project_path) / ".projectos" / "runs" / trace.trace_id / "trace.json",
+                {"requirement_id": trace.requirement_id, "trace_id": trace.trace_id, "status": "planned"},
+            )
+            repository = ArtifactRepository(project_path)
+            from tests.test_architecture_design_contract import _blueprint, _module, _implementation
+            designs = [_blueprint(), _module("domain"), _module("api"),
+                       _implementation("domain"), _implementation("api")]
+            refs = tuple(
+                repository.write_staged(
+                    trace_id="tr-source", work_item_id=design.design_id,
+                    artifact_key="architecture", slot=design.design_id,
+                    content=design.model_dump_json(),
+                ).ref for design in designs
+            )
+
+            self.register_agent(
+                "architecture_agent",
+                AgentResult.completed("模型已完成，但未调用集成工具"),
+                domain="architecture",
+            )
+            item = WorkItem(
+                id="architecture-integration",
+                agent_id="architecture_agent",
+                objective="整合架构",
+                output_key="architecture_candidate",
+                artifact_key="architecture",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture",
+                input_refs=refs,
+            )
+            plan = ExecutionPlan(
+                id="fallback-plan", goal="验证整合兜底", trace=trace, work_items=(item,)
+            )
+
+            result = GraphRunner(
+                self.agents, self.tools, traces=traces, artifacts=repository
+            ).run(plan)
+
+            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+            self.assertTrue(
+                repository.candidate_for_work_item(
+                    trace_id=trace.trace_id,
+                    artifact_key="architecture",
+                    work_item_id=item.id,
+                )
+            )
+            self.assertTrue(
+                any(
+                    event["type"] == "architecture_integration_control_plane_fallback"
+                    for event in traces.list_events(trace.trace_id)
+                )
+            )
+
+    def test_architecture_integration_preflight_blocks_invalid_designs_without_agent(self) -> None:
+        """Invalid upstream designs must not spend any consumer model budget."""
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = TraceContext(requirement_id="req-invalid", trace_id="tr-invalid")
+            traces._write_json(
+                Path(project_path) / ".projectos" / "runs" / trace.trace_id / "trace.json",
+                {"requirement_id": trace.requirement_id, "trace_id": trace.trace_id, "status": "planned"},
+            )
+            repository = ArtifactRepository(project_path)
+            invalid_ref = repository.write_staged(
+                trace_id="tr-source",
+                work_item_id="wi-blueprint",
+                artifact_key="architecture",
+                slot="blueprint",
+                content="not a structured architecture design",
+            ).ref
+            created = self.register_agent(
+                "architecture_agent",
+                AgentResult.completed("模型已完成，但未调用集成工具"),
+                domain="architecture",
+            )
+            item = WorkItem(
+                id="architecture-integration",
+                agent_id="architecture_agent",
+                objective="整合架构",
+                output_key="architecture_candidate",
+                artifact_key="architecture",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture",
+                input_refs=(invalid_ref,),
+            )
+            result = GraphRunner(
+                self.agents, self.tools, traces=traces, artifacts=repository
+            ).run(
+                ExecutionPlan(
+                    id="invalid-fallback-plan",
+                    goal="验证整合兜底的输入校验",
+                    trace=trace,
+                    work_items=(item,),
+                )
+            )
+
+            self.assertEqual(result.status, GraphRunStatus.NEEDS_REPLAN)
+            self.assertEqual(len(created), 0)
+            self.assertFalse(result.state.node_results[item.id].failure_signal.retryable)
+            self.assertEqual(result.state.node_results[item.id].failure_signal.kind, FailureKind.PLANNER_VALIDATION)
+            with self.assertRaisesRegex(RuntimeError, "必须恰好产生一个候选"):
+                repository.candidate_for_work_item(
+                    trace_id=trace.trace_id,
+                    artifact_key="architecture",
+                    work_item_id=item.id,
+                )
+            self.assertFalse(
+                any(
+                    event["type"] == "architecture_integration_control_plane_fallback"
+                    for event in traces.list_events(trace.trace_id)
+                )
+            )
+
     def test_partitioned_code_retry_prompt_is_write_first_and_compact(self) -> None:
         item = WorkItem(
             id="wi-code-interface-dependencies",
@@ -205,7 +509,7 @@ class GraphRunnerTest(unittest.TestCase):
             objective="实现接口依赖文件",
             output_key="code-interface-dependencies",
             execution_mode=ExecutionMode.PARTITIONED,
-            output_slot="backend",
+            slot="backend",
             implementation_unit_id="u-interface-dependencies",
             owned_files=("backend/app/interface/dependencies.py",),
             required_paths=("backend/app/interface/dependencies.py",),
@@ -272,8 +576,16 @@ class GraphRunnerTest(unittest.TestCase):
             self.assertIn("交付文件缺少合同声明符号", " ".join(issues))
 
     def setUp(self) -> None:
+        self._architecture_project = tempfile.TemporaryDirectory()
         self.tools = ToolGateway()
+        # Architecture WorkItems now have a deterministic tool contract. Keep
+        # the fixture aligned with production bootstrap so tests exercise the
+        # Agent behavior rather than being rejected by preflight.
+        register_architecture_tools(self.tools, self._architecture_project.name)
         self.agents = AgentRegistry()
+
+    def tearDown(self) -> None:
+        self._architecture_project.cleanup()
 
     def register_agent(
         self,
@@ -380,7 +692,7 @@ class GraphRunnerTest(unittest.TestCase):
 
         self.assertEqual(result.status, GraphRunStatus.FAILED)
         self.assertIn("未注册 Agent", result.error)
-        self.assertEqual(result.node_result.node_id, "requirement")
+        self.assertEqual(result.node_result.work_item_id, "requirement")
 
     def test_runner_returns_waiting_for_capability_without_discovering_mcp(self) -> None:
         self.register_agent(
@@ -410,6 +722,35 @@ class GraphRunnerTest(unittest.TestCase):
         self.assertEqual(result.candidate_sources[0].name, "docs-mcp")
         self.assertEqual(client.discoveries, 0)
 
+    def test_local_capability_completion_replaces_transient_waiting_result(self) -> None:
+        """A control-plane capability must complete once, without duplicate state writes."""
+        self.register_agent(
+            "requirement_agent",
+            AgentResult.needs_capability("environment_preparation", "由控制面完成环境准备"),
+        )
+
+        class LocalCapabilityRunner(GraphRunner):
+            def _handle_capability_request(self, state, result):
+                return GraphRunResult(
+                    status=GraphRunStatus.COMPLETED,
+                    state=state,
+                    node_result=NodeResult.completed(
+                        work_item_id=result.work_item_id,
+                        agent_id=result.agent_id,
+                        content="环境已准备",
+                    ),
+                )
+
+        plan = ExecutionPlan(
+            id="local-capability-plan",
+            goal="控制面环境准备",
+            work_items=(make_node("environment"),),
+        )
+        result = LocalCapabilityRunner(self.agents, self.tools).run(plan)
+
+        self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+        self.assertEqual(result.state.node_results["environment"].status.value, "completed")
+
     def test_runner_blocks_when_no_source_can_satisfy_capability(self) -> None:
         self.register_agent(
             "requirement_agent",
@@ -426,6 +767,53 @@ class GraphRunnerTest(unittest.TestCase):
         self.assertEqual(result.status, GraphRunStatus.BLOCKED)
         self.assertIn("external_research", result.error)
 
+    def test_architecture_integration_empty_inputs_are_plan_error_not_capability(self) -> None:
+        """Missing producer designs must be rejected before capability handling."""
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            trace = traces.start_trace("整合分层架构")
+            self.register_agent(
+                "architecture_agent",
+                AgentResult.needs_capability(
+                    "integrate_architecture_designs",
+                    "当前工具集中未提供 integrate_architecture_designs",
+                ),
+                domain="architecture",
+            )
+            item = WorkItem(
+                id="architecture-integration",
+                agent_id="architecture_agent",
+                objective="整合分层架构对象",
+                output_key="architecture_candidate",
+                artifact_key="architecture",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture",
+                stage_id="architecture_integration",
+            )
+            plan = ExecutionPlan(
+                id="architecture-integration-protocol",
+                goal="整合分层架构",
+                work_items=(item,),
+                trace=trace,
+            )
+            result = GraphRunner(
+                self.agents,
+                self.tools,
+                traces=traces,
+                artifacts=ArtifactRepository(project_path),
+            ).run(plan)
+
+            self.assertNotEqual(result.status, GraphRunStatus.BLOCKED)
+            self.assertEqual(result.status, GraphRunStatus.NEEDS_REPLAN)
+            self.assertEqual(result.failure_signal.validator, "ArchitectureInputPreflight")
+            self.assertFalse(result.failure_signal.retryable)
+            self.assertFalse(
+                any(
+                    event["type"] == "work_item_waiting_capability"
+                    for event in traces.list_events(trace.trace_id)
+                )
+            )
+
     def test_runner_converts_agent_exception_to_failed_node_result(self) -> None:
         self.register_agent("requirement_agent", RuntimeError("LLM unavailable"))
         plan = ExecutionPlan(
@@ -438,7 +826,7 @@ class GraphRunnerTest(unittest.TestCase):
 
         self.assertEqual(result.status, GraphRunStatus.FAILED)
         self.assertIn("LLM unavailable", result.error)
-        self.assertEqual(result.node_result.node_id, "requirement")
+        self.assertEqual(result.node_result.work_item_id, "requirement")
 
     def test_runner_runs_independent_instances_of_the_same_parallel_agent_together(self) -> None:
         barrier = Barrier(2)
@@ -480,7 +868,7 @@ class GraphRunnerTest(unittest.TestCase):
         self.assertEqual(result.status, GraphRunStatus.COMPLETED)
         self.assertEqual(len(created), 2)
 
-    def test_test_agent_cannot_complete_without_sandbox_evidence(self) -> None:
+    def test_test_agent_is_blocked_without_runtime_or_sandbox_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
             traces = TraceStore(project_path)
             trace = traces.start_trace("验证测试证据强制要求")
@@ -498,9 +886,12 @@ class GraphRunnerTest(unittest.TestCase):
 
             result = GraphRunner(self.agents, self.tools, traces=traces).run(plan)
 
-            self.assertEqual(result.status, GraphRunStatus.FAILED)
-            self.assertIn("test_evidence_missing", result.error)
-            self.assertEqual(len(created), 2)
+            # 缺少运行时/ sandbox 证据属于可恢复的交付阻塞；修复环境后
+            # 可从 checkpoint 继续，而不是把测试节点标记为不可恢复失败。
+            self.assertEqual(result.status, GraphRunStatus.BLOCKED)
+            self.assertIn("测试 sandbox 未就绪", result.error)
+            # 运行时前置检查在 Agent 调用前阻塞，因此不会无意义地重试 Agent。
+            self.assertEqual(len(created), 1)
 
     def test_setup_failed_evidence_blocks_before_review(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
@@ -617,7 +1008,7 @@ class GraphRunnerTest(unittest.TestCase):
                         objective="写入完整文件",
                         output_key="implementation_code",
                         execution_mode=ExecutionMode.PARTITIONED,
-                        output_slot="backend",
+                        slot="backend",
                         implementation_unit_id="unit",
                         allowed_paths=("backend/app.py",),
                         required_paths=("backend/app.py",),
@@ -634,6 +1025,202 @@ class GraphRunnerTest(unittest.TestCase):
                 [],
             )
 
+    def test_missing_architecture_input_blocks_before_any_agent_call(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            self.register_agent("architecture_agent", AgentResult.completed("unused"), domain="architecture")
+            ref = ArtifactRef.staged(artifact_key="architecture", trace_id="tr-upstream",
+                                     work_item_id="producer", slot="api")
+            item = WorkItem(
+                id="consumer", agent_id="architecture_agent", objective="integrate",
+                output_key="architecture", artifact_key="architecture",
+                stage_id="architecture_markdown_integration",
+                execution_mode=ExecutionMode.INTEGRATION, publish_target="architecture",
+                input_refs=(ref,),
+            )
+            with patch.object(self.agents, "create", side_effect=AssertionError("must not create agent")):
+                result = GraphRunner(self.agents, self.tools, artifacts=ArtifactRepository(project_path)).run(
+                    ExecutionPlan(id="input-preflight", goal="block invalid input",
+                                  trace=TraceContext(requirement_id="req-input", trace_id="tr-input"),
+                                  work_items=(item,)))
+            self.assertEqual(result.status, GraphRunStatus.NEEDS_REPLAN)
+            signal = result.state.node_results[item.id].failure_signal
+            self.assertFalse(signal.retryable)
+            self.assertEqual(signal.field_path, ref.ref_id)
+            self.assertIn("producer=producer", signal.summary)
+
+    def test_unknown_architecture_protocol_is_rejected_before_agent_creation(self):
+        self.register_agent("architecture_agent", AgentResult.completed("no evidence"),
+                            domain="architecture")
+        for mode in (ExecutionMode.PARTITIONED, ExecutionMode.INTEGRATION):
+            with self.subTest(mode=mode):
+                item = WorkItem(id="unknown", agent_id="architecture_agent", objective="design",
+                                output_key="architecture", execution_mode=mode,
+                                slot="unknown-protocol" if mode is ExecutionMode.PARTITIONED else None,
+                                stage_id="unknown-protocol",
+                                publish_target="architecture" if mode is ExecutionMode.INTEGRATION else None)
+                with patch.object(self.agents, "create", side_effect=AssertionError("no model call")):
+                    result = GraphRunner(self.agents, self.tools).run(ExecutionPlan(
+                        id="unknown-protocol-plan", goal="fail closed",
+                        trace=TraceContext(requirement_id="req-unknown", trace_id="tr-unknown"),
+                        work_items=(item,)))
+                self.assertEqual(result.status, GraphRunStatus.NEEDS_REPLAN)
+                self.assertFalse(result.state.node_results[item.id].failure_signal.retryable)
+                self.assertEqual(result.state.node_results[item.id].failure_signal.validator,
+                                 "ArchitectureProtocolPreflight")
+
+    def test_changed_architecture_input_stops_consumer_without_retry(self) -> None:
+        for raises in (False, True):
+            with self.subTest(raises=raises), tempfile.TemporaryDirectory() as project_path:
+                repository = ArtifactRepository(project_path)
+                upstream = dict(trace_id="tr-upstream", work_item_id="producer",
+                                artifact_key="architecture", slot="api")
+                ref = repository.write_staged(**upstream, content="before").ref
+                calls = []
+
+                class ChangingInputAgent:
+                    def run(self, task, *, context=None):
+                        calls.append(context)
+                        repository.write_staged(**upstream, content="after")
+                        if raises:
+                            raise RuntimeError("tool failed after upstream changed")
+                        return AgentResult.completed("done")
+
+                agents = AgentRegistry()
+                agents.register(AgentDefinition(
+                    id="architecture_agent", domain="architecture",
+                    description="architecture", output_key="architecture",
+                ), factory=ChangingInputAgent)
+                item = WorkItem(
+                    id="consumer", agent_id="architecture_agent", objective="integrate",
+                    output_key="architecture", artifact_key="architecture",
+                    stage_id="architecture_markdown_integration",
+                    execution_mode=ExecutionMode.INTEGRATION, publish_target="architecture",
+                    input_refs=(ref,),
+                )
+                gateway = ToolGateway()
+                register_architecture_tools(gateway, project_path)
+                result = GraphRunner(agents, gateway, artifacts=repository).run(
+                    ExecutionPlan(id="changed-input", goal="stop stale execution",
+                                  trace=TraceContext(requirement_id="req-input", trace_id="tr-input"),
+                                  work_items=(item,)))
+                self.assertEqual(result.status, GraphRunStatus.NEEDS_REPLAN)
+                self.assertEqual(len(calls), 1)
+                self.assertIsNotNone(calls[0].input_digests)
+                self.assertFalse(result.state.node_results[item.id].failure_signal.retryable)
+
+    def test_markdown_integration_cannot_complete_without_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            self.register_agent(
+                "architecture_agent", AgentResult.completed("done without writing"),
+                domain="architecture",
+            )
+            item = WorkItem(
+                id="markdown-integration", agent_id="architecture_agent",
+                objective="integrate", output_key="architecture_candidate",
+                artifact_key="architecture", stage_id="architecture_markdown_integration",
+                execution_mode=ExecutionMode.INTEGRATION, publish_target="architecture",
+            )
+            with patch.object(ArchitectureArtifactWorkflow, "integrate_structured_designs") as fallback:
+                result = GraphRunner(
+                    self.agents, self.tools, artifacts=ArtifactRepository(project_path)
+                ).run(ExecutionPlan(
+                    id="missing-candidate", goal="verify completion evidence",
+                    trace=TraceContext(requirement_id="req-md", trace_id="tr-md"),
+                    work_items=(item,),
+                ))
+            self.assertNotEqual(result.status, GraphRunStatus.COMPLETED)
+            self.assertIn("architecture_contract_missing", result.error or "")
+            fallback.assert_not_called()
+
+    def test_completed_gate_checkpoint_requires_actual_publication(self):
+        with tempfile.TemporaryDirectory() as project_path:
+            repository = ArtifactRepository(project_path)
+            trace = TraceContext(requirement_id="req-publication", trace_id="tr-publication")
+            source = repository.write_staged(
+                trace_id="tr-source", work_item_id="source", artifact_key="architecture",
+                slot="design", content="# Source",
+            ).ref
+            producer = WorkItem(
+                id="integration", agent_id="architecture_agent", objective="Integrate",
+                output_key="candidate", artifact_key="architecture", input_refs=(source,),
+                execution_mode=ExecutionMode.INTEGRATION,
+                stage_id="architecture_markdown_integration", publish_target="architecture",
+            )
+            gate = WorkItem(
+                id="gate", agent_id="system_quality_gate", objective="Publish",
+                output_key="published", artifact_key="architecture", publish_target="architecture",
+                execution_mode=ExecutionMode.QUALITY_GATE, candidate_from_work_item_id=producer.id,
+                dependencies=(WorkItemDependency(producer.id, DependencySource.SYSTEM),),
+            )
+            plan = ExecutionPlan(id="plan-publication", goal="Verify recovery", trace=trace,
+                                 work_items=(producer, gate))
+            candidate = repository.create_candidate(
+                trace_id=trace.trace_id, work_item_id=producer.id, artifact_key="architecture",
+                content="# Integrated", source_refs=(source,), contract_digest=producer.contract_digest,
+            )
+            runner = GraphRunner(self.agents, self.tools, artifacts=repository,
+                                 traces=TraceStore(project_path))
+            state = RunState(plan)
+            for item in plan.work_items:
+                state.record(item, NodeResult.completed(work_item_id=item.id,
+                             agent_id=item.agent_id, content="claimed completion"))
+            with patch.object(runner, "_record_event"):
+                rejected = runner._validate_restored_architecture(state)
+            self.assertFalse(rejected.failure_signal.retryable)
+            self.assertNotIn(gate.id, state.node_results)
+            self.assertIn(producer.id, state.node_results)
+            repository.promote_candidate(candidate.id, artifact_key="architecture")
+            recovered = runner._recover_durable_work_item(state, gate)
+            self.assertEqual(recovered.status.value, "completed")
+            state.record(gate, recovered)
+            self.assertIsNone(runner._validate_restored_architecture(state))
+            (Path(project_path) / "architecture.md").unlink()
+            with patch.object(runner, "_record_event"):
+                self.assertIsNotNone(runner._validate_restored_architecture(state))
+            self.assertNotIn(gate.id, state.node_results)
+
+    def test_quality_gate_rejects_stale_contract_without_retry_or_publication(self):
+        with tempfile.TemporaryDirectory() as project_path:
+            repository = ArtifactRepository(project_path)
+            source_args = dict(trace_id="tr-source", work_item_id="source",
+                               artifact_key="architecture", slot="design")
+            source = repository.write_staged(**source_args, content="# Source").ref
+            producer = WorkItem(
+                id="integration", agent_id="architecture_agent", objective="Integrate",
+                output_key="candidate", artifact_key="architecture",
+                execution_mode=ExecutionMode.INTEGRATION,
+                stage_id="architecture_markdown_integration", publish_target="architecture",
+                input_refs=(source,),
+            )
+            gate = WorkItem(
+                id="gate", agent_id="system_quality_gate", objective="Publish",
+                output_key="published", artifact_key="architecture",
+                execution_mode=ExecutionMode.QUALITY_GATE, publish_target="architecture",
+                candidate_from_work_item_id=producer.id,
+                dependencies=(WorkItemDependency(producer.id, DependencySource.SYSTEM),),
+            )
+            trace = TraceContext(requirement_id="req-gate", trace_id="tr-gate")
+            plan = ExecutionPlan(id="plan-gate", goal="Verify gate", trace=trace,
+                                 work_items=(producer, gate))
+            state = SimpleNamespace(plan=plan)
+            runner = GraphRunner(self.agents, self.tools, artifacts=repository)
+            for invalid in ("missing", "contract", "input"):
+                with self.subTest(invalid=invalid):
+                    if invalid != "missing":
+                        repository.create_candidate(
+                            trace_id=trace.trace_id, work_item_id=producer.id,
+                            artifact_key="architecture", content="# Candidate",
+                            source_refs=(source,),
+                            contract_digest="obsolete" if invalid == "contract" else producer.contract_digest,
+                        )
+                    if invalid == "input":
+                        repository.write_staged(**source_args, content="# Changed source")
+                    result = runner._run_quality_gate(state, gate)
+                    self.assertEqual(result.status.value, "needs_replan")
+                    self.assertFalse(result.failure_signal.retryable)
+                    self.assertEqual(result.failure_signal.validator, "ArchitectureQualityGate")
+                    self.assertFalse((Path(project_path) / "architecture.md").exists())
+
     def test_architecture_scopes_integrate_then_quality_gate_promotes_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
             repository = ArtifactRepository(project_path)
@@ -644,7 +1231,7 @@ class GraphRunnerTest(unittest.TestCase):
                 def run(self, task: str, *, context: ExecutionContext | None = None) -> AgentResult:
                     assert context is not None
                     if context.execution_mode is ExecutionMode.PARTITIONED:
-                        workflow.write_staged(context, f"# {context.output_slot}")
+                        workflow.write_staged(context, f"# {context.slot}")
                     elif context.execution_mode is ExecutionMode.INTEGRATION:
                         workflow.create_candidate(context, "# Integrated architecture")
                     return AgentResult.completed("done")
@@ -670,12 +1257,12 @@ class GraphRunnerTest(unittest.TestCase):
                     WorkItem(
                         id="architecture-api", agent_id="architecture_agent", objective="设计 API",
                         output_key="architecture_api", artifact_key="architecture",
-                        execution_mode=ExecutionMode.PARTITIONED, output_slot="api",
+                        execution_mode=ExecutionMode.PARTITIONED, slot="api",
                     ),
                     WorkItem(
                         id="architecture-data", agent_id="architecture_agent", objective="设计数据层",
                         output_key="architecture_data", artifact_key="architecture",
-                        execution_mode=ExecutionMode.PARTITIONED, output_slot="data",
+                        execution_mode=ExecutionMode.PARTITIONED, slot="data",
                     ),
                     WorkItem(
                         id="architecture-integration", agent_id="architecture_agent", objective="整合分区",
@@ -685,6 +1272,7 @@ class GraphRunnerTest(unittest.TestCase):
                             WorkItemDependency("architecture-data", DependencySource.SYSTEM),
                         ),
                         execution_mode=ExecutionMode.INTEGRATION, publish_target="architecture",
+                        stage_id="architecture_markdown_integration",
                         input_refs=(api_ref, data_ref),
                     ),
                     WorkItem(

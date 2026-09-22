@@ -43,6 +43,11 @@ class RuntimeCatalog:
         image="node:22-alpine",
         install_dependencies=False,
     )
+    _RUNTIME_SMOKE = RuntimeCheck(
+        # The concrete import probe is supplied by SandboxPolicy from the
+        # trusted Project Contract; no project command is accepted here.
+        ("python", "-c", "raise SystemExit('runtime smoke command missing')"),
+    )
 
     _PROFILES = {
         "python-stdlib": RuntimeProfile(
@@ -51,6 +56,7 @@ class RuntimeCatalog:
             checks={
                 "unit": _UNIT,
                 "web-unit": _WEB_UNIT,
+                "runtime-smoke": _RUNTIME_SMOKE,
             },
         ),
         "python-pip": RuntimeProfile(
@@ -59,6 +65,7 @@ class RuntimeCatalog:
             checks={
                 "unit": _UNIT,
                 "web-unit": _WEB_UNIT,
+                "runtime-smoke": _RUNTIME_SMOKE,
             },
             supports_dependencies=True,
         ),

@@ -20,6 +20,7 @@ from app.domain.architecture.contract_input import (
     ContractEntrypointInput,
     ContractImplementationUnitInput,
     ContractInterfaceInput,
+    ConsumedInterfaceRefInput,
 )
 
 
@@ -37,17 +38,104 @@ class LayerDecision(_DesignModel):
     forbidden_imports: list[str] = Field(default_factory=list, max_length=64)
     path_mapping: list[str] = Field(default_factory=list, max_length=32)
 
+    @model_validator(mode="after")
+    def validate_path_mapping_is_pattern(self) -> LayerDecision:
+        """确保 path_mapping 只包含目录模式，不包含具体文件。
+
+        Blueprint (depth=0) 不应该声明具体文件路径，这是 Implementation (depth=2) 的职责。
+        path_mapping 只能声明目录模式，用于定义层级的代码组织边界。
+        """
+        for path in self.path_mapping:
+            # 检查是否是具体文件（以常见扩展名结尾）
+            file_extensions = (".json", ".py", ".ts", ".js", ".jsx", ".tsx", ".vue", ".html", ".css", ".md")
+            if any(path.endswith(ext) for ext in file_extensions):
+                raise ValueError(
+                    f"Layer '{self.name}' 的 path_mapping 不能声明具体文件: {path}\n"
+                    f"Blueprint 只能声明目录模式，不能声明实现细节。\n"
+                    f"正确示例: 'schemas/**', 'backend/**', 'frontend/**'\n"
+                    f"错误示例: 'schemas.json', 'main.py'"
+                )
+
+            # 建议使用 /** 结尾（但不强制，允许简写）
+            if not path.endswith("/**") and "/" in path:
+                # 如果包含 / 但不是 /** 结尾，给出提示（但不拒绝）
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"Layer '{self.name}' 的 path_mapping '{path}' 建议使用 '/**' 结尾表示目录模式"
+                )
+
+        return self
+
 
 class ModuleRef(_DesignModel):
     module_id: str = Field(min_length=1, max_length=128)
     responsibility: str = Field(min_length=1, max_length=500)
+    # Business intent is kept separate from implementation responsibilities so
+    # dynamic planning can preserve the value boundary of each module.
+    purpose: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="模块为用户或业务提供的价值及边界，不是技术职责列表",
+    )
+    depends_on_modules: list[str] = Field(
+        default_factory=list,
+        max_length=64,
+        description="只引用 Blueprint 中已声明的 module_id",
+    )
     requirement_ids: list[str] = Field(default_factory=list, max_length=64)
+    tech_stack: list[str] = Field(
+        default_factory=list,
+        max_length=32,
+        description="技术栈标签列表，如 ['react', 'vite']，用于消费方式推断和架构验证",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_dependencies(cls, value: object) -> object:
+        if not isinstance(value, dict) or "dependencies" not in value:
+            return value
+        data = dict(value)
+        if "depends_on_modules" not in data:
+            data["depends_on_modules"] = data.get("dependencies") or []
+        data.pop("dependencies", None)
+        return data
+
+    @model_validator(mode="after")
+    def normalize_business_purpose(self) -> "ModuleRef":
+        if not self.purpose:
+            object.__setattr__(self, "purpose", self.responsibility)
+        if self.module_id in self.depends_on_modules:
+            raise ValueError("ModuleRef 不能依赖自身")
+        if len(set(self.depends_on_modules)) != len(self.depends_on_modules):
+            raise ValueError("ModuleRef.depends_on_modules 不能重复")
+        return self
 
 
 class InterfaceRef(_DesignModel):
+    def model_dump(self, *args, **kwargs):
+        # Optional transport metadata is omitted from the default wire shape.
+        # Callers can still opt in explicitly by passing exclude_defaults=False
+        # or exclude_none=False.
+        kwargs.setdefault("exclude_none", True)
+        kwargs.setdefault("exclude_defaults", True)
+        return super().model_dump(*args, **kwargs)
+
     interface_id: str = Field(min_length=1, max_length=128)
     direction: Literal["provided", "consumed"]
     summary: str = Field(min_length=1, max_length=500)
+    consumption_type: Literal["import_code", "http_call", "process_spawn", "shared_schema"] | None = Field(
+        default=None,
+        description="接口的消费方式：import_code(代码导入), http_call(HTTP调用), process_spawn(启动进程), shared_schema(共享数据定义)"
+    )
+    confidence: Literal["high", "medium", "low"] | None = Field(
+        default=None,
+        description="消费方式推断的置信度"
+    )
+    to_be_verified: bool = Field(
+        default=False,
+        description="是否需要在 Code 阶段验证实际的消费方式"
+    )
 
 
 class ArchitectureBlueprint(_DesignModel):
@@ -75,6 +163,18 @@ class ArchitectureBlueprint(_DesignModel):
             normalized = path.replace("\\", "/").strip()
             if not normalized or normalized.endswith("/") or any(token in normalized for token in ("*", "?", "[", "]")):
                 raise ValueError("ArchitectureBlueprint.required_files 必须是具体文件路径")
+
+        # Validate layer dependencies reference only declared layers
+        known_layers = set(layer_ids)
+        for layer in self.layers:
+            for dep in layer.allowed_dependencies:
+                if dep == layer.name:
+                    raise ValueError(f"层 {layer.name} 不能依赖自身")
+                if dep not in known_layers:
+                    raise ValueError(
+                        f"层 {layer.name} 的 allowed_dependencies 引用了未声明的层: {dep}。"
+                        f"已声明的层: {', '.join(sorted(known_layers))}"
+                    )
         return self
 
 
@@ -84,13 +184,52 @@ class ModuleDesign(_DesignModel):
     depth: Literal[1] = 1
     parent_design_id: str = Field(min_length=1, max_length=128)
     module_id: str = Field(min_length=1, max_length=128)
+    purpose: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="必须保留对应 Blueprint 模块的业务目的",
+    )
     responsibilities: list[str] = Field(min_length=1, max_length=64)
     provided_interfaces: list[InterfaceRef] = Field(default_factory=list, max_length=64)
     consumed_interfaces: list[InterfaceRef] = Field(default_factory=list, max_length=64)
     entities: list[str] = Field(default_factory=list, max_length=64)
-    dependencies: list[str] = Field(default_factory=list, max_length=64)
+    depends_on_modules: list[str] = Field(
+        default_factory=list,
+        max_length=64,
+        description="与 Blueprint 模块依赖保持一致",
+    )
     acceptance_criteria: list[str] = Field(default_factory=list, max_length=64)
     requirement_ids: list[str] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_fields(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "depends_on_modules" not in data and "dependencies" in data:
+            data["depends_on_modules"] = data.get("dependencies") or []
+        data.pop("dependencies", None)
+        # Older model prompts represented consumed interfaces with the shared
+        # ``direction/summary`` shape.  Normalize that wire alias once while
+        # keeping the canonical ModuleDesign field as InterfaceRef.
+        consumed = data.get("consumed_interfaces")
+        if isinstance(consumed, list):
+            normalized = []
+            for raw in consumed:
+                if not isinstance(raw, dict):
+                    normalized.append(raw)
+                    continue
+                item = dict(raw)
+                if item.get("direction") not in {"provided", "consumed"}:
+                    item["direction"] = "consumed"
+                if not item.get("summary"):
+                    item["summary"] = item.get("usage") or "未声明消费用途"
+                item.pop("usage", None)
+                item.pop("required", None)
+                normalized.append(item)
+            data["consumed_interfaces"] = normalized
+        return data
 
     @model_validator(mode="after")
     def validate_interface_directions(self) -> "ModuleDesign":
@@ -98,6 +237,10 @@ class ModuleDesign(_DesignModel):
             raise ValueError("provided_interfaces 中的 direction 必须为 provided")
         if any(item.direction != "consumed" for item in self.consumed_interfaces):
             raise ValueError("consumed_interfaces 中的 direction 必须为 consumed")
+        if self.module_id in self.depends_on_modules:
+            raise ValueError("ModuleDesign 不能依赖自身")
+        if len(set(self.depends_on_modules)) != len(self.depends_on_modules):
+            raise ValueError("ModuleDesign.depends_on_modules 不能重复")
         return self
 
 
@@ -107,7 +250,8 @@ class ImplementationDesign(_DesignModel):
     depth: Literal[2] = 2
     parent_design_id: str = Field(min_length=1, max_length=128)
     module_id: str = Field(min_length=1, max_length=128)
-    interfaces: list[ContractInterfaceInput] = Field(default_factory=list, max_length=128)
+    provided_interfaces: list[ContractInterfaceInput] = Field(default_factory=list, max_length=128)
+    consumed_interfaces: list[ConsumedInterfaceRefInput] = Field(default_factory=list, max_length=128)
     implementation_units: list[ContractImplementationUnitInput] = Field(
         min_length=1, max_length=256
     )
@@ -122,12 +266,60 @@ class ImplementationDesign(_DesignModel):
                 raise ValueError(
                     f"实现单元 {unit.unit_id} 必须且只能负责一个具体 owned_file"
                 )
-        for interface in self.interfaces:
+            owned_paths = {
+                path.replace("\\", "/").lstrip("/")
+                for path in unit.owned_files
+            }
+            for required in unit.required_paths:
+                normalized = required.replace("\\", "/").lstrip("/")
+                if normalized not in owned_paths:
+                    raise ValueError(
+                        f"实现单元 {unit.unit_id} 的 required_paths "
+                        f"必须属于 owned_files: {required}"
+                    )
+        for interface in self.provided_interfaces:
             if interface.owner_unit not in unit_ids:
                 raise ValueError(
                     f"接口 {interface.interface_id} 的 owner_unit 不属于模块 {self.module_id}"
                 )
+        provided_ids = [item.interface_id for item in self.provided_interfaces]
+        if len(provided_ids) != len(set(provided_ids)):
+            raise ValueError("provided_interfaces 不能包含重复 interface_id")
+        consumed_ids = [item.interface_id for item in self.consumed_interfaces]
+        if len(consumed_ids) != len(set(consumed_ids)):
+            raise ValueError("consumed_interfaces 不能包含重复 interface_id")
         return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_interfaces(cls, value: object) -> object:
+        """Accept the old mixed array only at the wire boundary.
+
+        Persisted and validated objects never retain ``interfaces``.  Legacy
+        entries marked consumed become references; all other entries remain
+        provider declarations for one migration cycle.
+        """
+        if not isinstance(value, dict) or "interfaces" not in value:
+            return value
+        data = dict(value)
+        legacy = data.pop("interfaces") or []
+        provided = list(data.get("provided_interfaces") or [])
+        consumed = list(data.get("consumed_interfaces") or [])
+        for raw in legacy:
+            if not isinstance(raw, dict):
+                continue
+            kind = str(raw.get("kind", "")).lower()
+            direction = str(raw.get("direction", "")).lower()
+            if direction == "consumed" or "consum" in kind:
+                consumed.append({
+                    "interface_id": raw.get("interface_id", raw.get("id", "")),
+                    "usage": raw.get("summary") or raw.get("name"),
+                })
+            else:
+                provided.append(raw)
+        data["provided_interfaces"] = provided
+        data["consumed_interfaces"] = consumed
+        return data
 
 
 class ArchitectureDesignBundle(_DesignModel):
@@ -149,7 +341,42 @@ class ArchitectureDesignBundle(_DesignModel):
                 raise ValueError(f"模块设计 {design.module_id} 不在总体蓝图模块清单中")
             if design.module_id in modules_by_id:
                 raise ValueError(f"模块 {design.module_id} 存在多个模块设计")
+            blueprint_ref = next(
+                item for item in self.blueprint.modules if item.module_id == design.module_id
+            )
+            if design.purpose is not None and design.purpose != blueprint_ref.purpose:
+                raise ValueError(
+                    f"模块设计 {design.module_id} 的 purpose 必须与 Blueprint 一致"
+                )
+            if set(design.depends_on_modules) != set(blueprint_ref.depends_on_modules):
+                raise ValueError(
+                    f"模块设计 {design.module_id} 的 depends_on_modules 必须与 Blueprint 一致"
+                )
             modules_by_id[design.module_id] = design
+
+        # Resolve business-level module dependencies before accepting any
+        # lower-level implementation objects.  The dependency graph is owned
+        # by the Blueprint; ModuleDesign only refines its target module.
+        module_refs_by_id = {item.module_id: item for item in self.blueprint.modules}
+        module_edges = {
+            module_id: set(module_ref.depends_on_modules)
+            for module_id, module_ref in module_refs_by_id.items()
+        }
+        for module_id, dependencies in module_edges.items():
+            unknown = sorted(dependencies - set(module_refs_by_id))
+            if unknown:
+                raise ValueError(
+                    f"模块 {module_id} 依赖不存在的模块: {', '.join(unknown)}"
+                )
+        pending = {key: set(value) for key, value in module_edges.items()}
+        resolved: set[str] = set()
+        while pending:
+            ready = {key for key, value in pending.items() if value <= resolved}
+            if not ready:
+                raise ValueError("ArchitectureBlueprint 模块依赖存在循环")
+            resolved.update(ready)
+            for key in ready:
+                pending.pop(key)
 
         interface_ids: set[str] = set()
         for design in self.implementations:
@@ -157,17 +384,173 @@ class ArchitectureDesignBundle(_DesignModel):
                 raise ValueError(f"实现设计 {design.design_id} 未引用已存在的模块设计")
             if design.module_id not in modules_by_id:
                 raise ValueError(f"实现设计 {design.module_id} 没有对应模块设计")
-            for interface in design.interfaces:
+            for interface in design.provided_interfaces:
                 if interface.interface_id in interface_ids:
                     raise ValueError(f"接口 {interface.interface_id} 在多个实现设计中重复")
                 interface_ids.add(interface.interface_id)
+        for design in self.implementations:
+            unknown = sorted(
+                {item.interface_id for item in design.consumed_interfaces} - interface_ids
+            )
+            if unknown:
+                raise ValueError(
+                    f"实现设计 {design.module_id} 引用了未声明的接口: {', '.join(unknown)}"
+                )
+
+        # 验证消费方式一致性（新增）
+        self._validate_tech_stacks()
+        self._validate_consumption_types()
+
         missing = sorted(module_refs - set(modules_by_id))
         if missing:
             raise ValueError("缺少模块设计: " + ", ".join(missing))
         missing_impl = sorted(module_refs - {item.module_id for item in self.implementations})
         if missing_impl:
             raise ValueError("缺少实现设计: " + ", ".join(missing_impl))
+        # Integration is the boundary between module-level design and code
+        # waves.  Unit ids and file ownership must therefore be globally
+        # unique, and a unit may only depend on an earlier wave.  This makes
+        # the merge order deterministic and prevents same-wave imports from
+        # being mistaken for an available interface.
+        units = [unit for design in self.implementations for unit in design.implementation_units]
+        unit_ids = [unit.unit_id for unit in units]
+        if len(unit_ids) != len(set(unit_ids)):
+            raise ValueError("实现单元 unit_id 在不同模块之间不能重复")
+        by_id = {unit.unit_id: unit for unit in units}
+        owned_files: dict[str, str] = {}
+        for unit in units:
+            for path in unit.owned_files:
+                normalized = path.replace("\\", "/").lstrip("/")
+                previous = owned_files.get(normalized)
+                if previous is not None and previous != unit.unit_id:
+                    raise ValueError(f"文件 {normalized} 被多个实现单元拥有: {previous}, {unit.unit_id}")
+                owned_files[normalized] = unit.unit_id
+            for required in unit.required_paths:
+                normalized = required.replace("\\", "/").lstrip("/")
+                if normalized not in {p.replace("\\", "/").lstrip("/") for p in unit.owned_files}:
+                    raise ValueError(f"实现单元 {unit.unit_id} 的 required_paths 必须属于 owned_files: {required}")
+
+        # Blueprint.required_files is a cross-level promise: every declared
+        # file must have one and only one implementation owner. Enforce this at
+        # integration time so a plan cannot reach Code with an unowned file.
+        required_files = {
+            path.replace("\\", "/").lstrip("/")
+            for path in self.blueprint.required_files
+        }
+        missing_required = sorted(required_files - set(owned_files))
+        if missing_required:
+            raise ValueError(
+                "ArchitectureBlueprint.required_file_not_owned: "
+                + ", ".join(missing_required)
+            )
+
+        # Layer.path_mapping remains a directory boundary; concrete ownership
+        # is now guaranteed by the cross-level check above.
+
+        for unit in units:
+            current_wave = unit.wave if unit.wave is not None else 0
+            unknown = sorted(set(unit.depends_on) - set(by_id))
+            if unknown:
+                raise ValueError(
+                    f"实现单元 {unit.unit_id} 依赖不存在的实现单元: {', '.join(unknown)}"
+                )
+            for dependency in unit.depends_on:
+                dep_wave = by_id[dependency].wave if by_id[dependency].wave is not None else 0
+                if dep_wave >= current_wave:
+                    raise ValueError(
+                        f"实现单元 {unit.unit_id} 必须依赖更早 wave；"
+                        f"{dependency} 为 wave={dep_wave}, 当前为 wave={current_wave}"
+                    )
         return self
+
+    def _validate_tech_stacks(self) -> None:
+        """验证所有模块的技术栈声明（分层验证）。"""
+        from app.orchestration.tech_stack_verification import TechStackVerifier
+
+        # 收集所有技术栈
+        all_stacks = set()
+        for module_ref in self.blueprint.modules:
+            tech_stack = getattr(module_ref, "tech_stack", [])
+            all_stacks.update(tech_stack)
+
+        if not all_stacks:
+            # 没有声明技术栈，跳过验证
+            return
+
+        # 使用第0级验证（只允许主流技术栈）
+        validation = TechStackVerifier.validate_with_retry(
+            tech_stacks=list(all_stacks),
+            retry_level=0,  # 架构集成时应该已经通过了重试，这里用最严格的验证
+            context={"blueprint_id": self.blueprint.design_id}
+        )
+
+        if not validation["valid"]:
+            # 构造错误消息
+            error_lines = ["架构验证失败：技术栈验证不通过\n"]
+            error_lines.extend(f"  - {err}" for err in validation["errors"])
+
+            if validation["retry_instruction"]:
+                error_lines.append(f"\n重试指导：\n{validation['retry_instruction']}")
+
+            raise ValueError("\n".join(error_lines))
+
+        # 警告信息（如果有）
+        if validation["warnings"]:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("技术栈验证警告:\n" + "\n".join(
+                f"  - {warn}" for warn in validation["warnings"]
+            ))
+
+    def _validate_consumption_types(self) -> None:
+        """验证接口的消费方式一致性。"""
+        from app.orchestration.architecture_consistency_validator import (
+            ArchitectureConsistencyValidator,
+            format_violations,
+        )
+
+        # 将设计转换为验证器所需的格式
+        designs = []
+        for impl in self.implementations:
+            # 找到对应的模块设计
+            module_design = next(
+                (m for m in self.modules if m.module_id == impl.module_id),
+                None
+            )
+
+            design_dict = {
+                "module_id": impl.module_id,
+                "tech_stack": [],  # 架构阶段没有技术栈信息
+                "runtime": "unknown",
+                "purpose": module_design.purpose if module_design else "",
+                "provided_interfaces": [
+                    {
+                        "interface_id": iface.interface_id,
+                        "consumption_type": iface.consumption_type,
+                    }
+                    for iface in impl.provided_interfaces
+                ],
+                "consumed_interfaces": [
+                    {
+                        "interface_id": iface.interface_id,
+                        "consumption_type": getattr(iface, "consumption_type", None),
+                    }
+                    for iface in impl.consumed_interfaces
+                ],
+            }
+            designs.append(design_dict)
+
+        # 运行验证（只验证结构一致性，不依赖技术栈推理）
+        validator = ArchitectureConsistencyValidator()
+        violations = validator.validate(designs)
+
+        # 如果有错误级别的违规，抛出异常
+        errors = [v for v in violations if v.severity == "error"]
+        if errors:
+            error_text = format_violations(errors)
+            raise ValueError(
+                f"架构消费方式验证失败:\n{error_text}"
+            )
 
     def as_dict(self) -> dict[str, object]:
         return self.model_dump(mode="json")
@@ -175,6 +558,10 @@ class ArchitectureDesignBundle(_DesignModel):
     def to_project_contract(self) -> dict[str, object]:
         """将三层对象转换成唯一 ProjectContract 的 wire 形态。"""
         layers = [item.name for item in self.blueprint.layers]
+        entrypoints = _derived_entrypoints(
+            self.blueprint.entrypoints.model_dump(exclude_none=True),
+            self.implementations,
+        )
         payload: dict[str, object] = {
             "schema_version": 1,
             "layers": [item.model_dump(mode="json") for item in self.blueprint.layers],
@@ -185,19 +572,57 @@ class ArchitectureDesignBundle(_DesignModel):
                     for test_type in item.required_test_types
                 }
             ),
-            "entrypoints": self.blueprint.entrypoints.model_dump(exclude_none=True),
+            "entrypoints": entrypoints,
             "required_files": list(self.blueprint.required_files),
             "interfaces": [],
             "implementation_units": [],
         }
         # ContractInput expects layers as objects; ArchitectureService will
         # normalize this to the canonical layer mapping before persistence.
-        for implementation in self.implementations:
-            for interface in implementation.interfaces:
+        implementations = sorted(
+            self.implementations,
+            key=lambda item: item.module_id,
+        )
+        for implementation in implementations:
+            for interface in implementation.provided_interfaces:
                 payload["interfaces"].append(interface.model_dump(mode="json"))  # type: ignore[union-attr]
-            for unit in implementation.implementation_units:
+            for unit in sorted(
+                implementation.implementation_units,
+                key=lambda item: (item.wave if item.wave is not None else 0, item.unit_id),
+            ):
                 payload["implementation_units"].append(unit.model_dump(mode="json"))  # type: ignore[union-attr]
         return payload
+
+
+def _derived_entrypoints(
+    entrypoints: dict[str, object], implementations: list[ImplementationDesign]
+) -> dict[str, object]:
+    """Fill unambiguous backend entrypoint fields from runtime ownership."""
+    result = dict(entrypoints)
+    if result.get("backend_file") and result.get("backend_import"):
+        return result
+    candidates: list[str] = []
+    for design in implementations:
+        for unit in design.implementation_units:
+            if unit.layer.strip().lower() not in {"runtime", "application", "app"}:
+                continue
+            for path in unit.owned_files:
+                normalized = path.replace("\\", "/").lstrip("/")
+                if not normalized.startswith("backend/") or not normalized.endswith(".py"):
+                    continue
+                if normalized.rsplit("/", 1)[-1] in {"server.py", "main.py"}:
+                    candidates.append(normalized)
+    candidates = sorted(set(candidates))
+    if len(candidates) != 1:
+        return result
+    backend_file = candidates[0]
+    result.setdefault("backend_file", backend_file)
+    if not result.get("backend_import"):
+        module = backend_file.removeprefix("backend/").removesuffix(".py").replace("/", ".")
+        result["backend_import"] = module
+    if not result.get("backend_command"):
+        result["backend_command"] = f"python -m {result['backend_import']}"
+    return result
 
 
 def parse_design(value: dict[str, object] | str) -> ArchitectureBlueprint | ModuleDesign | ImplementationDesign:

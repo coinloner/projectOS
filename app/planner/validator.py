@@ -11,7 +11,10 @@ from app.planner.errors import PlanValidationError
 from app.orchestration.plan import ExecutionPlan
 from app.orchestration.trace import TraceContext
 from app.orchestration.work_item import WorkItem
+from app.artifact.repository import ArtifactRef
+from app.execution_context import ExecutionMode
 from app.workflow.compiler import TemplateCompiler
+from app.process import default_process_registry
 
 
 class PlanValidator:
@@ -19,6 +22,63 @@ class PlanValidator:
 
     def __init__(self, dependency_policy: DependencyPolicy | None = None) -> None:
         self._dependency_policy = dependency_policy or DependencyPolicy()
+
+    def preflight_controlled_template(
+        self, context: PlanningContext
+    ) -> str | None:
+        """Choose a coarse controlled route before invoking the LLM.
+
+        A blank project that asks for implementation and verification already
+        has enough deterministic facts to choose the lifecycle template.  It
+        must not spend a Planner call inventing a full DAG that the validator
+        will reject afterwards.  The default route intentionally stays at
+        lifecycle granularity; the fixed three-module layered template remains
+        an explicit opt-in until it is made project-adaptive.
+        """
+        if context.workspace.implementation_file_count != 0:
+            return None
+        missing_baseline = {
+            artifact.key
+            for artifact in context.artifacts
+            if artifact.key in {"requirement", "architecture", "tasks", "environment"}
+            and not artifact.exists
+        }
+        if not missing_baseline or not self._goal_requests_delivery(context.goal):
+            return None
+
+        # New projects always use the active registry id. Legacy ids are
+        # compatibility-only and must never win default routing.
+        selected = context.default_template_id
+        template = context.template_source(selected)
+        if template is not None and template.has_controlled_execution:
+            return template.id
+        return None
+
+    @staticmethod
+    def _goal_requests_delivery(goal: str) -> bool:
+        """Recognize implementation/delivery intent without asking the LLM.
+
+        A lone word such as ``测试`` or ``接口`` must not turn an empty
+        architecture/design probe into a full project delivery.  Require a
+        build/implementation signal, or an explicit lifecycle phrase.
+        """
+        text = goal.casefold()
+        explicit_lifecycle = (
+            "交付", "全链路", "可运行", "生产级", "full-stack", "full stack",
+            "deliver", "ship", "end-to-end", "e2e",
+        )
+        implementation = (
+            "实现", "构建", "创建", "开发", "编写", "落地",
+            "build", "create", "implement", "develop", "write",
+        )
+        project_shape = (
+            "前后端", "前端", "后端", "接口", "api", "http", "应用", "项目",
+            "frontend", "backend", "application",
+        )
+        return any(marker in text for marker in explicit_lifecycle) or (
+            any(marker in text for marker in implementation)
+            and any(marker in text for marker in project_shape)
+        )
 
     def validate(
         self,
@@ -44,13 +104,25 @@ class PlanValidator:
                     f"计划引用未知模板: '{draft.template_hint_id}'"
                 )
 
+        process_id = draft.process_id or "software_delivery"
+        process = default_process_registry().get(process_id)
+        if process is None:
+            raise PlanValidationError(f"计划引用未知流程: '{process_id}'")
+
+        self._validate_stage_declarations(draft, process)
+
         # 空项目的实现/验证/审查不能绕过需求、架构和任务基线。
         # 这些节点包含受控产物发布权限，必须通过完整交付模板编译。
         effective_template_id = self._effective_template_id(draft, context)
         if self._requires_full_delivery(draft, context):
-            if effective_template_id not in {"project_delivery", "project_delivery_layered"}:
+            if effective_template_id not in {
+                "project_delivery",
+                "project_delivery_dynamic",
+                "project_delivery_layered",
+            }:
                 raise PlanValidationError(
-                    "空项目的完整交付必须选择受控模板 'project_delivery' 或 'project_delivery_layered'；"
+                    "空项目的完整交付必须选择受控模板 'project_delivery'"
+                    " 或 'project_delivery_layered'；"
                     "该模板会生成 requirement、architecture、tasks、environment、"
                     "implementation、tests 和 review 全链路产物"
                 )
@@ -64,13 +136,18 @@ class PlanValidator:
             )
         if template is not None and template.has_controlled_execution:
             try:
-                return TemplateCompiler().compile(
+                plan = TemplateCompiler().compile(
                     template,
                     goal=context.goal,
                     plan_id=plan_id,
                     trace=trace or TraceContext.ephemeral(),
                     agent_output_keys={agent.id: agent.output_key for agent in context.agents},
                 )
+                if plan.process_id != process.id:
+                    raise PlanValidationError(
+                        f"模板 '{template.id}' 的 process_id={plan.process_id} 与计划流程 {process.id} 不一致"
+                    )
+                return plan
             except ValueError as error:
                 raise PlanValidationError(
                     f"受控模板无法编译为执行计划: {error}"
@@ -127,6 +204,19 @@ class PlanValidator:
                     )
                 ),
                 non_goals=tuple(step.non_goals),
+                stage_id=step.stage_id,
+                execution_mode=self._stage_execution_mode(step.stage_id),
+                slot=("blueprint" if step.stage_id == "architecture_blueprint" else None),
+                publish_target=(
+                    "architecture" if step.stage_id == "architecture_integration" else
+                    "architecture_contract" if step.stage_id == "contract" else None
+                ),
+                output_kind=self._stage_output_kind(step.stage_id),
+                input_refs=(
+                    (ArtifactRef.published("requirement"),)
+                    if step.stage_id == "architecture_blueprint"
+                    else ()
+                ),
             )
             for index, step in enumerate(draft.steps, 1)
         )
@@ -136,6 +226,7 @@ class PlanValidator:
                 goal=context.goal,
                 work_items=work_items,
                 template_id=effective_template_id,
+                process_id=process.id,
                 trace=trace or TraceContext.ephemeral(),
             )
         except ValueError as error:
@@ -161,39 +252,68 @@ class PlanValidator:
             context.workspace.implementation_file_count == 0
             and asks_for_verification
             and bool(missing_baseline)
-            and (
-                context.template_source("project_delivery") is not None
-                or context.template_source("project_delivery_layered") is not None
-            )
+            # A dynamic architecture plan intentionally starts from a single
+            # Blueprint stage; the control plane will add module stages after
+            # that object is validated instead of forcing a fixed template.
+            and not any(step.stage_id == "architecture_blueprint" for step in draft.steps)
+            and context.default_template_id is not None
         )
 
     @staticmethod
     def _effective_template_id(
         draft: PlanDraft, context: PlanningContext
     ) -> str | None:
-        """Upgrade complex full-delivery goals to the structured architecture route.
+        """Respect the Planner/caller's explicit template choice.
 
-        The Planner remains free to choose a template.  This deterministic safety
-        rule only applies when it selected the legacy full-delivery route for a
-        clearly multi-module goal, preventing Markdown-to-contract regeneration.
+        Automatic promotion from the coarse lifecycle template to the fixed
+        three-module template made the latter an accidental default and hurt
+        cross-project adaptability.  Template selection now happens in the
+        preflight route for blank delivery projects or explicitly at the API/CLI
+        boundary; validation must not silently change the selected granularity.
         """
-        selected = draft.template_hint_id
-        if selected != "project_delivery":
-            return selected
-        if context.template_source("project_delivery_layered") is None:
-            return selected
-        goal = context.goal.lower()
-        markers = (
-            "前后端", "数据库", "异步", "并发", "交互", "生产级",
-            "frontend", "backend", "database", "async", "concurrent",
-        )
-        return "project_delivery_layered" if sum(marker in goal for marker in markers) >= 2 else selected
+        return draft.template_hint_id
 
     @staticmethod
     def _result_key(index: int, base_key: str, is_repeated: bool) -> str:
         if not is_repeated:
             return base_key
         return f"{base_key}_{index:02d}"
+
+    @staticmethod
+    def _validate_stage_declarations(draft: PlanDraft, process) -> None:
+        for step in draft.steps:
+            if not step.stage_id:
+                continue
+            stage = process.stage(step.stage_id)
+            if stage is None:
+                raise PlanValidationError(
+                    f"步骤 '{step.ref}' 引用了未知流程阶段: {step.stage_id}"
+                )
+            if stage.agent_id != step.agent_id:
+                raise PlanValidationError(
+                    f"步骤 '{step.ref}' 的 agent_id={step.agent_id} 与阶段 "
+                    f"{step.stage_id} 要求的 {stage.agent_id} 不一致"
+                )
+            if step.stage_id in {"architecture_module", "architecture_implementation"}:
+                raise PlanValidationError(
+                    f"{step.stage_id} 由 Blueprint 动态生成，Planner 不得预先枚举节点"
+                )
+
+    @staticmethod
+    def _stage_execution_mode(stage_id: str | None) -> ExecutionMode:
+        if stage_id in {"architecture_blueprint"}:
+            return ExecutionMode.PARTITIONED
+        if stage_id in {"architecture_integration", "contract"}:
+            return ExecutionMode.INTEGRATION
+        return ExecutionMode.EXCLUSIVE
+
+    @staticmethod
+    def _stage_output_kind(stage_id: str | None) -> str | None:
+        return {
+            "architecture_blueprint": "ArchitectureBlueprint",
+            "architecture_integration": "ArchitectureDesignBundle",
+            "contract": "ImplementationContract",
+        }.get(stage_id)
 
     @staticmethod
     def _validate_unique(values: list[str], message: str) -> None:

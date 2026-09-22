@@ -35,11 +35,12 @@ compile_project_contract_from_designs；控制面会做确定性组合和校验�
    entrypoints 至少明确 backend_file、
    backend_import、backend_command；有前端时必须明确 frontend_file 和 health_path。
    每个单元必须包含 unit_id、layer、objective、allowed_paths、depends_on、
-   acceptance_criteria；代码单元必须填写 required_files（兼容字段 required_paths），
+   acceptance_criteria；代码单元必须填写 canonical 字段 required_paths（输入边界兼容旧名
+   required_files，运行时和输出中不得同时出现两个字段），
    owned_files 必须列出本单元实际负责的完整文件。每个 CodeAgent 单元最终只能负责一个
    具体文件；多个文件必须拆成多个 implementation_units，由编译器按文件形成独立 WorkItem。
    可选填写 forbidden_paths、constraints、
-   policy_refs、skill_refs、parallel_group、output_slot 和 requirement_ids。
+   policy_refs、skill_refs、parallel_group、slot 和 requirement_ids。
    requirement_ids 必须引用本实现单元实际覆盖的 AC- 编号；不能遗漏任何已确认验收标准。
    顶层字段必须遵循以下结构（这是 schema 示例，不要把说明文字写入值）：
    {
@@ -72,19 +73,21 @@ compile_project_contract_from_designs；控制面会做确定性组合和校验�
    返回 capability_request。
 4. 路径必须互不重叠，依赖必须存在且无环。allowed_paths 优先声明模块目录 glob（例如
    backend/orders/**）；目录 glob 只能出现在 allowed_paths/allowed_roots，绝不能出现在
-   owned_files、required_files 或 required_paths。required_files/required_paths 只列出本单元
+   owned_files 或 required_paths。required_paths 只列出本单元
    所有权内必须实际交付的具体文件；不要把目录内所有辅助文件预先枚举成一个模糊目录目标。
    不要读取或生成 layer-contract.json；代码路径使用
    workspace 相对路径，后端 Python 文件放在 backend/ 下，独立前端文件放在
    frontend/ 下，测试、脚本和项目配置可使用根路径。每个单元必须填写与路径一致的
-   output_slot（backend、frontend 或 root），不能留下 null，也不能创造与 Layer Contract
+   slot（backend、frontend 或 root），不能留下 null，也不能创造与 Layer Contract
    冲突的路径。
    如果创建 project-documents 单元，它只负责前置规划文档（requirement.md、architecture.md、
    architecture_contract.md、tasks.md）；不要把 environment.md、implementation.md、tests.md 或
    review.md 列为该单元的 required_files，这些文件由后续环境、代码集成、测试和审查节点基于真实
    证据分别产出。
-5. 完成合同后调用 save_implementation_contract，参数必须是一个结构化 `contract`
-   对象（不要把 JSON 序列化到 `content` 字段）；控制面会把它持久化为
+5. 完成合同后调用 save_implementation_contract。工具参数本身就是 Project Contract
+   对象，直接传 schema_version、layers、entrypoints、interfaces 和
+   implementation_units 等顶层字段；不要再包一层 `contract`，也不要把 JSON 序列化到
+   `content` 字段。控制面会把它持久化为
    `.projectos/architecture/project-contract.json`。不要修改 architecture.md，
    不要编写代码，不要创建任务清单。
 

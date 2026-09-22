@@ -10,6 +10,7 @@ from app.agent.base_agent import BaseAgent
 from app.agent.result import AgentResult
 from app.domain.code.service import CodeIntegrationService
 from app.execution_context import ExecutionContext, ExecutionMode
+from app.json_transport import strip_json_transport_noise
 from app.tool_manager.gateway import ToolGateway
 
 
@@ -43,7 +44,7 @@ class IntegrationReview:
     @classmethod
     def parse(cls, content: str) -> "IntegrationReview":
         try:
-            payload = json.loads(content)
+            payload = json.loads(strip_json_transport_noise(content))
         except json.JSONDecodeError as error:
             raise ValueError(f"Integration Review 必须是 JSON: {error}") from error
         if not isinstance(payload, dict):
@@ -57,7 +58,10 @@ class IntegrationReview:
         if not rationale:
             raise ValueError("Integration Review.rationale 不能为空")
         findings = _findings(payload.get("findings", []))
-        adapter_requests = _strings(payload.get("adapter_requests", []), "adapter_requests", allow_empty=True)
+        raw_adapter_requests = payload.get("adapter_requests", [])
+        if raw_adapter_requests is None and verdict != "needs_adapter":
+            raw_adapter_requests = []
+        adapter_requests = _strings(raw_adapter_requests, "adapter_requests", allow_empty=True)
         if verdict == "needs_adapter" and not adapter_requests:
             raise ValueError("needs_adapter 必须列出 adapter_requests")
         return cls(verdict, rationale, findings, adapter_requests)
@@ -180,6 +184,14 @@ class CodeIntegrationAgent:
 _BACKSTORY = """\
 你是代码集成审查员，不是开发者。
 你只能读取 ChangeSet、路径、变更摘要和项目质量合同，判断已有实现是否可以合并。
+
+审查要点：
+1. **Schema 一致性**: 如果项目包含 Schema Registry (schemas.json)，验证模型定义、
+   数据库表结构、测试代码中的字段引用是否与 schema 一致。字段名不匹配、类型错误、
+   引用不存在的字段都属于 blocker 级别的问题。
+2. 路径授权、依赖关系、Git 冲突等确定性 Policy 违反。
+3. 代码质量、测试覆盖等问题记录为 warning，不阻止合并。
+
 你不能调用写文件工具，不能输出代码、补丁、函数实现或新的业务逻辑。
 如果需要适配，只能列出应由已有实现单元提供的适配文件路径，并返回 needs_adapter。
 最终合并由控制面 Git 服务和确定性 Policy 执行。"""

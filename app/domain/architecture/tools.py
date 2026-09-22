@@ -30,8 +30,9 @@ class ArchitectureToolSet:
     def save_architecture(self, content: str) -> str:
         return self._service.save_architecture(content)
 
-    def save_implementation_contract(self, contract: dict[str, Any]) -> str:
-        return _save_contract(self._service, contract)
+    def save_implementation_contract(self, **fields: Any) -> str:
+        """Persist the canonical flat Project Contract payload."""
+        return _save_contract(self._service, dict(fields))
 
     def load_project_contract(self) -> str:
         return self._service.load_implementation_contract()
@@ -49,13 +50,48 @@ class ArchitectureContractToolSet:
     def load_requirement(self) -> str:
         return self._service.load_requirement()
 
-    def save_implementation_contract(self, contract: dict[str, Any]) -> str:
-        return _save_contract(self._service, contract)
+    def save_implementation_contract(self, **fields: Any) -> str:
+        """Persist the canonical flat Project Contract payload."""
+        return _save_contract(self._service, dict(fields))
+
+
+def _module_design_tool_schema() -> dict[str, Any]:
+    """Return the closed ModuleDesign schema with wire-only consumed aliases.
+
+    ``BaseTool`` validates arguments before invoking the domain service, so
+    model validators cannot normalize legacy ``usage/required`` fields by
+    themselves.  Give only ``consumed_interfaces`` a dedicated wire schema;
+    the service immediately converts it to canonical ``direction/summary``.
+    """
+    schema = json.loads(json.dumps(ModuleDesign.model_json_schema()))
+    defs = schema.setdefault("$defs", {})
+    defs["ConsumedInterfaceWire"] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "interface_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "direction": {"type": "string", "enum": ["consumed"]},
+            "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+            "usage": {"anyOf": [{"type": "string", "maxLength": 1000}, {"type": "null"}], "default": None},
+            "required": {"type": "boolean", "default": True},
+        },
+        "required": ["interface_id"],
+    }
+    consumed = schema.get("properties", {}).get("consumed_interfaces")
+    if isinstance(consumed, dict):
+        consumed["items"] = {"$ref": "#/$defs/ConsumedInterfaceWire"}
+    return schema
 
 
 def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None:
     """注册兼容的独占工具和新分区/集成工具。"""
     tools = ArchitectureToolSet(ArchitectureService(project_path))
+    module_design_schema = _module_design_tool_schema()
+
+    # 导入新的工具函数
+    from app.agent.tools.select_tech_stack import select_tech_stack
+    from app.agent.tools.select_interface_kind import select_interface_kind
+
     gateway.register_toolset(
         domain="architecture",
         name="project_artifacts",
@@ -95,6 +131,54 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                     ),
                     tools.save_architecture,
                 ),
+                (
+                    ToolDef(
+                        name="select_tech_stack",
+                        description="选择模块的技术栈（必须先调用此工具获取可用技术栈列表）。",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "module_id": {
+                                    "type": "string",
+                                    "description": "模块标识符",
+                                },
+                                "module_category": {
+                                    "type": "string",
+                                    "description": "模块类别（frontend/backend/database/schema 等）",
+                                },
+                            },
+                            "required": ["module_id", "module_category"],
+                        },
+                        execution_modes=("exclusive", "partitioned"),
+                    ),
+                    lambda module_id, module_category: json.dumps(
+                        select_tech_stack(module_id, module_category), ensure_ascii=False
+                    ),
+                ),
+                (
+                    ToolDef(
+                        name="select_interface_kind",
+                        description="选择接口的类型标签（必须先调用此工具获取可用的接口类型）。",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "interface_name": {
+                                    "type": "string",
+                                    "description": "接口名称",
+                                },
+                                "interface_description": {
+                                    "type": "string",
+                                    "description": "接口的简短描述",
+                                },
+                            },
+                            "required": ["interface_name", "interface_description"],
+                        },
+                        execution_modes=("exclusive", "partitioned"),
+                    ),
+                    lambda interface_name, interface_description: json.dumps(
+                        select_interface_kind(interface_name, interface_description), ensure_ascii=False
+                    ),
+                ),
             ]
         ),
     )
@@ -127,17 +211,11 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                     ToolDef(
                         name="save_implementation_contract",
                         description=(
-                            "保存经过控制面校验的唯一 Project Contract。contract 必须是结构化对象，"
-                            "层级使用 layers 数组对象表达，不要传 JSON 字符串。"
+                            "保存经过控制面校验的唯一 Project Contract。参数就是 Project Contract "
+                            "对象本身：直接提供 schema_version、layers、entrypoints、interfaces 和 "
+                            "implementation_units 等字段，不要再包一层 contract，也不要传 JSON 字符串。"
                         ),
-                        parameters={
-                            "type": "object",
-                            "properties": {
-                                "contract": ProjectContractInput.model_json_schema(),
-                            },
-                            "required": ["contract"],
-                            "additionalProperties": False,
-                        },
+                        parameters=ProjectContractInput.model_json_schema(),
                         execution_modes=("exclusive",),
                         completion_policy="final",
                     ),
@@ -201,7 +279,7 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                         description="写入 depth=1 的单模块架构设计对象；必须引用总体蓝图 design_id。",
                         parameters={
                             "type": "object",
-                            "properties": {"design": ModuleDesign.model_json_schema()},
+                            "properties": {"design": module_design_schema},
                             "required": ["design"],
                             "additionalProperties": False,
                         },
@@ -238,6 +316,24 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                         completion_policy="final",
                     ),
                     workflow.integrate_structured_designs,
+                ),
+                (
+                    ToolDef(
+                        name="load_architecture_intermediate",
+                        description="读取当前 Module Design 输入版本下最近有效的中间阶段；没有则返回空。",
+                        parameters={"type": "object", "properties": {"phases": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"}, "minItems": 1}}, "required": ["phases"], "additionalProperties": False},
+                        execution_modes=("partitioned",),
+                    ),
+                    workflow.load_intermediate,
+                ),
+                (
+                    ToolDef(
+                        name="write_architecture_intermediate",
+                        description="保存当前 Module Design 的非正式阶段产物；不能替代最终 write_module_design。",
+                        parameters={"type": "object", "properties": {"phase": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"}, "content": {"type": "string", "minLength": 1}}, "required": ["phase", "content"], "additionalProperties": False},
+                        execution_modes=("partitioned",),
+                    ),
+                    workflow.write_intermediate,
                 ),
                 (
                     ToolDef(
@@ -293,11 +389,9 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
 def _save_contract(service: ArchitectureService, contract: dict[str, Any]) -> str:
     """Return machine-readable success/failure while keeping validation atomic."""
 
-    # ToolDef exposes a single named argument; the domain service receives the
-    # contract object itself.  Keeping this unwrap at the adapter boundary means
-    # callers cannot accidentally persist an envelope as the canonical object.
-    if isinstance(contract, dict) and set(contract) == {"contract"}:
-        contract = contract["contract"]
+    # The tool wire shape is the canonical Project Contract object itself; no
+    # envelope is accepted here.  This keeps the provider schema and domain
+    # validator aligned instead of teaching each retry path two shapes.
     try:
         result = service.save_implementation_contract(contract)
     except ValidationError as error:
@@ -346,7 +440,11 @@ def _semantic_error_item(contract: Any, message: str) -> dict[str, Any]:
     path = "$"
     text = message.lower()
     if "owner_unit" in text or "owner_unit" in message:
-        interfaces = contract.get("interfaces", []) if isinstance(contract, dict) else []
+        interfaces = (
+            contract.get("provided_interfaces", contract.get("interfaces", []))
+            if isinstance(contract, dict)
+            else []
+        )
         units = {
             str(item.get("unit_id"))
             for item in (contract.get("implementation_units", []) if isinstance(contract, dict) else [])
@@ -354,12 +452,12 @@ def _semantic_error_item(contract: Any, message: str) -> dict[str, Any]:
         }
         for index, interface in enumerate(interfaces):
             if isinstance(interface, dict) and interface.get("owner_unit") not in units:
-                path = f"interfaces[{index}].owner_unit"
+                path = f"provided_interfaces[{index}].owner_unit"
                 break
     elif "重复 unit_id" in message:
         path = "implementation_units"
     elif "重复 interface_id" in message:
-        path = "interfaces"
+        path = "provided_interfaces"
     elif "循环依赖" in message:
         path = "implementation_units[].depends_on"
     return {"path": path, "code": "semantic_invalid", "message": message}

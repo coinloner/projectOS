@@ -63,7 +63,7 @@ def register_test_tools(
     *,
     traces: TraceStore | None = None,
 ) -> None:
-    """测试节点可读实现、仅能写 tests/，并只能运行固定 unittest 命令。"""
+    """测试节点可读实现、仅能写 tests/，并只能运行受信固定检查。"""
     service = TestService(project_path)
     tools = TestToolSet(service)
     evidence_tools = SandboxEvidenceToolSet(
@@ -163,7 +163,8 @@ def register_test_tools(
                         name="run_sandbox_check",
                         description=(
                             "在受控 Docker sandbox 中执行固定检查。check_id 只能选 profile "
-                            "白名单：unit（Python unittest 测试）或 web-unit（Node 前端测试）。"
+                            "白名单：unit（Python unittest 测试）、web-unit（Node 前端测试）或 "
+                            "runtime-smoke（合同声明的后端入口组装探针）。"
                             "镜像缺失时记录 setup_failed，不请求外部能力。"
                         ),
                         parameters={
@@ -171,7 +172,7 @@ def register_test_tools(
                             "properties": {
                                 "check_id": {
                                     "type": "string",
-                                    "description": "白名单检查标识：unit 或 web-unit，默认 unit",
+                                    "description": "白名单检查标识：unit、web-unit 或 runtime-smoke，默认 unit",
                                 }
                             },
                         },

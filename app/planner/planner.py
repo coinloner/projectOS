@@ -11,6 +11,7 @@ from crewai import Agent, Task
 
 from app.llm.factory import build_llm
 from app.llm.config import LLMSelection
+from app.llm.responses import OpenAIResponsesLLM
 
 
 class PlannerRuntime(Protocol):
@@ -48,10 +49,25 @@ class CrewAIPlannerRuntime:
                 return cached
         with self._lock:
             if self._llm is None:
-                kwargs = {"temperature": 0.0, "seed": 0}
+                # Responses does not accept the Chat Completions ``seed``
+                # parameter.  Keep Planner deterministic through its prompt
+                # and cache policy, while leaving protocol-specific sampling
+                # fields to the selected LLM adapter.
+                kwargs = {"temperature": 0.0}
                 if self._llm_selection is not None:
                     kwargs["selection"] = self._llm_selection
                 self._llm = build_llm(**kwargs)
+        # Portdan declares the OpenAI Responses wire protocol.  CrewAI's
+        # Agent executor wraps prompts in its ReAct/flow loop and may issue
+        # follow-up turns that this text-only adapter cannot represent.  The
+        # Planner has no tools or delegation needs, so send the prompt through
+        # the validated streaming Responses adapter directly.
+        if isinstance(self._llm, OpenAIResponsesLLM):
+            result = self._llm.call(prompt)
+            if self._cache_enabled:
+                with self._lock:
+                    self._cache[cache_key] = result
+            return result
         agent = Agent(
             role="执行计划编排者",
             goal="在已注册 Agent 合同范围内生成最小、可执行的任务计划",
@@ -77,18 +93,24 @@ class CrewAIPlannerRuntime:
 _BACKSTORY = """\
 你是 ProjectOS 的 Planner，不是领域业务执行者。
 
-你只能根据输入中的 goal、artifact 元数据、可用 Agent 合同和模板节点/默认依赖进行编排。
+你只能根据输入中的 goal、artifact 元数据、可用 Agent 合同、已注册 process 定义和模板候选/默认依赖摘要进行编排。
 你不能调用工具、不能读取业务文件内容、不能创建未提供的 Agent，也不能生成 node id、
 output key、文件路径或 Python 代码。
+
+Planner 只有一个输出协议。严禁输出任何旧 envelope 或执行控制字段：
+kind、type、version、template_id、nodes、execution_mode、slot、publish_target、
+capability、tool_call。模板只能通过 template_hint_id 引用，步骤只能放在 steps 中。
 
 必须只输出如下 JSON：
 {
   "rationale": "为什么选择这些步骤",
+  "process_id": "可选的已知流程 id，默认 software_delivery；只能使用输入 processes 中的 id",
   "template_hint_id": "可选的已知模板 id 或 null",
   "steps": [
     {
       "ref": "该步骤在本次计划内唯一的临时标识",
       "agent_id": "已提供的 Agent id",
+      "stage_id": "可选的 processes.stages 中阶段 id；需要动态架构时使用 architecture_blueprint",
       "objective": "该 Agent 本次应完成的具体目标",
       "depends_on": ["同一 steps 内前置步骤的 ref"],
       "acceptance_criteria": ["可选的、可检查的完成标准"],
@@ -98,14 +120,17 @@ output key、文件路径或 Python 代码。
   ]
 }
 
-若选择的是带受控执行权限的模板（例如 architecture_parallel、architecture_layered、project_delivery_layered），模板会由系统完整编译，
+若选择的是带受控执行权限的模板（例如 architecture_parallel、architecture_layered、project_delivery），模板会由系统完整编译，
 此时 steps 可以为空；不要自行填写 execution_mode、slot、路径、候选或发布权限。
 
 规则：
+0. process_id 只选择流程规则，不代表具体项目模块或节点数量；不要根据 process_id 自行生成模块、文件或权限。
+   若项目结构必须由 Blueprint 决定，只选择 ``architecture_blueprint`` 阶段；不要预先枚举
+   ``architecture_module`` 节点。控制面会在 Blueprint 通过校验后动态生成模块任务。
 1. 同一 Agent 可以出现多次，但每个 ref 必须唯一，并且每次 objective 都必须是可独立验收的窄任务。
 2. depends_on 只能引用同一计划中已选择的其他步骤 ref。
 3. 已存在的 artifact 通常表示对应文档工作可跳过；但空项目若目标同时要求实现、测试或交付审查，
-   必须选择受控模板 project_delivery，不能只生成 implementation -> tests -> review 的捷径。
+   必须选择受控模板 project_delivery（或调用方明确选择的 project_delivery_layered），不能只生成 implementation -> tests -> review 的捷径。
 4. implementation.md 是实现摘要，不是代码完成证据。若目标要求交付可运行软件，且
    workspace.implementation_file_count 为 0，必须选择 code_agent；后续需要验证或交付
    审查时，test_agent 和 review_agent 必须依赖 code_agent 并按顺序出现。

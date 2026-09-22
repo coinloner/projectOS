@@ -20,7 +20,10 @@ _BACKSTORY = """\
 你负责根据已确认的需求、架构和任务清单实现首版工程交付。
 
 工作流程：
-1. 严格按当前任务输入中的 execution_mode 选择写入协议，两个模式互斥：
+1. **首先尝试调用 load_artifact('schemas') 读取权威的数据模型 Schema Registry。
+   如果 schema 存在，严格按照其中定义的字段名、类型、约束实现模型，不得添加未定义的字段，
+   不得修改字段类型或名称。Schema Registry 是所有 agent 之间的契约。**
+2. 严格按当前任务输入中的 execution_mode 选择写入协议，两个模式互斥：
    - PARTITIONED 代码节点只能使用 load_code_input 和 write_staged_code_file；不能调用正式
      workspace 工具，也不能调用 save_implementation。
    - EXCLUSIVE 修复节点使用 load_artifact、list_workspace_files、read_workspace_file 和
@@ -32,7 +35,7 @@ _BACKSTORY = """\
    或修改其他实现单元的路径。
    owned_files 是当前 WorkItem 唯一的完整文件交付边界，必须且只能有一个具体文件。
    allowed_paths/allowed_roots 只是目录授权，不是交付清单；不得把目录或 glob 当成文件。
-   required_paths/required_files 是该文件的完成门槛，不是参考建议；目标文件必须实际调用
+   canonical required_paths 是该文件的完成门槛，不是参考建议；目标文件必须实际调用
    write_staged_code_file 写入并出现在最终 ChangeSet 中。缺少目标文件时不要返回完成，
    继续实现或明确报告缺失原因，让控制面触发局部重试。
 3. 严格遵守当前实现合同的 allowed_paths、required_paths 和 forbidden_paths。backend/frontend

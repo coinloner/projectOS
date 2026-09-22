@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from crewai.tools import BaseTool
@@ -15,6 +16,33 @@ if TYPE_CHECKING:
     from app.tool_manager.source import ToolDef
 
 
+@dataclass(frozen=True)
+class ToolContractDiagnostics:
+    """Deterministic comparison between a WorkItem contract and tool exposure."""
+
+    domain: str
+    required_tools: tuple[str, ...]
+    registered_tools: tuple[str, ...]
+    visible_tools: tuple[str, ...]
+    missing_registered: tuple[str, ...]
+    missing_visible: tuple[str, ...]
+
+    @property
+    def passed(self) -> bool:
+        return not self.missing_registered and not self.missing_visible
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "domain": self.domain,
+            "required_tools": list(self.required_tools),
+            "registered_tools": list(self.registered_tools),
+            "visible_tools": list(self.visible_tools),
+            "missing_registered": list(self.missing_registered),
+            "missing_visible": list(self.missing_visible),
+            "passed": self.passed,
+        }
+
+
 class ToolGateway:
     """ProjectOS 与 CrewAI 工具运行时之间的边界。
 
@@ -25,6 +53,9 @@ class ToolGateway:
 
     def __init__(self) -> None:
         self._catalog = ToolCatalog()
+        # Bare gateways are useful for low-level/unit runners that provide their
+        # own fake Agent runtime. Production composition roots enable strict mode
+        # so an empty catalog can never masquerade as a valid contract.
         self._policy = ToolAccessPolicy()
 
     def register_toolset(
@@ -113,6 +144,38 @@ class ToolGateway:
         """按能力查询候选动态来源，不触发 MCP discover。"""
         return self._catalog.find_sources(domain, capability)
 
+    def preflight(
+        self,
+        domain: str,
+        required_tools: tuple[str, ...],
+        *,
+        context: ExecutionContext | None = None,
+    ) -> ToolContractDiagnostics:
+        """Check the WorkItem tool contract before an Agent/LLM is created.
+
+        ``registered_tools`` answers whether the control plane knows the tool;
+        ``visible_tools`` answers whether the exact execution context can inject
+        it. Keeping both sets makes missing registration and narrowed allowlists
+        observable instead of collapsing into a provider stall.
+        """
+        required = tuple(dict.fromkeys(required_tools))
+        registrations = self._catalog.list_registrations(
+            domain,
+            refresh_sources=self._policy.active_grant_source_names(),
+        )
+        registered = tuple(sorted({registration.definition.name for registration in registrations}))
+        visible = tuple(sorted(str(tool.name) for tool in self.tools_for(domain, context=context)))
+        missing_registered = tuple(tool for tool in required if tool not in registered)
+        missing_visible = tuple(tool for tool in required if tool not in visible)
+        return ToolContractDiagnostics(
+            domain=domain,
+            required_tools=required,
+            registered_tools=registered,
+            visible_tools=visible,
+            missing_registered=missing_registered,
+            missing_visible=missing_visible,
+        )
+
 def _visible_in_execution_context(
     definition: "ToolDef", context: ExecutionContext | None
 ) -> bool:
@@ -126,6 +189,8 @@ def _visible_in_tool_allowlist(
     definition: "ToolDef", context: ExecutionContext | None
 ) -> bool:
     """Apply an optional control-plane narrowing for a single retry attempt."""
+    if definition.name == "report_progress":
+        return True
     if context is None or not context.tool_allowlist:
         return True
     return definition.name in context.tool_allowlist

@@ -12,6 +12,7 @@ from threading import RLock
 from uuid import uuid4
 
 from app.execution_context import ExecutionContext
+from app.orchestration.field_semantics import coalesce_alias
 from app.orchestration.evidence import RuntimeEvidence, SandboxEvidence
 from app.orchestration.retry import FailurePackage, FailureSignal
 from app.sandbox.result import SandboxResult, SandboxStatus
@@ -45,11 +46,58 @@ class TraceStore:
     def project_path(self) -> str:
         return str(self._project_path)
 
+    def trace_root(self, trace_id: str) -> Path:
+        """Return the validated on-disk directory for a trace.
+
+        Callers outside TraceStore should use this public accessor instead of
+        reaching into the private path helper when placing per-trace logs.
+        """
+        self._validate_trace_id(trace_id)
+        return self._trace_root(trace_id)
+
     def load_progress(self, trace_id: str) -> dict[str, object] | None:
         """读取 Worker 最近一次真实进度快照。"""
         from app.orchestration.progress import WorkerProgressStore
 
         return WorkerProgressStore(self.project_path).read(trace_id)
+
+    def metrics(self, trace_id: str) -> dict[str, object]:
+        """Return deterministic run metrics from append-only Trace events."""
+        events = self.list_events(trace_id)
+        counts: dict[str, int] = {}
+        for event in events:
+            kind = str(event.get("type", "unknown"))
+            counts[kind] = counts.get(kind, 0) + 1
+        # ``retry-ledger.json`` is the durable source of retry decisions;
+        # event counts remain audit metrics only and may contain legacy
+        # retrying events from before the ledger existed.
+        from app.orchestration.retry import RetryLedger
+        try:
+            retry_records = RetryLedger(self.project_path, trace_id).records()
+            if retry_records:
+                retries = sum(
+                    record.action.value in {"retry_item", "retry_batch", "resume"}
+                    for record in retry_records
+                )
+            else:
+                # Traces created before retry-ledger.json only have the
+                # append-only retrying events. Keep that read-only metric
+                # visible without treating event history as new retry state.
+                retries = counts.get("work_item_retrying", 0)
+        except (OSError, ValueError):
+            retries = counts.get("work_item_retrying", 0)
+        completed = counts.get("work_item_completed", 0)
+        failed = counts.get("work_item_failed", 0)
+        terminal = completed + failed
+        return {
+            "trace_id": trace_id,
+            "event_count": len(events),
+            "work_items_completed": completed,
+            "work_items_failed": failed,
+            "retry_count": retries,
+            "retry_convergence_rate": (completed / terminal) if terminal else None,
+            "event_counts": counts,
+        }
 
     def start_trace(self, goal: str, *, parent_trace_id: str | None = None) -> TraceContext:
         requirement = self._load_requirement_metadata()
@@ -79,6 +127,7 @@ class TraceStore:
         payload = {
                 "plan_id": plan.id,
                 "template_id": plan.template_id,
+                "process_id": plan.process_id,
                 "goal": plan.goal,
                 "work_items": [
                     {
@@ -87,6 +136,7 @@ class TraceStore:
                         "objective": item.objective,
                         "output_key": item.output_key,
                         "artifact_key": item.artifact_key,
+                        "stage_id": item.stage_id,
                         "execution_mode": item.execution_mode.value,
                         "input_refs": [
                             {
@@ -95,7 +145,9 @@ class TraceStore:
                             }
                             for ref in item.input_refs
                         ],
-                        "output_slot": item.output_slot,
+                        # Canonical persisted name; load_plan accepts legacy
+                        # ``output_slot`` from historical traces.
+                        "slot": item.slot,
                         "publish_target": item.publish_target,
                         "candidate_from_work_item_id": item.candidate_from_work_item_id,
                         "implementation_unit_id": item.implementation_unit_id,
@@ -105,6 +157,8 @@ class TraceStore:
                         "wave": item.wave,
                         "owned_files": list(item.owned_files),
                         "delivery_contract": item.delivery_contract,
+                        "output_kind": item.output_kind,
+                        "contract_digest": item.contract_digest,
                         "policy_refs": list(item.policy_refs),
                         "skill_refs": list(item.skill_refs),
                         "requirement_ids": list(item.requirement_ids),
@@ -119,7 +173,6 @@ class TraceStore:
                         "acceptance_criteria": list(item.acceptance_criteria),
                         "constraints": list(item.constraints),
                         "non_goals": list(item.non_goals),
-                        "policy_id": item.policy_id,
                         "failure_package": (
                             {
                                 "signal": item.failure_package.signal.as_dict(),
@@ -150,6 +203,40 @@ class TraceStore:
         for item in plan.work_items:
             self.record_event(plan.trace, item.id, "work_item_planned")
 
+    def record_plan_expansion(self, expansion: dict[str, object]) -> None:
+        """Persist dynamic-plan provenance independently from the active plan.
+
+        A dynamic delivery can expand the same plan more than once (Blueprint
+        -> modules -> implementations).  Keep the historical ``<plan_id>.json``
+        pointer as the latest expansion for existing readers, while also
+        writing a kind-specific immutable record so the earlier expansion is
+        not overwritten by the next phase.
+        """
+        trace_id = str(expansion.get("trace_id", ""))
+        plan_id = str(expansion.get("plan_id", ""))
+        self._validate_trace_id(trace_id)
+        if not plan_id or "/" in plan_id or "\\" in plan_id:
+            raise ValueError("动态计划扩展缺少合法 plan_id")
+        payload = dict(expansion)
+        payload.setdefault("schema_version", 1)
+        payload["trace_id"] = trace_id
+        payload["plan_id"] = plan_id
+        expansions_dir = self._trace_root(trace_id) / "expansions"
+        self._write_json(expansions_dir / f"{plan_id}.json", payload)
+        kind = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(payload.get("kind", "expansion"))).strip("-_.")
+        if kind:
+            self._write_json(expansions_dir / f"{plan_id}.{kind}.json", payload)
+
+    def load_plan_expansion(self, trace_id: str, plan_id: str) -> dict[str, object]:
+        """Read one dynamic expansion record for audit and recovery tooling."""
+        self._validate_trace_id(trace_id)
+        if not plan_id or "/" in plan_id or "\\" in plan_id:
+            raise ValueError("plan_id 格式无效")
+        path = self._trace_root(trace_id) / "expansions" / f"{plan_id}.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"计划扩展记录不存在: {plan_id}")
+        return self._read_json(path)
+
     def set_llm_selection(self, trace_id: str, selection: LLMSelection) -> None:
         """将本轮模型选择写入 Trace，供隔离 Worker 和恢复流程使用。"""
         payload = self.load_trace(trace_id)
@@ -174,7 +261,15 @@ class TraceStore:
         required = ("provider", "model", "base_url", "api_key_env", "crewai_provider")
         if any(not str(raw.get(key, "")).strip() for key in required):
             return None
-        return LLMSelection(**{key: str(raw[key]) for key in required})
+        # ``wire_api`` was added after the first persisted trace format.  Keep
+        # old traces readable by retaining the dataclass' Chat Completions
+        # default, while preserving the explicit Responses route on new runs.
+        wire_api = str(raw.get("wire_api", "chat_completions")).strip() or "chat_completions"
+        return LLMSelection(
+            **{key: str(raw[key]) for key in required},
+            wire_api=wire_api,
+            http_headers=_trace_http_headers(raw.get("http_headers")),
+        )
 
     def load_llm_overrides(self, trace_id: str) -> dict[str, LLMSelection]:
         payload = self.load_trace(trace_id)
@@ -189,11 +284,13 @@ class TraceStore:
             required = ("provider", "model", "base_url", "api_key_env", "crewai_provider")
             if any(not str(raw.get(key, "")).strip() for key in required):
                 continue
+            wire_api = str(raw.get("wire_api", "chat_completions")).strip() or "chat_completions"
             result[str(agent_id)] = LLMSelection(
-                **{key: str(raw[key]) for key in required}
+                **{key: str(raw[key]) for key in required},
+                wire_api=wire_api,
+                http_headers=_trace_http_headers(raw.get("http_headers")),
             )
         return result
-
     def record_plan_baseline(self, plan: "ExecutionPlan", *, revision: int | None = None) -> dict[str, object]:
         """保存可用于局部修改的计划基线，不改变 ExecutionPlan 执行格式。"""
         from app.planner.patch import PlanBaseline
@@ -219,6 +316,31 @@ class TraceStore:
         if not path.is_file():
             raise FileNotFoundError(f"Trace 没有计划基线: {trace_id}")
         return self._read_json(path)
+
+    def validate_plan_baseline(self, plan: "ExecutionPlan") -> None:
+        """Reject resume when persisted WorkItem contracts differ from baseline."""
+        try:
+            baseline = self.load_plan_baseline(plan.trace.trace_id)
+        except FileNotFoundError:
+            return
+        raw = baseline.get("contract_digests")
+        if not isinstance(raw, dict):
+            # Historical baselines did not persist contract digests.
+            return
+        expected = {str(key): str(value) for key, value in raw.items()}
+        actual = {item.id: item.contract_digest or "" for item in plan.work_items}
+        if expected != actual:
+            missing = sorted(set(expected) - set(actual))
+            added = sorted(set(actual) - set(expected))
+            changed = sorted(
+                item_id
+                for item_id in set(expected) & set(actual)
+                if expected[item_id] != actual[item_id]
+            )
+            raise ValueError(
+                "ExecutionPlan 与持久化合同基线不一致"
+                f"; missing={missing}; added={added}; changed={changed}"
+            )
 
     def record_event(
         self,
@@ -257,6 +379,24 @@ class TraceStore:
         payload = self.load_trace(trace_id)
         payload["status"] = "running"
         payload["started_at"] = self._now()
+        payload.pop("finished_at", None)
+        payload.pop("error", None)
+        self._write_json(self._trace_root(trace_id) / "trace.json", payload)
+
+    def mark_planning(self, trace_id: str) -> None:
+        """Mark a Trace as actively planning before an ExecutionPlan exists."""
+        payload = self.load_trace(trace_id)
+        payload["status"] = "planning"
+        payload["planning_started_at"] = self._now()
+        payload.pop("finished_at", None)
+        payload.pop("error", None)
+        self._write_json(self._trace_root(trace_id) / "trace.json", payload)
+
+    def mark_planned(self, trace_id: str) -> None:
+        """Mark planning complete while the run is waiting for Worker submit."""
+        payload = self.load_trace(trace_id)
+        payload["status"] = "planned"
+        payload["planning_finished_at"] = self._now()
         payload.pop("finished_at", None)
         payload.pop("error", None)
         self._write_json(self._trace_root(trace_id) / "trace.json", payload)
@@ -402,6 +542,7 @@ class TraceStore:
                         if raw.get("artifact_key")
                         else None
                     ),
+                    stage_id=(str(raw["stage_id"]) if raw.get("stage_id") else None),
                     failure_package=failure_package,
                     dependencies=dependencies,
                     acceptance_criteria=tuple(
@@ -411,8 +552,12 @@ class TraceStore:
                         str(value) for value in raw.get("constraints", [])
                     ),
                     non_goals=tuple(str(value) for value in raw.get("non_goals", [])),
-                    policy_id=(
-                        str(raw["policy_id"]) if raw.get("policy_id") else None
+                    policy_refs=tuple(
+                        str(value)
+                        for value in raw.get(
+                            "policy_refs",
+                            ([raw["policy_id"]] if raw.get("policy_id") else []),
+                        )
                     ),
                     execution_mode=ExecutionMode(
                         str(raw.get("execution_mode", "exclusive"))
@@ -420,8 +565,10 @@ class TraceStore:
                     input_refs=tuple(
                         ref_from_dict(value) for value in raw.get("input_refs", [])
                     ),
-                    output_slot=(
-                        str(raw["output_slot"]) if raw.get("output_slot") else None
+                    slot=(
+                        str(coalesce_alias(raw, "slot", "output_slot"))
+                        if coalesce_alias(raw, "slot", "output_slot")
+                        else None
                     ),
                     publish_target=(
                         str(raw["publish_target"])
@@ -448,7 +595,16 @@ class TraceStore:
                         if isinstance(raw.get("delivery_contract"), dict)
                         else None
                     ),
-                    policy_refs=tuple(str(value) for value in raw.get("policy_refs", [])),
+                    output_kind=(
+                        str(raw["output_kind"])
+                        if raw.get("output_kind")
+                        else None
+                    ),
+                    contract_digest=(
+                        str(raw["contract_digest"])
+                        if raw.get("contract_digest")
+                        else None
+                    ),
                     skill_refs=tuple(str(value) for value in raw.get("skill_refs", [])),
                     requirement_ids=tuple(str(value) for value in raw.get("requirement_ids", [])),
                 )
@@ -459,6 +615,7 @@ class TraceStore:
             template_id=(
                 str(payload["template_id"]) if payload.get("template_id") else None
             ),
+            process_id=str(payload.get("process_id") or "software_delivery"),
             trace=TraceContext(
                 requirement_id=str(trace_payload["requirement_id"]),
                 trace_id=str(trace_payload["trace_id"]),
@@ -593,8 +750,13 @@ class TraceStore:
             plan = self.load_plan(context.trace_id)
             item = plan.work_item(context.work_item_id)
             if item is not None:
+                requirement_ids = item.requirement_ids
+                if not requirement_ids and item.agent_id == "test_agent":
+                    requirement_ids = tuple(
+                        self._delivery_requirements(context.trace_id)
+                    )
                 DeliveryStore(self.project_path).bind_evidence(
-                    item.requirement_ids, evidence_id=evidence.id, runtime=False
+                    requirement_ids, evidence_id=evidence.id, runtime=False
                 )
         except (FileNotFoundError, ValueError):
             pass
@@ -609,12 +771,20 @@ class TraceStore:
             plan = self.load_plan(evidence.trace_id)
             item = plan.work_item(evidence.work_item_id) if evidence.work_item_id else None
             if item is not None:
+                requirement_ids = item.requirement_ids
+                if not requirement_ids and item.agent_id == "test_agent":
+                    requirement_ids = tuple(self._delivery_requirements(evidence.trace_id))
                 DeliveryStore(self.project_path).bind_evidence(
-                    item.requirement_ids, evidence_id=evidence.id, runtime=True
+                    requirement_ids, evidence_id=evidence.id, runtime=True
                 )
         except (FileNotFoundError, ValueError):
             pass
         return evidence
+
+    def _delivery_requirements(self, trace_id: str) -> tuple[str, ...]:
+        """Return the current project's AC ids for generic test WorkItems."""
+        del trace_id  # reserved for future per-trace matrix isolation
+        return tuple(DeliveryStore(self.project_path).load_matrix().requirements)
 
     def list_sandbox_evidence(
         self, context: ExecutionContext
@@ -642,7 +812,12 @@ class TraceStore:
     ) -> FailurePackage:
         """从当前 Trace 组装可交给修复节点的受限诊断包。"""
         if signal.evidence_id is None:
-            return FailurePackage(signal=signal)
+            # Integration and contract failures may have no SandboxEvidence,
+            # but their bounded error text can still name concrete workspace
+            # files. Preserve those paths as repair hints without widening
+            # authority to a directory or arbitrary generated file.
+            paths = tuple(sorted({match.group(1).replace("\\", "/") for match in _WORKSPACE_PATH.finditer(signal.summary)}))
+            return FailurePackage(signal=signal, repair_paths=paths, owner_files=paths)
         path = self._evidence_path(trace.trace_id, signal.evidence_id)
         if not path.is_file():
             return FailurePackage(signal=signal)
@@ -804,6 +979,19 @@ def _excerpt(content: str, limit: int) -> str:
     if len(content) <= limit:
         return content
     return "[...已截断]\n" + content[-limit:]
+
+
+def _trace_http_headers(value: object) -> tuple[tuple[str, str], ...]:
+    """Load bounded non-secret provider headers from a persisted selection."""
+    if not isinstance(value, dict):
+        return ()
+    return tuple(
+        sorted(
+            (str(key), str(header_value))
+            for key, header_value in value.items()
+            if str(key).strip() and header_value is not None
+        )
+    )
 
 
 _WORKSPACE_PATH = re.compile(

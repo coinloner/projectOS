@@ -47,6 +47,18 @@ class AgentResultTest(unittest.TestCase):
             "environment_preparation",
         )
 
+    def test_environment_persistence_wording_is_canonicalized(self) -> None:
+        self.assertEqual(
+            normalize_capability("environment_preparation_and_persistence"),
+            "environment_preparation",
+        )
+
+    def test_composite_local_input_and_external_docs_capability_is_canonicalized(self) -> None:
+        self.assertEqual(
+            normalize_capability("load_code_input_and_external_documentation"),
+            "external_documentation",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

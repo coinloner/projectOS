@@ -15,14 +15,38 @@ Requirement -> Architecture -> Task -> Bootstrap -> Code -> Test -> Review
 - Trace 级 Memory 已记录目标、Planner/Agent/Tool 事件和 checkpoint；SQLite/FTS5、可选向量混合召回、运行摘要、预算化上下文组装以及 durable candidate 审批控制面已接入。
 - MCP、动态依赖解析和运行恢复都不会由 Agent 自动触发。
 
-## MVP 闭环：下一阶段
+## 原始八阶段与当前状态
 
-目标：让系统能依据真实测试结果完成有限次数的修复、再验证，并在固定计划中可靠恢复。
+路线按最初约定恢复为八个阶段。稳定性、观测和错误归因属于各阶段的横向验收条件，
+不另起一个架构阶段。
 
-1. 增加 WorkItem 状态转移：测试失败后基于 `SandboxEvidence` 暂停给 Planner，生成修复工作项，再回到 Code/Test。
-2. 定义终态：所有必需工作项完成、sandbox 通过、review 无阻塞项，或明确 `blocked`。
-3. 为修复循环加入重试上限和每次尝试的 evidence 关联。
-4. 为 `python-pip` 接入“所有者批准 -> DependencyResolver 建 wheel cache -> 恢复执行”的控制面流程。
+1. **固定模板与 ProcessDefinition**：已完成。保留现有固定模板，新增流程阶段、合法转换、
+   Agent/工具执行规则和规模限制。
+2. **Semantic Registry 校验 Blueprint**：已完成。`SemanticRegistry` 集中登记字段的
+   meaning/source/consumer/value_rules，`BlueprintValidator` 在动态扩展前执行层依赖、模块
+   purpose、module_id 唯一性和未知依赖校验；Pydantic 仍负责 DTO 形状和类型硬门。
+3. **DynamicPlanBuilder 生成 ModuleDesign**：已完成。Blueprint 的真实模块清单、业务目的、
+   模块依赖和执行 wave 会动态生成 depth=1 WorkItem。
+4. **动态生成 ImplementationDesign**：已完成。所有 ModuleDesign 完成后按真实模块清单生成
+   depth=2 WorkItem，并在集成前校验接口 ownership、文件边界和 unit 依赖。
+5. **ContractCompiler 生成 CodeAgent 节点**：已落地，正在进行真实链路验收。集成后的
+   `ImplementationDesign` 可以确定性编译为单文件、分 wave 的 CodeAgent WorkItem。
+6. **接入 Tasks、Environment、Test、Review**：部分完成。固定交付流程已有这些节点，动态
+   合同编译和代码 wave 已接入；还需要用真实项目验证任务、环境、测试、审查能从动态架构结果
+   连续执行并正确恢复。
+7. **多项目类型真实 E2E**：未完成。需要至少覆盖不同模块数量、前后端、数据库、异步流程和
+   依赖审批场景，并记录通过、阻塞和恢复证据。
+8. **删除固定项目模板**：未开始。只有阶段 6、7 稳定并完成迁移验证后，才删除固定项目模板；
+   在此之前模板只作为受控兼容适配器存在。
+
+## 当前推进目标：阶段五到阶段七
+
+1. 验证 `ArchitectureDesignBundle -> Project Contract -> CodeAgent WorkItem` 的真实传递，
+   确保每个 unit、interface ownership、文件路径和 wave 语义不丢失。
+2. 将动态编译结果与 Tasks、Environment、Test、Review 的依赖和产物 owner 对齐。
+3. 让失败证据、局部重试、checkpoint 恢复和最终 Review 在同一动态计划中闭环。
+4. 用确定性 Agent 先完成阶段五到阶段六的完整回归，再用真实 FHL Agent 连续运行多种项目类型，
+   形成阶段七验证矩阵，而不是只用 Fake Agent 或单独的架构探针。
 
 ## MVP 后的扩展顺序
 

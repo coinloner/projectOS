@@ -266,6 +266,22 @@ class ApplicationCatalog:
                 ),
             ),
         ),
+        "python-dynamic": ApplicationProfile(
+            id="python-dynamic",
+            services=(
+                ApplicationService(
+                    id="backend",
+                    workspace_dir="backend",
+                    container_port=8000,
+                    host_port=0,
+                    # 占位命令，实际命令从 project-contract.json 读取
+                    command=("python", "-m", "placeholder"),
+                    publish_port=False,
+                    mount_workspace=True,
+                    read_only=True,
+                ),
+            ),
+        ),
     }
 
     @classmethod

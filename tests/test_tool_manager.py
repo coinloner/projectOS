@@ -10,7 +10,7 @@ from app.tool_manager.source import (
     ToolSetSource,
 )
 from app.tool_manager.grants import CapabilityGrant
-from app.execution_context import ExecutionContext
+from app.execution_context import ExecutionContext, ExecutionMode
 from app.tool_manager.crewai_adapter import args_schema_for
 from crewai.utilities.agent_utils import convert_tools_to_openai_schema
 
@@ -58,6 +58,86 @@ class ToolGatewayTest(unittest.TestCase):
                 ]
             ),
         )
+
+    def test_preflight_distinguishes_registered_and_visible_tool_contracts(self) -> None:
+        self.gateway.register_toolset(
+            "architecture",
+            "architecture-tools",
+            toolset=ToolSetSource(
+                [
+                    (
+                        ToolDef(
+                            name="load_architecture_input",
+                            description="Load architecture input",
+                            parameters={"type": "object", "properties": {}},
+                            execution_modes=("partitioned",),
+                        ),
+                        lambda: "loaded",
+                    ),
+                    (
+                        ToolDef(
+                            name="write_module_design",
+                            description="Write module design",
+                            parameters={"type": "object", "properties": {}},
+                            execution_modes=("partitioned",),
+                        ),
+                        lambda: "written",
+                    ),
+                ]
+            ),
+        )
+        context = ExecutionContext(
+            trace_id="trace-test",
+            work_item_id="module-api",
+            agent_id="architecture_agent",
+            execution_mode=ExecutionMode.PARTITIONED,
+            slot="module-api",
+            tool_allowlist=("load_architecture_input",),
+        )
+
+        diagnostics = self.gateway.preflight(
+            "architecture",
+            ("load_architecture_input", "write_module_design", "missing_tool"),
+            context=context,
+        )
+
+        self.assertFalse(diagnostics.passed)
+        self.assertIn("missing_tool", diagnostics.missing_registered)
+        self.assertIn("write_module_design", diagnostics.missing_visible)
+        self.assertIn("write_module_design", diagnostics.registered_tools)
+        self.assertIn("load_architecture_input", diagnostics.visible_tools)
+
+    def test_preflight_passes_only_when_all_required_tools_are_registered_and_visible(self) -> None:
+        self.gateway.register_toolset(
+            "architecture",
+            "architecture-tools",
+            toolset=ToolSetSource(
+                [
+                    (
+                        ToolDef(
+                            name="load_architecture_input",
+                            description="Load architecture input",
+                            parameters={"type": "object", "properties": {}},
+                            execution_modes=("partitioned",),
+                        ),
+                        lambda: "loaded",
+                    ),
+                ]
+            ),
+        )
+        context = ExecutionContext(
+            trace_id="trace-test",
+            work_item_id="blueprint",
+            agent_id="architecture_agent",
+            execution_mode=ExecutionMode.PARTITIONED,
+            slot="blueprint",
+        )
+        diagnostics = self.gateway.preflight(
+            "architecture", ("load_architecture_input",), context=context
+        )
+        self.assertTrue(diagnostics.passed)
+        self.assertEqual(diagnostics.missing_registered, ())
+        self.assertEqual(diagnostics.missing_visible, ())
 
     def test_local_tool_is_exposed_as_crewai_tool_and_executable(self) -> None:
         tools = self.gateway.tools_for("requirement")
