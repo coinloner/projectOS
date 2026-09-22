@@ -208,7 +208,10 @@ class ArchitectureArtifactWorkflow:
         # harmless shorthand at the architecture boundary instead of sending
         # the whole run into an avoidable retry/block. Interfaces remain owned
         # by the first split unit unless they explicitly target a split id.
-        design = _normalize_file_granular_units(design)
+        # D keeps semantic implementation units intact; legacy contracts retain
+        # the historical file-granular wire normalization.
+        if not context.architecture_config.recursive_enabled:
+            design = _normalize_file_granular_units(design)
         # ``health_path`` has a control-plane default. Treat explicit null or
         # an empty value like an omitted optional field so a model cannot
         # block the entire architecture hand-off over an unspecified probe
@@ -254,9 +257,16 @@ class ArchitectureArtifactWorkflow:
         import json
 
         content = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2)
-        limit = _design_limit_for_slot(context.slot or "")
+        limit = (
+            _D_DESIGN_CHAR_LIMIT
+            if context.architecture_config.recursive_enabled
+            else _design_limit_for_slot(context.slot or "")
+        )
         try:
-            _validate_design_budget(parsed, content, context.slot or "")
+            _validate_design_budget(
+                parsed, content, context.slot or "",
+                semantic_mode=context.architecture_config.recursive_enabled,
+            )
         except ValueError as error:
             raise ValueError(
                 json.dumps(
@@ -265,9 +275,13 @@ class ArchitectureArtifactWorkflow:
                         "error_type": "artifact_budget",
                         "retryable": True,
                         "expected_tool": _expected_design_tool(context.slot or ""),
-                        "limit": implementation_design_budget(len(parsed.implementation_units))
-                        if isinstance(parsed, ImplementationDesign)
-                        else limit,
+                        "limit": (
+                            _D_DESIGN_CHAR_LIMIT
+                            if context.architecture_config.recursive_enabled
+                            else implementation_design_budget(len(parsed.implementation_units))
+                            if isinstance(parsed, ImplementationDesign)
+                            else limit
+                        ),
                         "message": str(error),
                     },
                     ensure_ascii=False,
@@ -729,6 +743,8 @@ def _dedupe_consumed_interface_references(
     return result
 
 
+_D_DESIGN_CHAR_LIMIT = 32_000
+
 _STAGED_CHAR_LIMITS = {
     "baseline": 3200,
     "api": 4200,
@@ -807,7 +823,15 @@ def llm_token_budget_for_design(slot: str | None, *, unit_count: int = 3) -> int
     return min(24_000, max(4_000, int(chars * 1.5)))
 
 
-def _validate_design_budget(parsed: Any, content: str, slot: str) -> None:
+def _validate_design_budget(
+    parsed: Any, content: str, slot: str, *, semantic_mode: bool = False
+) -> None:
+    if semantic_mode:
+        if len(content) > _D_DESIGN_CHAR_LIMIT:
+            raise ValueError(
+                f"架构结构化产物超过 D 方案技术熔断上限 {_D_DESIGN_CHAR_LIMIT} 字符"
+            )
+        return
     if not (slot == "implementation" or slot.startswith("implementation-")):
         return
     units = list(getattr(parsed, "implementation_units", ()))

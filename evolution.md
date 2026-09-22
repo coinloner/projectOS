@@ -518,3 +518,19 @@ and three-way comparison; it must not replace `main` by copying this worktree.
 ```
 
 剩余迁移项：D 的递归 split/leaf 计划执行、逐层 ValidationReceipt、节点内/跨节点恢复边界、默认流程的全新 wanfa E2E。
+
+
+## 2026-09-23 Architecture D 迁移阶段 4：D 设计预算与语义 ownership 边界
+
+修正了迁移过程中发现的一个关键兼容点：
+
+- D 的结构化 Blueprint、ModuleDesign、ImplementationDesign 统一使用 32,000 字符技术熔断上限；不再使用 implementation unit 数量计算动态总预算。
+- D 的 `write_staged_design` 不再把多文件语义单元预先归一化成单文件；legacy 直接服务上下文仍保留历史文件粒度归一化。
+- D 的 1-3 文件 ownership 会完整进入 staged artifact、Project Contract、Code WorkItem 和交付验证。
+- 为避免直接调用领域服务的历史测试被生产模式污染，`ArchitectureExecutionConfig` 的领域默认保持 legacy，GraphRunner 生产默认显式选择 D；这样旧 Trace/直接工具调用不会被静默解释为 D。
+
+验证：
+
+```text
+85 passed, 2 warnings, 9 subtests passed
+```

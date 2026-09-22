@@ -10,7 +10,9 @@ class ArchitectureExecutionConfig:
     # Named profiles keep prompt, tools and recovery policy coherent.
     mode: str = "baseline"
     schema_version: int = 1
-    scheme: Literal["D", "legacy"] = "D"
+    # Direct domain-service contexts remain legacy unless the control plane
+    # explicitly selects D; GraphRunner does that for the production path.
+    scheme: Literal["D", "legacy"] = "legacy"
 
     def __post_init__(self):
         if self.scheme not in ("D", "legacy"):

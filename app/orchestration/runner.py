@@ -528,7 +528,7 @@ class GraphRunner:
         policies: PolicyModule | None = None,
         llm_selection: LLMSelection | None = None,
         llm_overrides: dict[str, LLMSelection] | None = None,
-        architecture_config: ArchitectureExecutionConfig = ArchitectureExecutionConfig(),
+        architecture_config: ArchitectureExecutionConfig = ArchitectureExecutionConfig(scheme="D"),
     ) -> None:
         if max_workers < 1:
             raise ValueError("GraphRunner.max_workers 至少为 1")
