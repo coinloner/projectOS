@@ -437,3 +437,33 @@ C/D 准入测试与正式横评分开；未命中故障不能算恢复成功。
 这些是共同基线与隔离检查，不是 C/D 功能测试，不证明 C/D 完整或四方案效果。
 四分支预检 `ready_to_benchmark=false`，阻塞项为 C/D 实现未完成及真实 wanfa 准入证据缺失。
 预检报告：`/Users/coinloner/projectOS/project/architecture-fourway-setup-20260917-fourway/preflight.json`。
+## 2026-09-23 — Preserve the newest real Architecture execution baseline
+
+The newest real instance is:
+
+```text
+project: /Users/coinloner/projectOS/project/wanfa-architecture-protocol-20260923-003652-d81f6b
+trace: tr-ac55c258291e
+plan: run-981096391db0
+workflow: architecture_only
+provider/model: wanfa / gpt-5.6-terra
+```
+
+It was launched from the `eb2a` worktree at detached `HEAD 419d573`, together
+with the then-current tracked working-tree changes. It completed Requirement,
+Blueprint, five ModuleDesign nodes, and one ImplementationDesign node. It failed
+at `wi-architecture-implementation-task-storage` after two provider attempts
+returned `502 upstream_error: Upstream access forbidden`; Integration and the
+quality gate were not reached. This is therefore a source-preservation baseline,
+not a completed Architecture result.
+
+The exact observed call chain, required source files, and merge regression rules
+are recorded in:
+
+```text
+docs/design/latest-instance-preservation-20260923.md
+```
+
+All tracked changes in the worktree are preserved together on a dedicated Git
+branch before any integration with `main`. Future merging must use Git history
+and three-way comparison; it must not replace `main` by copying this worktree.
