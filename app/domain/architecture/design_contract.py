@@ -70,6 +70,10 @@ class LayerDecision(_DesignModel):
 
 class ModuleRef(_DesignModel):
     module_id: str = Field(min_length=1, max_length=128)
+    boundary_role: Literal["business_capability", "user_experience", "runtime"] | None = Field(
+        default=None,
+        description="D 方案的业务能力边界；legacy 合同可省略",
+    )
     responsibility: str = Field(min_length=1, max_length=500)
     # Business intent is kept separate from implementation responsibilities so
     # dynamic planning can preserve the value boundary of each module.
@@ -140,6 +144,7 @@ class InterfaceRef(_DesignModel):
 
 class ArchitectureBlueprint(_DesignModel):
     schema_version: Literal[1]
+    architecture_scheme: Literal["legacy", "D"] = "legacy"
     design_id: str = Field(min_length=1, max_length=128)
     depth: Literal[0] = 0
     system_boundary: str = Field(min_length=1, max_length=2000)
@@ -153,6 +158,13 @@ class ArchitectureBlueprint(_DesignModel):
 
     @model_validator(mode="after")
     def validate_unique_ids(self) -> "ArchitectureBlueprint":
+        if self.architecture_scheme == "D":
+            missing_role = [item.module_id for item in self.modules if item.boundary_role is None]
+            if missing_role:
+                raise ValueError(
+                    "D 方案 Blueprint 的每个顶层模块必须声明 boundary_role: "
+                    + ", ".join(missing_role)
+                )
         layer_ids = [item.name for item in self.layers]
         module_ids = [item.module_id for item in self.modules]
         if len(layer_ids) != len(set(layer_ids)):
@@ -262,9 +274,9 @@ class ImplementationDesign(_DesignModel):
     def validate_units_belong_to_module(self) -> "ImplementationDesign":
         unit_ids = {item.unit_id for item in self.implementation_units}
         for unit in self.implementation_units:
-            if len(unit.owned_files) != 1:
+            if not 1 <= len(unit.owned_files) <= 3:
                 raise ValueError(
-                    f"实现单元 {unit.unit_id} 必须且只能负责一个具体 owned_file"
+                    f"实现单元 {unit.unit_id} 必须负责 1-3 个内聚 owned_files"
                 )
             owned_paths = {
                 path.replace("\\", "/").lstrip("/")
@@ -564,6 +576,7 @@ class ArchitectureDesignBundle(_DesignModel):
         )
         payload: dict[str, object] = {
             "schema_version": 1,
+            "compilation_strategy": "semantic" if self.blueprint.architecture_scheme == "D" else "file",
             "layers": [item.model_dump(mode="json") for item in self.blueprint.layers],
             "required_test_types": sorted(
                 {

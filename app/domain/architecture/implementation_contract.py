@@ -330,6 +330,7 @@ class ImplementationUnit:
 class ImplementationContract:
     schema_version: int
     units: tuple[ImplementationUnit, ...]
+    compilation_strategy: str = "file"
     entrypoints: EntrypointContract = EntrypointContract()
     required_files: tuple[str, ...] = ()
     interfaces: tuple[InterfaceContract, ...] = ()
@@ -345,6 +346,8 @@ class ImplementationContract:
     def __post_init__(self) -> None:
         if self.schema_version != 1:
             raise ValueError("Implementation Contract schema_version 必须为 1")
+        if self.compilation_strategy not in {"file", "semantic"}:
+            raise ValueError("Implementation Contract compilation_strategy 必须为 file 或 semantic")
         ids = [unit.unit_id for unit in self.units]
         if not ids:
             raise ValueError("Implementation Contract 至少需要一个实现单元")
@@ -447,6 +450,7 @@ class ImplementationContract:
     def as_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
+            "compilation_strategy": self.compilation_strategy,
             "entrypoints": self.entrypoints.as_dict(),
             "required_files": list(self.required_files),
             "interfaces": [interface.as_dict() for interface in self.interfaces],
@@ -476,8 +480,9 @@ class ImplementationContract:
         if not isinstance(units_raw, list):
             raise ValueError("Implementation Contract.implementation_units 必须是数组")
         return cls(
-            1,
-            tuple(ImplementationUnit.parse(item) for item in units_raw),
+            schema_version=1,
+            compilation_strategy=str(raw.get("compilation_strategy", "file")),
+            units=tuple(ImplementationUnit.parse(item) for item in units_raw),
             entrypoints=EntrypointContract.parse(raw.get("entrypoints", raw.get("entrypoint"))),
             required_files=_strings(raw.get("required_files", []), "required_files", allow_empty=True),
             interfaces=tuple(InterfaceContract.parse(item) for item in raw.get("interfaces", [])),

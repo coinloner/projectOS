@@ -423,6 +423,31 @@ async def health() -> dict:
         for item in plan.work_items:
             self.assertRegex(item.id, r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
+    def test_semantic_strategy_keeps_one_multi_file_unit(self) -> None:
+        payload = {
+            "schema_version": 1,
+            "compilation_strategy": "semantic",
+            "implementation_units": [{
+                "unit_id": "task-capability",
+                "layer": "capability",
+                "objective": "实现任务管理能力及其内聚适配",
+                "allowed_paths": ["workspace/backend/task/**"],
+                "owned_files": ["backend/task/service.py", "backend/task/routes.py"],
+                "required_paths": ["backend/task/service.py", "backend/task/routes.py"],
+            }],
+        }
+        plan = ImplementationContractCompiler().compile(
+            ImplementationContract.parse(payload), goal="语义单元",
+            plan_id="semantic-plan",
+            trace=TraceContext(requirement_id="req-semantic", trace_id="tr-semantic"),
+        )
+        self.assertEqual(len(plan.work_items), 1)
+        self.assertEqual(plan.work_items[0].id, "wi-code-task-capability")
+        self.assertEqual(
+            plan.work_items[0].owned_files,
+            ("backend/task/service.py", "backend/task/routes.py"),
+        )
+
     def test_contract_rejects_required_globs(self) -> None:
         payload = contract_payload()
         payload["implementation_units"][0]["required_paths"] = ["backend/app/domain/**"]

@@ -467,3 +467,23 @@ docs/design/latest-instance-preservation-20260923.md
 All tracked changes in the worktree are preserved together on a dedicated Git
 branch before any integration with `main`. Future merging must use Git history
 and three-way comparison; it must not replace `main` by copying this worktree.
+
+
+## 2026-09-23 Architecture D 迁移阶段 1：语义单元合同落地
+
+在 `codex/migrate-architecture-d-to-main` 分支开始正式迁移，不把此前 D 分支的存在误认为完整实现。第一阶段保留 legacy/file 合同行为，同时为 D 合同增加显式 `compilation_strategy=semantic`：
+
+- Blueprint 增加 `architecture_scheme` 与顶层模块 `boundary_role`（business_capability/user_experience/runtime）；D Blueprint 缺少边界角色时确定性拒绝。
+- ImplementationDesign 的 `owned_files` 从“恰好 1 个”调整为 1-3 个具体文件，并保留路径、required_paths 和重复 ownership 校验。
+- Project Contract 显式保存 `compilation_strategy`；D Blueprint 投影为 semantic，legacy 默认为 file。
+- semantic implementation unit 编译为一个 Code WorkItem，不再被 `_split_file_units()` 按文件机械拆开；legacy/A/B/C 路径继续按文件拆分。
+- WorkItem 与 Runner 的单文件限制仅对 legacy contract 生效；semantic unit 仍需具体 1-3 文件 ownership。
+- Architecture Agent 提示同步到 capability-first 和 1-3 文件语义单元边界。
+
+验证：
+
+```text
+119 passed, 6 warnings, 9 subtests passed
+```
+
+当前仍未宣称 D 完成：recursive split/leaf 执行、deterministic Contract、D tasks projection、节点级 receipt/recovery 和 wanfa 全新 E2E 仍需继续迁移。

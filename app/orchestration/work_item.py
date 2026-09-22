@@ -127,6 +127,7 @@ class WorkItem:
             and self.execution_mode is ExecutionMode.PARTITIONED
             and self.implementation_unit_id is not None
             and self.implementation_unit_id != "project-documents"
+            and not (self.delivery_contract or {}).get("compilation_strategy") == "semantic"
         ):
             if len(self.owned_files) != 1:
                 raise ValueError(

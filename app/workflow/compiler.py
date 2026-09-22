@@ -163,7 +163,11 @@ class TemplateCompiler:
 
 
 class ImplementationContractCompiler:
-    """将 Architecture 的实现合同编译为并行 CodeAgent WorkItem。"""
+    """将 Project Contract 编译为 CodeAgent WorkItem。
+
+    legacy/file 合同保留按文件拆分；D/semantic 合同保持语义单元完整，
+    使一个 1-3 文件的内聚单元对应一个 Code WorkItem。
+    """
 
     def compile(
         self,
@@ -172,6 +176,7 @@ class ImplementationContractCompiler:
         goal: str,
         plan_id: str,
         trace: TraceContext,
+        semantic_units: bool | None = None,
     ) -> ExecutionPlan:
         # Keep one complete file as the smallest CodeAgent delivery unit.  A
         # model can reliably satisfy a single-file contract; assigning several
@@ -189,7 +194,16 @@ class ImplementationContractCompiler:
             unit for unit in contract.units
             if not self._is_review_artifact_unit(unit)
         )
-        units = self._split_file_units(implementation_units)
+        use_semantic_units = (
+            contract.compilation_strategy == "semantic"
+            if semantic_units is None
+            else semantic_units
+        )
+        units = (
+            implementation_units
+            if use_semantic_units
+            else self._split_file_units(implementation_units)
+        )
         ids = {unit.unit_id: f"wi-code-{unit.unit_id}" for unit in units}
         inferred_waves: dict[str, int] = {}
         units_by_id = {unit.unit_id: unit for unit in units}
@@ -383,6 +397,7 @@ class ImplementationContractCompiler:
                     wave=inferred_waves[unit.unit_id],
                     owned_files=unit.owned_files,
                     delivery_contract={
+                        "compilation_strategy": contract.compilation_strategy,
                         "entrypoints": contract.entrypoints.as_dict(),
                         "required_files": list(contract.required_files),
                         "interfaces": [

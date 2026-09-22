@@ -168,6 +168,7 @@ class ProjectContractInput(_ContractModel):
     """唯一 Project Contract 的结构化工具输入。"""
 
     schema_version: Literal[1]
+    compilation_strategy: Literal["file", "semantic"] = "file"
     layers: list[ContractLayerInput] = Field(min_length=1, max_length=64)
     required_test_types: list[str] = Field(max_length=32)
     entrypoints: ContractEntrypointInput
@@ -188,6 +189,7 @@ class ProjectContractInput(_ContractModel):
         layer_names = [layer.name for layer in self.layers]
         payload: dict[str, Any] = {
             "schema_version": self.schema_version,
+            "compilation_strategy": self.compilation_strategy,
             "layers": layer_names,
             "allowed_dependencies": {
                 layer.name: list(layer.allowed_dependencies) for layer in self.layers

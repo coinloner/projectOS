@@ -3267,11 +3267,12 @@ class GraphRunner:
             item.agent_id == "code_agent"
             and item.implementation_unit_id is not None
             and item.implementation_unit_id != "project-documents"
+            and not (item.delivery_contract or {}).get("compilation_strategy") == "semantic"
         )
         exact_file_contract = strict_file_contract and len(item.owned_files) == 1
         if strict_file_contract and len(item.owned_files) != 1:
             return (
-                "CodeAgent WorkItem 必须且只能声明一个具体 owned_files 文件；"
+                "legacy CodeAgent WorkItem 必须且只能声明一个具体 owned_files 文件；"
                 f"当前为 {list(item.owned_files)}",
             )
 

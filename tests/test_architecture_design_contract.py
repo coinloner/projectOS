@@ -236,8 +236,28 @@ class ArchitectureDesignContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "只能是 0、1 或 2"):
             parse_design({"schema_version": 1, "depth": 3})
 
-    def test_implementation_design_requires_single_owned_file(self) -> None:
-        with self.assertRaisesRegex(ValueError, "只能负责一个"):
+    def test_implementation_design_allows_one_to_three_owned_files(self) -> None:
+        ImplementationDesign(
+            schema_version=1,
+            design_id="implementation-domain",
+            parent_design_id="module-domain",
+            module_id="domain",
+            implementation_units=[
+                {
+                    "unit_id": "unit-domain",
+                    "layer": "domain",
+                    "objective": "实现领域",
+                    "allowed_paths": ["backend/app/domain/**"],
+                    "owned_files": [
+                        "backend/app/domain/a.py",
+                        "backend/app/domain/b.py",
+                    ],
+                }
+            ],
+        )
+
+    def test_implementation_design_rejects_more_than_three_owned_files(self) -> None:
+        with self.assertRaisesRegex(ValueError, "1-3"):
             ImplementationDesign(
                 schema_version=1,
                 design_id="implementation-domain",
@@ -252,6 +272,8 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                         "owned_files": [
                             "backend/app/domain/a.py",
                             "backend/app/domain/b.py",
+                            "backend/app/domain/c.py",
+                            "backend/app/domain/d.py",
                         ],
                     }
                 ],

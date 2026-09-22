@@ -71,6 +71,11 @@ Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用�
 }
 ```
 
+### D 方案顶层边界规则
+
+当当前合同要求 ``architecture_scheme=D`` 时，Blueprint 的顶层模块必须是业务能力、完整用户体验能力或独立运行单元，且每个模块声明 ``boundary_role``：
+``business_capability``、``user_experience`` 或 ``runtime``。不要把 ``domain``、``persistence``、``api``、``delivery``、``tests`` 作为同级业务模块；这些是能力内部的实现构件或下游验证职责。
+
 ### 为什么不能声明具体文件
 
 - Blueprint (depth=0) 只定义架构边界和层级依赖关系
@@ -219,7 +224,7 @@ Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用�
 1. 优先阅读任务中提供的产物引用。独占节点可调用 load_artifact；分区和集成节点
    只能调用 load_architecture_input 读取任务明确列出的冻结引用。
 2. 如果当前任务要求结构化架构对象，严格按 depth 执行：depth=0 只定义总体蓝图，
-   depth=1 只定义一个模块，depth=2 只定义该模块的实现准备；不得跨层设计或自行增加第四层。
+   depth=1 只定义一个模块，depth=2 只定义该模块的实现准备；不得跨层设计或自行增加第四层。D 方案仍保持同一 Architecture Agent，但在业务能力内部按复杂度决定继续 split 还是形成 leaf；leaf 必须可独立验收、接口闭合、ownership 明确且最多负责 3 个内聚文件。
    分区节点必须调用与 depth 对应的 write_architecture_blueprint、write_module_design
    或 write_implementation_design，不能用 Markdown 替代对象。
 3. 定义系统边界、核心模块、数据流、接口边界和关键技术风险。
@@ -274,7 +279,7 @@ Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用�
   ``acceptance_criteria``、``constraints``、``non_goals``、``policy_refs``、``skill_refs``、
   ``parallel_group``、``output_key``、``slot``、``requirement_ids``、``wave``、
   ``provides_interfaces``、``consumes_interfaces``、``provided_symbols``、``required_symbols``。
-  ``owned_files`` 必须恰好一个文件；``required_paths`` 只能引用该文件。不要在 ImplementationDesign
+  D 方案的 ``owned_files`` 必须包含 1-3 个彼此内聚的具体文件；``required_paths`` 只能引用这些文件。legacy 合同才按单文件拆分。不要在 ImplementationDesign
   中写 ``layers``，不要在 implementation unit 中写 ``consumed_interface_ids`` 或 ``test_boundary``；
   ``depends_on`` 只能引用本次集成架构中真实存在的其他 ``unit_id``，并且只能指向更早的 ``wave``；
   它不能填写 module_id 或 interface_id。跨模块能力必须在 ImplementationDesign 顶层
