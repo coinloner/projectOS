@@ -37,6 +37,17 @@ _PROVIDERS: dict[str, dict[str, str]] = {
         "api_key_env": "FHL_API_KEY",
         "crewai_provider": "openai",
     },
+    # Wanfa is an OpenAI Responses-compatible gateway used by the live
+    # validation path.  Keep its public provider name so traces and the API
+    # request match the configured deployment, while CrewAI uses the local
+    # OpenAI-compatible adapter.
+    "wanfa": {
+        "base_url": "https://wanfaai.com",
+        "model": "gpt-5.6-terra",
+        "api_key_env": "wanfa_API_KEY",
+        "crewai_provider": "openai",
+        "wire_api": "responses",
+    },
     "claude": {
         "base_url": "https://api.anthropic.com",
         "model": "claude-sonnet-5-20250901",

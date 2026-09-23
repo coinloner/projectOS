@@ -117,6 +117,20 @@ class LLMFactoryTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "SILICONFLOW_API_KEY"):
                 build_llm()
 
+    def test_wanfa_uses_responses_endpoint_and_model(self) -> None:
+        with patch("app.llm.factory.load_dotenv"), patch.dict(
+            os.environ,
+            {"PROJECTOS_LLM_PROVIDER": "wanfa", "wanfa_API_KEY": "test-key"},
+            clear=True,
+        ):
+            llm = build_llm()
+
+        self.assertEqual(llm.model, "gpt-5.6-terra")
+        self.assertEqual(llm.provider, "openai")
+        self.assertEqual(llm.base_url, "https://wanfaai.com")
+        self.assertIsInstance(llm, OpenAIResponsesLLM)
+        self.assertTrue(llm.stream)
+
     def test_fhl_uses_openai_compatible_endpoint_and_model(self) -> None:
         with patch("app.llm.factory.load_dotenv"), patch.dict(
             os.environ,
