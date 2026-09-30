@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from app.orchestration.trace import TraceContext
 from app.orchestration.work_item import WorkItem
@@ -20,6 +21,10 @@ class ExecutionPlan:
     template_id: str | None = None
     process_id: str = "software_delivery"
     trace: TraceContext = field(default_factory=TraceContext.ephemeral)
+    # Explicitly distinguishes a release graph from an intentional staged
+    # validation run (for example Live L1 CodeAgent -> Wave 0 -> /health).
+    # The default remains full_delivery so existing plans stay fail-closed.
+    validation_scope: Literal["full_delivery", "architecture", "vertical_slice"] = "full_delivery"
 
     def __post_init__(self) -> None:
         if not self.id or not self.id.strip():
@@ -32,6 +37,8 @@ class ExecutionPlan:
             raise ValueError("ExecutionPlan.template_id 不能是空字符串")
         if not self.process_id or not self.process_id.strip():
             raise ValueError("ExecutionPlan.process_id 不能为空")
+        if self.validation_scope not in {"full_delivery", "architecture", "vertical_slice"}:
+            raise ValueError("ExecutionPlan.validation_scope 无效")
 
         item_ids = [item.id for item in self.work_items]
         if len(set(item_ids)) != len(item_ids):

@@ -7,7 +7,7 @@ from app.orchestration.work_item import WorkItem, WorkItemDependency, Dependency
 
 from app.execution_context import ExecutionMode
 from app.orchestration.delivery_registry import DeliveryContractRegistry
-from app.workflow.templates import architecture_only_template
+from app.workflow.templates import architecture_only_template, architecture_l0_template
 
 
 class ArchitectureProtocolRegistryTest(unittest.TestCase):
@@ -46,6 +46,16 @@ class ArchitectureProtocolRegistryTest(unittest.TestCase):
 
     def test_unknown_partition_does_not_inherit_markdown_contract(self):
         self.assertIsNone(self.contract(ExecutionMode.PARTITIONED, "unknown-slot"))
+
+    def test_live_l0_template_ends_at_contract_without_code(self):
+        nodes = {node.id: node for node in architecture_l0_template().nodes}
+        assert set(nodes) == {"requirement", "architecture-blueprint",
+                              "architecture-integration", "architecture-quality-gate", "contract"}
+        assert nodes["contract"].depends_on == ("architecture-quality-gate",)
+        assert nodes["contract"].stage_id == "contract"
+        assert nodes["contract"].publish_target == "architecture_contract"
+        assert nodes["contract"].execution_mode is ExecutionMode.INTEGRATION
+        assert all(node.agent_id != "code_agent" for node in nodes.values())
 
     def test_gate_consumes_integration_candidate_not_partitioned_blueprint(self):
         nodes = {node.id: node for node in architecture_only_template().nodes}

@@ -8,9 +8,14 @@ SSE streaming and must never silently fall back to a non-streaming request.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import httpx
 import os
+import queue
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -178,6 +183,35 @@ class OpenAIResponsesLLM(OpenAICompletion):
         except Exception:
             return None
 
+    def _get_client_params(self) -> dict[str, Any]:
+        """Use a bounded per-read timeout for streamed Responses calls.
+
+        CrewAI passes one scalar timeout to OpenAI, which also becomes the
+        socket read timeout. A relay that sends headers and then stops can
+        therefore hold a Worker for many minutes. Keep connection setup
+        generous, but bound each SSE read so the normal retry/checkpoint path
+        can take over.
+        """
+        params = super()._get_client_params()
+        try:
+            read_seconds = float(os.environ.get("PROJECTOS_RESPONSES_READ_TIMEOUT_SECONDS", "75"))
+        except (TypeError, ValueError):
+            read_seconds = 75.0
+        if read_seconds <= 0:
+            read_seconds = 75.0
+        try:
+            retries = int(os.environ.get("PROJECTOS_RESPONSES_MAX_RETRIES", "0"))
+        except (TypeError, ValueError):
+            retries = 0
+        params["timeout"] = httpx.Timeout(
+            connect=max(float(getattr(self, "timeout", 600.0) or 600.0), 30.0),
+            read=read_seconds,
+            write=max(float(getattr(self, "timeout", 600.0) or 600.0), 30.0),
+            pool=max(float(getattr(self, "timeout", 600.0) or 600.0), 30.0),
+        )
+        params["max_retries"] = max(0, retries)
+        return params
+
     def _prepare_responses_params(self, messages, tools=None, response_model=None):
         """Prepare a provider-safe Responses request.
 
@@ -199,6 +233,67 @@ class OpenAIResponsesLLM(OpenAICompletion):
     def supports_function_calling(self) -> bool:
         """Responses supports the same function-calling contract as CrewAI."""
         return super().supports_function_calling()
+
+    @staticmethod
+    def _stream_max_seconds() -> float:
+        """Bound a live SSE response even when the relay keeps emitting deltas.
+
+        A provider can keep a connection alive with function-argument fragments
+        forever without ever producing a terminal event. The outer Worker
+        watchdog cannot safely distinguish that from useful progress, so the
+        adapter owns a separate request-level ceiling.
+        """
+        try:
+            value = float(os.environ.get("PROJECTOS_RESPONSES_STREAM_MAX_SECONDS", "300"))
+        except (TypeError, ValueError):
+            value = 300.0
+        return value if value > 0 else 300.0
+
+    @staticmethod
+    def _sse_read_timeout_seconds() -> float:
+        try:
+            value = float(os.environ.get("PROJECTOS_RESPONSES_READ_TIMEOUT_SECONDS", "75"))
+        except (TypeError, ValueError):
+            value = 75.0
+        return value if value > 0 else 75.0
+
+    def _check_stream_deadline(self, started_at: float) -> None:
+        elapsed = time.monotonic() - started_at
+        maximum = self._stream_max_seconds()
+        if elapsed > maximum:
+            raise RuntimeError(
+                f"Responses API stream exceeded request ceiling of {maximum:g}s "
+                "without a terminal event"
+            )
+
+    @staticmethod
+    def _normalize_architecture_tool_arguments(name: str, arguments: Any) -> Any:
+        """Repair a relay's flattened writer envelope, not its design data.
+
+        Some Responses-compatible relays emit the correct architecture DTO as
+        the top-level function arguments even though the advertised tool
+        schema requires ``{"design": DTO}``. Only the three known writers
+        and their exact depth are eligible; CrewAI and ToolGateway still do
+        the normal schema, ownership, and authorization validation.
+        """
+        depths = {
+            "write_architecture_blueprint": 0,
+            "write_module_design": 1,
+            "write_implementation_design": 2,
+        }
+        expected_depth = depths.get(name)
+        if expected_depth is None:
+            return arguments
+        try:
+            parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+        except (TypeError, ValueError):
+            return arguments
+        if not isinstance(parsed, dict) or "design" in parsed:
+            return arguments
+        if parsed.get("depth") != expected_depth or "design_id" not in parsed:
+            return arguments
+        wrapped = {"design": parsed}
+        return json.dumps(wrapped, ensure_ascii=False) if isinstance(arguments, str) else wrapped
 
     def _sse_diag_start(self, *, mode: str, params: dict[str, Any]) -> dict[str, Any]:
         """Create low-sensitivity diagnostics for one Responses stream.
@@ -309,10 +404,155 @@ class OpenAIResponsesLLM(OpenAICompletion):
             "function_calls": state["function_calls"],
         })
 
-    def _iter_sse_events(self, stream: Any, state: dict[str, Any]):
-        """Yield sync SSE events and close diagnostics on every exit path."""
+    def _create_sync_stream(self, params: dict[str, Any]) -> Any:
+        """Bound response-header creation even when the SDK ignores socket timeouts.
+
+        No tools or response events are processed by this thread. If creation
+        eventually returns after the deadline, close the abandoned stream so
+        an expired request cannot deliver a late result into a newer attempt.
+        """
+        results: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+        abandoned = threading.Event()
+        _diag_file_event("create_wait_start", {"mode": "sync"})
+        handoff = threading.Lock()
+
+        def close_late_stream(stream: Any) -> None:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.debug("responses_abandoned_stream_close_failed", exc_info=True)
+
+        def create() -> None:
+            _diag_file_event("create_worker_start", {"mode": "sync"})
+            try:
+                kind, result = "stream", self._get_sync_client().responses.create(**params)
+            except Exception as error:
+                kind, result = "error", error
+            with handoff:
+                if not abandoned.is_set():
+                    results.put_nowait((kind, result))
+                    return
+            if kind == "stream":
+                close_late_stream(result)
+
+        threading.Thread(
+            target=create, name="projectos-responses-sse-connect", daemon=True
+        ).start()
+        timeout = self._sse_read_timeout_seconds()
         try:
-            yield from stream
+            kind, payload = results.get(timeout=timeout)
+        except queue.Empty as error:
+            # Synchronize with the producer's check/put. A response may land
+            # between queue.get timing out and this thread marking it abandoned.
+            with handoff:
+                abandoned.set()
+                try:
+                    late_kind, late_result = results.get_nowait()
+                except queue.Empty:
+                    late_kind, late_result = None, None
+            if late_kind == "stream":
+                threading.Thread(
+                    target=close_late_stream, args=(late_result,),
+                    name="projectos-responses-sse-closer", daemon=True,
+                ).start()
+            raise TimeoutError(
+                f"Responses API SSE create exceeded {timeout:g}s without response headers"
+            ) from error
+        _diag_file_event("create_wait_end", {"mode": "sync", "result": kind})
+        if kind == "error":
+            raise payload
+        return payload
+
+    def _iter_sse_events(self, stream: Any, state: dict[str, Any]):
+        """Yield sync SSE events with an explicit inter-event deadline.
+
+        The OpenAI SDK normally delegates this to httpx's read timeout, but a
+        few OpenAI-compatible relays return a stream wrapper whose blocking
+        iterator does not propagate that timeout. Keep the network iterator in
+        a daemon reader and make the control-plane-facing iterator bounded.
+        This lets a Worker recover from a half-open SSE connection instead
+        of waiting for the outer Worker watchdog. The bounded queue prevents
+        a fast relay from buffering arbitrary response data in memory.
+        """
+        events: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+        stopped = threading.Event()
+
+        def publish(kind: str, payload: Any) -> None:
+            while not stopped.is_set():
+                try:
+                    events.put((kind, payload), timeout=0.1)
+                    return
+                except queue.Full:
+                    continue
+
+        def consume() -> None:
+            try:
+                for event in stream:
+                    if stopped.is_set():
+                        return
+                    publish("event", event)
+            except Exception as error:
+                publish("error", error)
+            finally:
+                publish("end", None)
+
+        reader = threading.Thread(
+            target=consume,
+            name="projectos-responses-sse-reader",
+            daemon=True,
+        )
+        reader.start()
+        timeout = self._sse_read_timeout_seconds()
+        started_at = time.monotonic()
+        maximum = self._stream_max_seconds()
+        try:
+            while True:
+                remaining = maximum - (time.monotonic() - started_at)
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"Responses API stream exceeded request ceiling of {maximum:g}s "
+                        "without a terminal event"
+                    )
+                try:
+                    kind, payload = events.get(timeout=min(timeout, remaining))
+                except queue.Empty as error:
+                    elapsed = time.monotonic() - started_at
+                    transport_error = TimeoutError(
+                        f"Responses API stream exceeded request ceiling of {maximum:g}s "
+                        "without a terminal event"
+                        if elapsed >= maximum else
+                        f"Responses API SSE read exceeded {timeout:g}s without an event"
+                    )
+                    _diag_file_event("transport_error", {
+                        "mode": "sync",
+                        "stage": "iterate",
+                        "error_type": type(transport_error).__name__,
+                        "timeout_seconds": timeout,
+                    })
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        # A relay's close() can itself block on a half-open
+                        # connection; it must not delay checkpoint recovery.
+                        def close_stream() -> None:
+                            try:
+                                close()
+                            except Exception:
+                                logger.debug("responses_sse_close_failed", exc_info=True)
+
+                        threading.Thread(
+                            target=close_stream,
+                            name="projectos-responses-sse-closer",
+                            daemon=True,
+                        ).start()
+                    raise transport_error from error
+                if kind == "event":
+                    yield payload
+                elif kind == "error":
+                    raise payload
+                else:
+                    return
         except Exception as error:
             logger.exception("responses_sse_transport_error mode=sync stage=iterate")
             _diag_file_event("transport_error", {
@@ -322,12 +562,51 @@ class OpenAIResponsesLLM(OpenAICompletion):
             })
             raise
         finally:
+            stopped.set()
             self._sse_diag_finish(state)
 
     async def _aiter_sse_events(self, stream: Any, state: dict[str, Any]):
-        """Yield async SSE events and close diagnostics on every exit path."""
+        """Yield async SSE events with an explicit inter-event deadline."""
+        iterator = stream.__aiter__()
+        timeout = self._sse_read_timeout_seconds()
+        maximum = self._stream_max_seconds()
+        started_at = time.monotonic()
         try:
-            async for event in stream:
+            while True:
+                remaining = maximum - (time.monotonic() - started_at)
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"Responses API stream exceeded request ceiling of {maximum:g}s "
+                        "without a terminal event"
+                    )
+                try:
+                    event = await asyncio.wait_for(
+                        iterator.__anext__(), timeout=min(timeout, remaining)
+                    )
+                except StopAsyncIteration:
+                    return
+                except asyncio.TimeoutError as error:
+                    transport_error = TimeoutError(
+                        f"Responses API stream exceeded request ceiling of {maximum:g}s "
+                        "without a terminal event"
+                        if time.monotonic() - started_at >= maximum else
+                        f"Responses API SSE read exceeded {timeout:g}s without an event"
+                    )
+                    _diag_file_event("transport_error", {
+                        "mode": "async",
+                        "stage": "iterate",
+                        "error_type": type(transport_error).__name__,
+                        "timeout_seconds": timeout,
+                    })
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        try:
+                            result = close()
+                            if hasattr(result, "__await__"):
+                                await asyncio.wait_for(result, timeout=min(timeout, 1.0))
+                        except Exception:
+                            logger.debug("responses_async_sse_close_failed", exc_info=True)
+                    raise transport_error from error
                 yield event
         except Exception as error:
             logger.exception("responses_sse_transport_error mode=async stage=iterate")
@@ -397,12 +676,14 @@ class OpenAIResponsesLLM(OpenAICompletion):
 
         diag = self._sse_diag_start(mode="sync", params=params)
 
-        client = self._get_sync_client()
+        # Client initialization and response headers are both inside the
+        # bounded create helper; a lazy SDK client can otherwise hang before
+        # the SSE iterator watchdog is installed.
         # Credentials and custom headers are not diagnostic evidence.
         logger.debug("responses_request model=%s", params.get("model"))
 
         try:
-            stream = client.responses.create(**params)
+            stream = self._create_sync_stream(params)
         except Exception as error:
             logger.exception("responses_sse_transport_error mode=sync stage=create")
             _diag_file_event("transport_error", {
@@ -414,8 +695,10 @@ class OpenAIResponsesLLM(OpenAICompletion):
         response_id_stream = None
         argument_deltas: dict[str, str] = {}
         function_names: dict[str, str] = {}
+        stream_started_at = time.monotonic()
 
         for event in self._iter_sse_events(stream, diag):
+            self._check_stream_deadline(stream_started_at)
             event_type = self._sse_diag_event(diag, event)
             if event_type == "response.created":
                 response_id_stream = event.response.id
@@ -455,12 +738,13 @@ class OpenAIResponsesLLM(OpenAICompletion):
                 item = event.item
                 if item.type == "function_call":
                     call_id = str(getattr(item, "call_id", "") or "")
+                    name = getattr(item, "name", None) or function_names.get(call_id, "")
                     arguments = getattr(item, "arguments", None) or argument_deltas.get(call_id, "")
                     function_calls.append(
                         {
                             "id": call_id,
-                            "name": getattr(item, "name", None) or function_names.get(call_id, ""),
-                            "arguments": arguments,
+                            "name": name,
+                            "arguments": self._normalize_architecture_tool_arguments(name, arguments),
                         }
                     )
                     diag["function_calls"] += 1
@@ -587,7 +871,21 @@ class OpenAIResponsesLLM(OpenAICompletion):
 
         diag = self._sse_diag_start(mode="async", params=params)
         try:
-            stream = await self._get_async_client().responses.create(**params)
+            stream = await asyncio.wait_for(
+                self._get_async_client().responses.create(**params),
+                timeout=self._sse_read_timeout_seconds(),
+            )
+        except asyncio.TimeoutError as error:
+            timeout = self._sse_read_timeout_seconds()
+            failure = TimeoutError(
+                f"Responses API SSE create exceeded {timeout:g}s without response headers"
+            )
+            _diag_file_event("transport_error", {
+                "mode": "async", "stage": "create", "error_type": type(failure).__name__,
+                "timeout_seconds": timeout,
+            })
+            self._sse_diag_finish(diag)
+            raise failure from error
         except Exception as error:
             logger.exception("responses_sse_transport_error mode=async stage=create")
             _diag_file_event("transport_error", {
@@ -599,8 +897,10 @@ class OpenAIResponsesLLM(OpenAICompletion):
         response_id_stream = None
         argument_deltas: dict[str, str] = {}
         function_names: dict[str, str] = {}
+        stream_started_at = time.monotonic()
 
         async for event in self._aiter_sse_events(stream, diag):
+            self._check_stream_deadline(stream_started_at)
             event_type = self._sse_diag_event(diag, event)
             if event_type == "response.created":
                 response_id_stream = event.response.id
@@ -638,12 +938,13 @@ class OpenAIResponsesLLM(OpenAICompletion):
                 item = event.item
                 if item.type == "function_call":
                     call_id = str(getattr(item, "call_id", "") or "")
+                    name = getattr(item, "name", None) or function_names.get(call_id, "")
                     arguments = getattr(item, "arguments", None) or argument_deltas.get(call_id, "")
                     function_calls.append(
                         {
                             "id": call_id,
-                            "name": getattr(item, "name", None) or function_names.get(call_id, ""),
-                            "arguments": arguments,
+                            "name": name,
+                            "arguments": self._normalize_architecture_tool_arguments(name, arguments),
                         }
                     )
                     diag["function_calls"] += 1

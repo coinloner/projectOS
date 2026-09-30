@@ -225,11 +225,30 @@ class TaskInputPackage:
             if len(owned_files) == 1:
                 owned = owned_files[0]
                 if owned.endswith("/main.py") and owned.startswith("backend/"):
+                    has_canonical_bindings = bool(
+                        self.delivery_contract
+                        and (
+                            self.delivery_contract.get("required_bindings")
+                            or self.delivery_contract.get("provided_bindings")
+                        )
+                    )
+                    if has_canonical_bindings:
+                        missing_binding_rule = (
+                            "若前置符号尚不存在，不能使用适配导入、候选模块扫描、"
+                            "importlib 回退或最小占位接口；必须返回结构化 binding 诊断，"
+                            "交由控制面修复合同或重新调度责任实现单元。"
+                        )
+                    else:
+                        missing_binding_rule = (
+                            "只有在控制面没有提供 canonical binding 的历史兼容场景，"
+                            "才允许使用明确且局部的适配导入；不得扫描候选模块或隐藏缺失依赖。"
+                        )
                     prompt += (
                         "\n\n组合根专属边界：当前只实现这个完整文件。只能创建 app、注册已经存在的"
                         "路由/异常处理并提供 /health；不要把 routes、schemas、依赖注入、数据库查询"
-                        "或业务规则写进 main.py。若前置符号尚不存在，使用明确的适配导入或最小占位"
-                        "接口，并仍先调用 write_staged_code_file 落盘。"
+                        "或业务规则写进 main.py。"
+                        + missing_binding_rule
+                        + "仍必须先调用 write_staged_code_file 落盘。"
                     )
                 elif "/interfaces/" in f"/{owned}/":
                     prompt += (
@@ -245,17 +264,38 @@ class TaskInputPackage:
                     "不要把目录、glob 或 allowed_paths 当成文件；应返回结构化失败，"
                     "等待 Architecture Contract 修复后再执行。"
                 )
-            if self.delivery_contract:
+        # Keep the delivery contract visible even when a non-CodeAgent node has
+        # no implementation-unit envelope.  Binding semantics are control-plane
+        # data and must not disappear merely because the optional implementation
+        # metadata is absent.
+        if self.delivery_contract:
+            prompt += (
+                "\n统一交付合同入口（所有节点必须使用同一来源）："
+                f"\n{json.dumps(self.delivery_contract, ensure_ascii=False)}"
+            )
+            if self.delivery_contract.get("interfaces"):
                 prompt += (
-                    "\n统一交付合同入口（所有节点必须使用同一来源）："
-                    f"\n{json.dumps(self.delivery_contract, ensure_ascii=False)}"
+                    "\n\n跨节点接口协作要求：只能使用合同声明的接口和符号。"
+                    "实现前先确认 consumed/provided 接口的签名、输入输出和错误约束；"
+                    "发现契约缺口时返回结构化诊断，不要自行发明同名接口。"
                 )
-                if self.delivery_contract.get("interfaces"):
-                    prompt += (
-                        "\n\n跨节点接口协作要求：只能使用合同声明的接口和符号。"
-                        "实现前先确认 consumed/provided 接口的签名、输入输出和错误约束；"
-                        "发现契约缺口时返回结构化诊断，不要自行发明同名接口。"
-                    )
+            if self.delivery_contract.get("required_http_interfaces"):
+                prompt += (
+                    "\n\n冻结 HTTP 消费合同：required_http_interfaces 是唯一允许的 API method/path；"
+                    "前端、测试和其他 consumer 必须逐项使用这些路由，不能自行添加 /api 前缀、stats 别名、"
+                    "complete/uncomplete 别名或改变 path parameter。若 provider 实现与合同不一致，返回结构化诊断，"
+                    "交由控制面修复 provider，不要在 consumer 中兼容多个猜测路径。"
+                    f"\n{json.dumps(self.delivery_contract.get('required_http_interfaces'), ensure_ascii=False)}"
+                )
+            if self.delivery_contract.get("required_bindings") or self.delivery_contract.get("provided_bindings"):
+                prompt += (
+                    "\n\nCanonical import binding（控制面生成，优先级高于接口名称或模型猜测）："
+                    "\n- required_bindings 中的 module 和 provided_symbols 是唯一允许的进程内 Python import 目标；"
+                    "\n- 必须直接使用合同给出的 module/symbol，例如 from app.task_service import TaskService；"
+                    "\n- 禁止根据 interface_id 猜测模块路径、改写类名、候选模块扫描、importlib 动态回退或兼容性 import 列表；"
+                    "\n- 如果 binding 与当前代码或需求冲突，返回结构化诊断，不要自行创造替代 binding。"
+                    f"\n{json.dumps({'provided_bindings': self.delivery_contract.get('provided_bindings', []), 'required_bindings': self.delivery_contract.get('required_bindings', [])}, ensure_ascii=False)}"
+                )
         if (
             self.execution_mode == ExecutionMode.PARTITIONED.value
             and self.agent_id == "code_agent"

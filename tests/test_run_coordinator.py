@@ -10,8 +10,10 @@ from unittest.mock import Mock, patch
 from app.application.runs import (
     RunCoordinator,
     _load_delivery_resume,
+    _canonical_code_recovery_diagnostic,
     _prepare_architecture_contract_recovery,
     _stall_observations,
+    _renew_worker_deadline,
 )
 from app.bootstrap.runtime import build_container
 from app.execution_context import ExecutionMode
@@ -82,6 +84,230 @@ class NonRetryableRepairTest(unittest.TestCase):
         container.runner.run.assert_called_once()
         container.planner.plan_repair.assert_not_called()
         self.assertEqual(container.traces.record_event.call_args.args[2], "repair_cycle_blocked")
+
+
+class CodeWaveRepairFrontierTest(unittest.TestCase):
+    def test_owner_rerun_invalidates_integration_and_review_descendants(self) -> None:
+        owner = WorkItem(id="wi-http", agent_id="code_agent", objective="HTTP",
+                         output_key="http", owned_files=("backend/app/main.py",))
+        independent = WorkItem(id="wi-service", agent_id="code_agent", objective="Service",
+                               output_key="service", owned_files=("backend/app/task_service.py",))
+        integration = WorkItem(
+            id="wi-integration", agent_id="code_integration_agent", objective="Integrate",
+            output_key="implementation", dependencies=(WorkItemDependency(
+                work_item_id=owner.id, source=DependencySource.SYSTEM,
+            ), WorkItemDependency(
+                work_item_id=independent.id, source=DependencySource.SYSTEM,
+            )),
+        )
+        review = WorkItem(
+            id="wi-review", agent_id="review_agent", objective="Review",
+            output_key="review", dependencies=(WorkItemDependency(
+                work_item_id=integration.id, source=DependencySource.SYSTEM,
+            ),),
+        )
+        plan = ExecutionPlan(id="delivery-frontier", goal="todo",
+                             work_items=(integration, owner, independent, review))
+        failure = FailureSignal(
+            FailureKind.CODE_DELIVERY_INCOMPLETE,
+            "Integration 语义检查拒绝合并 [owner_files: backend/app/main.py]",
+            related_work_item_ids=(owner.id,),
+        )
+        failed = NodeResult.needs_replan(
+            work_item_id=integration.id, agent_id=integration.agent_id,
+            content=failure.summary, signal=failure,
+        )
+        state = RunState(plan=plan, node_results={
+            item.id: NodeResult.completed(
+                work_item_id=item.id, agent_id=item.agent_id, content=item.id,
+            ) for item in (owner, independent, review)
+        } | {integration.id: failed})
+        first = GraphRunResult(
+            status=GraphRunStatus.NEEDS_REPLAN, state=state,
+            node_result=failed, failure_signal=failure,
+        )
+        second = GraphRunResult(status=GraphRunStatus.BLOCKED, state=state)
+        container = SimpleNamespace(runner=Mock(), planner=Mock(), traces=Mock())
+        container.runner.run.side_effect = [first, second]
+        self.assertIs(RunCoordinator._run_with_repairs(container, plan), second)
+        self.assertEqual(set(state.node_results), {independent.id})
+        self.assertEqual(state.forced_rerun_work_item_ids, {owner.id})
+        self.assertIn(owner.id, state.recovery_diagnostics)
+        self.assertEqual(container.runner.run.call_count, 2)
+
+
+
+class CanonicalCodeRecoveryTest(unittest.TestCase):
+    def test_old_contract_derives_bound_import_without_changing_scope(self) -> None:
+        provider = WorkItem(
+            id="wi-service", agent_id="code_agent", objective="Service",
+            output_key="service", implementation_unit_id="service",
+            owned_files=("backend/app/task_service.py",),
+            delivery_contract={"provided_symbols": ["TaskService", "prose and noise"]},
+        )
+        consumer = WorkItem(
+            id="wi-http", agent_id="code_agent", objective="HTTP",
+            output_key="http", owned_files=("backend/app/main.py",),
+            dependencies=(WorkItemDependency(
+                work_item_id=provider.id, source=DependencySource.SYSTEM,
+            ),),
+        )
+        plan = ExecutionPlan(
+            id="old-contract", goal="todo", work_items=(consumer, provider),
+        )
+        diagnostic = _canonical_code_recovery_diagnostic(plan, consumer.id)
+        self.assertIn("backend/app/task_service.py -> app.task_service", diagnostic)
+        self.assertIn("TaskService", diagnostic)
+        self.assertNotIn("prose and noise", diagnostic)
+        self.assertEqual(_canonical_code_recovery_diagnostic(plan, provider.id), "")
+        self.assertNotIn("required_bindings", consumer.delivery_contract or {})
+
+
+class ResumeCheckpointMergeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.container = build_container(self.directory.name)
+        self.trace = self.container.traces.start_trace("合并交付恢复 checkpoint")
+
+    def tearDown(self) -> None:
+        self.directory.cleanup()
+
+    def test_event_frontier_wins_over_stale_forced_checkpoint(self) -> None:
+        environment = WorkItem(
+            id="wi-environment",
+            agent_id="bootstrap_agent",
+            objective="准备运行环境",
+            output_key="environment",
+        )
+        implementation = WorkItem(
+            id="wi-implementation",
+            agent_id="code_agent",
+            objective="实现代码",
+            output_key="implementation",
+            dependencies=(
+                WorkItemDependency(
+                    work_item_id=environment.id,
+                    source=DependencySource.SYSTEM,
+                ),
+            ),
+        )
+        plan = ExecutionPlan(
+            id="delivery-merge",
+            goal="验证交付恢复",
+            trace=self.trace,
+            work_items=(environment, implementation),
+        )
+        self.container.traces.record_plan(plan)
+        self.container.traces.record_delivery_plan(plan)
+
+        # This models a stale live checkpoint left by a repair barrier: it
+        # carries a forced rerun marker but omits upstream completions that
+        # are already durable in the event log.
+        stale = RunState(
+            plan=plan,
+            forced_rerun_work_item_ids={implementation.id},
+            recovery_diagnostics={implementation.id: "repair scheduled"},
+        )
+        self.container.traces.record_checkpoint(self.trace, stale.as_checkpoint())
+
+        completed = RunState(
+            plan=plan,
+            node_results={
+                item.id: NodeResult.completed(
+                    work_item_id=item.id,
+                    agent_id=item.agent_id,
+                    content=item.id,
+                )
+                for item in plan.work_items
+            },
+        )
+        self.container.traces.record_delivery_checkpoint(
+            self.trace, completed.as_checkpoint()
+        )
+        for item in plan.work_items:
+            self.container.traces.record_event(
+                self.trace, item.id, "work_item_completed"
+            )
+
+        resumed_plan, resumed = _load_delivery_resume(
+            self.container, self.trace.trace_id
+        )
+
+        self.assertEqual(resumed_plan.id, plan.id)
+        self.assertEqual(set(resumed.node_results), {environment.id, implementation.id})
+        self.assertEqual(resumed.forced_rerun_work_item_ids, set())
+        self.assertEqual(resumed.recovery_diagnostics, {})
+
+
+    def test_resume_invalidates_false_completed_code_integration(self) -> None:
+        from pathlib import Path
+        producer = WorkItem(
+            id="wi-http", agent_id="code_agent", objective="HTTP", output_key="http",
+        )
+        integration = WorkItem(
+            id="wi-integrate", agent_id="code_integration_agent",
+            objective="集成", output_key="implementation",
+            dependencies=(WorkItemDependency(
+                work_item_id=producer.id, source=DependencySource.SYSTEM,
+            ),),
+        )
+        plan = ExecutionPlan(
+            id="delivery-false-integration", goal="检查历史修复产物",
+            trace=self.trace, work_items=(integration, producer),
+        )
+        main = Path(self.directory.name) / "workspace/backend/app/main.py"
+        main.parent.mkdir(parents=True)
+        main.write_text(
+            "from app.missing_service import Service\n", encoding="utf-8"
+        )
+        self.container.traces.record_plan(plan)
+        self.container.traces.record_delivery_plan(plan)
+        complete = RunState(plan=plan, node_results={
+            item.id: NodeResult.completed(
+                work_item_id=item.id, agent_id=item.agent_id, content=item.id,
+            ) for item in plan.work_items
+        })
+        self.container.traces.record_delivery_checkpoint(
+            self.trace, complete.as_checkpoint()
+        )
+        _, resumed = _load_delivery_resume(self.container, self.trace.trace_id)
+        self.assertEqual(set(resumed.node_results), {producer.id})
+        self.assertIn("不存在的本地模块", resumed.recovery_diagnostics[integration.id])
+
+    def test_resume_preserves_completed_dependency_after_its_anchor(self) -> None:
+        producer = WorkItem(
+            id="wi-code-producer", agent_id="code_agent", objective="实现服务",
+            output_key="implementation_service",
+        )
+        integration = WorkItem(
+            id="wi-integration-anchor", agent_id="code_integration_agent",
+            objective="集成服务", output_key="implementation",
+            dependencies=(WorkItemDependency(
+                work_item_id=producer.id, source=DependencySource.SYSTEM,
+            ),),
+        )
+        # Dynamically expanded plans retain template anchors first. The
+        # checkpoint is complete even though the producer is serialized later.
+        plan = ExecutionPlan(
+            id="delivery-out-of-order", goal="恢复已完成集成",
+            trace=self.trace, work_items=(integration, producer),
+        )
+        self.container.traces.record_plan(plan)
+        self.container.traces.record_delivery_plan(plan)
+        complete = RunState(
+            plan=plan,
+            node_results={item.id: NodeResult.completed(
+                work_item_id=item.id, agent_id=item.agent_id, content=item.id,
+            ) for item in plan.work_items},
+        )
+        self.container.traces.record_delivery_checkpoint(
+            self.trace, complete.as_checkpoint()
+        )
+        resumed_plan, resumed = _load_delivery_resume(
+            self.container, self.trace.trace_id
+        )
+        self.assertEqual(resumed_plan.id, plan.id)
+        self.assertEqual(set(resumed.node_results), {integration.id, producer.id})
 
 
 class ArchitectureContractRecoveryTest(unittest.TestCase):
@@ -422,6 +648,30 @@ class ArchitectureContractRecoveryTest(unittest.TestCase):
         self.assertEqual(event["type"], "architecture_contract_recovery_scheduled")
         self.assertEqual(event["details"]["rerun_work_item_id"], self.blueprint.id)
 
+    def test_preflight_replans_blueprint_for_all_unowned_required_files(self) -> None:
+        state = RunState(
+            plan=self.plan,
+            node_results={item.id: NodeResult.completed(
+                work_item_id=item.id, agent_id=item.agent_id, content=item.id
+            ) for item in self.plan.work_items},
+            artifacts={item.output_key: item.id for item in self.plan.work_items},
+        )
+        self.container.traces.record_event(
+            self.trace, self.integration.id, "work_item_needs_replan",
+            details={
+                "kind": "planner_validation",
+                "error": "Architecture integration inputs failed deterministic validation: "
+                         "ArchitectureBlueprint.required_file_not_owned: README.md, tests/test_tasks.py",
+            },
+        )
+        recovered = _prepare_architecture_contract_recovery(
+            self.container, self.trace.trace_id, self.plan, state
+        )
+        self.assertEqual(recovered.forced_rerun_work_item_ids, {self.blueprint.id})
+        self.assertIn("README.md, tests/test_tasks.py", recovered.recovery_diagnostics[self.blueprint.id])
+        self.assertIn(self.unrelated.id, recovered.node_results)
+        self.assertNotIn(self.integration.id, recovered.node_results)
+
     def test_invalidates_module_design_with_stale_blueprint_parent(self) -> None:
         self.container.artifact_repository.write_staged(
             trace_id=self.trace.trace_id,
@@ -759,6 +1009,52 @@ class RunCoordinatorTest(unittest.TestCase):
         )
         coordinator.shutdown()
 
+    def test_worker_deadline_tracks_meaningful_progress_not_process_age(self) -> None:
+        started = datetime.now(timezone.utc)
+        previous = None
+        refreshed_at = started
+        progress = {"run": {"last_meaningful_at": started.isoformat()}}
+        previous, refreshed_at = _renew_worker_deadline(
+            progress, monitor_started_at=started,
+            previous_marker=previous, last_progress_at=refreshed_at,
+            now=started + timedelta(seconds=1),
+        )
+        self.assertEqual(refreshed_at, started)
+        # Heartbeats and raw transport chunks must not mask a true stall.
+        progress["run"]["heartbeat_at"] = (started + timedelta(seconds=20)).isoformat()
+        progress["run"]["last_event_at"] = progress["run"]["heartbeat_at"]
+        previous, refreshed_at = _renew_worker_deadline(
+            progress, monitor_started_at=started,
+            previous_marker=previous, last_progress_at=refreshed_at,
+            now=started + timedelta(seconds=50),
+        )
+        self.assertEqual(refreshed_at, started)
+        # A new WorkItem/tool checkpoint renews the budget even after a long
+        # healthy run in the same process.
+        progress["run"]["last_meaningful_at"] = (
+            started + timedelta(seconds=60)
+        ).isoformat()
+        previous, refreshed_at = _renew_worker_deadline(
+            progress, monitor_started_at=started,
+            previous_marker=previous, last_progress_at=refreshed_at,
+            now=started + timedelta(seconds=61),
+        )
+        self.assertEqual(refreshed_at, started + timedelta(seconds=60))
+        self.assertEqual(previous, progress["run"]["last_meaningful_at"])
+
+    def test_worker_deadline_ignores_previous_worker_snapshot(self) -> None:
+        started = datetime.now(timezone.utc)
+        stale = {"run": {"last_meaningful_at": (
+            started - timedelta(seconds=5)
+        ).isoformat()}}
+        marker, refreshed_at = _renew_worker_deadline(
+            stale, monitor_started_at=started,
+            previous_marker=None, last_progress_at=started,
+            now=started + timedelta(seconds=100),
+        )
+        self.assertIsNone(marker)
+        self.assertEqual(refreshed_at, started)
+
     def test_worker_timeout_terminates_process_and_finishes_trace(self) -> None:
         process = FakeProcess(alive=True, exitcode=None)
         coordinator = RunCoordinator(worker_timeout_seconds=0.01)
@@ -977,6 +1273,29 @@ class RunCoordinatorTest(unittest.TestCase):
         self.assertEqual(len(observations), 1)
         self.assertEqual(observations[0].work_item_id, "wi-stalled")
         self.assertEqual(observations[0].kind, "provider_transport_stall")
+
+    def test_streaming_llm_with_recent_transport_is_not_semantic_stall(self) -> None:
+        old = (datetime.now(timezone.utc) - timedelta(seconds=400)).isoformat()
+        recent = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        progress = {
+            "schema_version": 3,
+            "trace_id": self.trace.trace_id,
+            "run": {"lifecycle": "running"},
+            "batches": {},
+            "work_items": {
+                "wi-streaming": {
+                    "work_item_id": "wi-streaming", "lifecycle": "running",
+                    "activity": "llm", "event_type": "llm_chunk_batch",
+                    "last_event_at": recent, "last_meaningful_at": old,
+                    "clocks": {"transport_at": recent},
+                    "llm": {"state": "streaming"},
+                }
+            },
+        }
+        self.assertEqual(
+            _stall_observations(progress, monitor_started_at=datetime.now(timezone.utc) - timedelta(seconds=500)),
+            (),
+        )
 
     def test_stall_detection_ignores_previous_worker_snapshot(self) -> None:
         old = (datetime.now(timezone.utc) - timedelta(seconds=400)).isoformat()

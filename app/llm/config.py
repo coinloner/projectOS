@@ -43,7 +43,7 @@ _PROVIDERS: dict[str, dict[str, str]] = {
     # OpenAI-compatible adapter.
     "wanfa": {
         "base_url": "https://wanfaai.com",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6-sol",
         "api_key_env": "wanfa_API_KEY",
         "crewai_provider": "openai",
         "wire_api": "responses",
@@ -81,7 +81,7 @@ _PROVIDERS: dict[str, dict[str, str]] = {
 
 # ── 当前激活厂商 ──────────────────────────────
 # 环境变量 PROJECTOS_LLM_PROVIDER 的优先级高于此默认值。
-ACTIVE_PROVIDER: str = "uuapi"
+ACTIVE_PROVIDER: str = "wanfa"
 
 
 @dataclass(frozen=True)

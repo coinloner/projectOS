@@ -45,6 +45,8 @@ class FailureKind(str, Enum):
     # connection-level failure without parsing exception text.
     PROVIDER_EMPTY_RESPONSE = "provider_empty_response"
     PROVIDER_TERMINAL_MISSING = "provider_terminal_missing"
+    # Explicit upstream policy rejection is not a transient transport failure.
+    PROVIDER_POLICY_REJECTED = "provider_policy_rejected"
     TEST_FAILURE = "test_failure"
     SANDBOX_TIMEOUT = "sandbox_timeout"
     SANDBOX_SETUP = "sandbox_setup"

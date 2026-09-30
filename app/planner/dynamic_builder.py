@@ -573,8 +573,10 @@ class DynamicPlanBuilder:
                     acceptance_criteria=(
                         "只能调用 write_implementation_design 保存一个 depth=2 ImplementationDesign。",
                         f"module_id 必须为 {module_id}，parent_design_id 必须为 {design.design_id}。",
-                        "每个 implementation_unit 必须只拥有一个具体 owned_file；接口必须区分 provided_interfaces 和 consumed_interfaces。",
+                        "每个 implementation_unit 的 owned_files 必须是具体文件且唯一归属；接口必须区分 provided_interfaces 和 consumed_interfaces。",
                         f"depends_on_modules 必须保持 Blueprint 声明：[{dependency_text}]。",
+                        "本模块必须由 implementation_units.owned_files 覆盖 Blueprint 分配的文件："
+                        + (", ".join(module.owned_required_files) or "无"),
                     ),
                     constraints=(
                         "只能细化当前模块，不得新增 Blueprint 未声明的模块或业务能力。",
@@ -645,7 +647,6 @@ class DynamicPlanBuilder:
                 item.id
                 for item in plan.work_items
                 if item.stage_id == "contract"
-                and integration.id in item.dependency_ids
             }
             work_items = tuple(
                 updated_integration

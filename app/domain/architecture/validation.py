@@ -92,12 +92,19 @@ class ValidationReceiptStore:
         except ValueError:
             return False
 
-    def verify(self, ref: ArtifactRef, *, artifact_digest: str, parent_digests: tuple[str, ...]) -> ValidationReceipt:
+    def verify(
+        self, ref: ArtifactRef, *, artifact_digest: str,
+        parent_refs: tuple[str, ...], parent_digests: tuple[str, ...],
+    ) -> ValidationReceipt:
         receipt = self.load(ref)
+        if receipt.artifact_ref != ref:
+            raise ValueError(f"ValidationReceipt artifact ref 不匹配: {ref.ref_id}")
         if receipt.status != "passed":
             raise ValueError(f"ValidationReceipt 状态不是 passed: {ref.ref_id}")
         if receipt.artifact_digest != artifact_digest:
             raise ValueError(f"ValidationReceipt artifact digest 不匹配: {ref.ref_id}")
+        if receipt.parent_refs != tuple(parent_refs):
+            raise ValueError(f"ValidationReceipt parent refs 不匹配: {ref.ref_id}")
         if receipt.parent_digests != tuple(parent_digests):
             raise ValueError(f"ValidationReceipt parent digest 不匹配: {ref.ref_id}")
         return receipt

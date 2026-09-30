@@ -22,8 +22,10 @@ from dotenv import load_dotenv
 from app.artifact.repository import ArtifactRepository
 from app.bootstrap.runtime import build_container
 from app.execution_context import ExecutionMode
+from app.domain.architecture.implementation_contract import ProjectContractStore
 from app.orchestration.trace import TraceStore
 from app.llm.config import LLMSelection
+from app.llm.preflight import ProviderPreflight, ProviderPreflightError
 from app.project.project import Project
 
 
@@ -60,11 +62,44 @@ def audit_architecture_publication(path: Path, trace_id: str) -> dict[str, objec
                 raise RuntimeError(f"Integration ran before Architecture producer {item.id}")
     if ends[producer.id] >= starts[gate.id]:
         raise RuntimeError("Gate ran before integration completed")
+    contracts = [item for item in plan.work_items
+                 if item.agent_id == "architecture_contract_agent" and item.stage_id == "contract"]
+    if len(contracts) != 1 or gate.id not in contracts[0].dependency_ids:
+        raise RuntimeError("L0 missing contract barrier after architecture publication")
+    if ends[gate.id] >= starts[contracts[0].id]:
+        raise RuntimeError("Contract ran before Architecture quality gate")
+    contract_file = path / ".projectos" / "architecture" / "project-contract.json"
+    if not contract_file.is_file():
+        raise RuntimeError("L0 Project Contract was not persisted")
+    contract = ProjectContractStore(str(path)).load()
+    if not contract.units:
+        raise RuntimeError("L0 Project Contract has no implementation units")
+    if not (root / "checkpoint.json").is_file():
+        raise RuntimeError("L0 checkpoint missing")
+    contract_digest = hashlib.sha256(json.dumps(
+        contract.as_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+    # The legacy event name ``architecture_contract_published`` is emitted
+    # by the architecture quality gate when publishing architecture, *not*
+    # by the deterministic contract compiler. Verify both boundaries, rather
+    # than falsely attributing the gate event to the Contract WorkItem.
+    if not any(event["type"] == "architecture_contract_published"
+               and event["work_item_id"] == gate.id for event in events):
+        raise RuntimeError("L0 architecture publication event missing")
+    if not any(event["type"] == "deterministic_action_completed"
+               and event["work_item_id"] == contracts[0].id
+               and event.get("details", {}).get("action") == "compile_project_contract_from_designs"
+               for event in events):
+        raise RuntimeError("L0 deterministic contract compilation event missing")
     return dict(candidate_id=candidate.id, source_count=len(candidate.source_refs),
                 revision=revision.ref_id, digest=candidate.digest,
                 expanded_work_items=len(plan.work_items),
                 all_architecture_producers_before_integration=True,
-                integration_before_gate=True)
+                integration_before_gate=True,
+                contract_work_item_id=contracts[0].id,
+                contract_units=len(contract.units), contract_digest=contract_digest,
+                contract_file=str(contract_file),
+                checkpoint=str(root / "checkpoint.json"))
 
 
 def main() -> None:
@@ -75,13 +110,20 @@ def main() -> None:
     load_dotenv(args.env_file, override=False)
     if not os.environ.get('wanfa_API_KEY'):
         raise SystemExit('wanfa_API_KEY is not configured; no project or provider request created')
+    selection = LLMSelection(provider='wanfa', model='gpt-6-sol',
+                             base_url='https://wanfaai.com', api_key_env='wanfa_API_KEY',
+                             crewai_provider='openai', wire_api='responses')
+    try:
+        preflight = ProviderPreflight().check(selection)
+    except ProviderPreflightError as error:
+        result = error.result
+        raise SystemExit(
+            'Provider preflight blocked: ' + json.dumps(result.as_dict(), ensure_ascii=False)
+        ) from error
     name = f'wanfa-architecture-protocol-{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:6]}'
     path = args.projects_root / name
     path.mkdir(parents=True, exist_ok=False)
     Project.create_at(str(path), name=name)
-    selection = LLMSelection(provider='wanfa', model='gpt-5.6-terra',
-                             base_url='https://wanfaai.com', api_key_env='wanfa_API_KEY',
-                             crewai_provider='openai', wire_api='responses')
     container = build_container(str(path), llm_selection=selection)
     goal = ('设计一个小型任务管理应用，最终需有 HTTP API、浏览器交互界面和 SQLite 持久化。'
             '支持创建任务、完成/取消完成、按状态筛选、删除及数量统计；空白标题返回 HTTP 400；'
@@ -89,17 +131,19 @@ def main() -> None:
             '按业务职责及依赖关系拆分，不预设具体文件名。'
             '本次只完成需求与可供后续实现的架构设计、集成和质量门，不进行代码实现。')
     planning = container.planner.plan_controlled_workflow(
-        goal=goal, plan_id=f'run-{uuid4().hex[:12]}', workflow_id='architecture_only')
+        goal=goal, plan_id=f'run-{uuid4().hex[:12]}', workflow_id='architecture_l0')
     plan = planning.plan
     container.traces.set_llm_selection(plan.trace.trace_id, selection)
     evidence = dict(project_path=str(path), trace_id=plan.trace.trace_id,
-                    plan_id=plan.id, workflow='architecture_only', provider=selection.as_dict(),
+                    plan_id=plan.id, workflow='architecture_l0', provider=selection.as_dict(),
+                    provider_preflight=preflight.as_dict(),
                     scope='real requirement and architecture only; not full E2E', status='running')
     report = path / 'validation-evidence.json'
     report.write_text(json.dumps(evidence, ensure_ascii=False, indent=2))
     print('VALIDATION_STARTED ' + json.dumps(evidence, ensure_ascii=False), flush=True)
     started = time.monotonic()
     try:
+        container.traces.mark_running(plan.trace.trace_id)
         result = container.runner.run(plan)
         evidence.update(status=result.status.value, error=result.error,
                         nodes={key: value.as_dict() for key, value in result.state.node_results.items()})

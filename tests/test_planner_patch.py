@@ -70,6 +70,50 @@ class PlannerPatchTest(unittest.TestCase):
 
         self.assertEqual(patch.operations[0].work_item_id, "wi-api")
 
+    def test_repair_patch_accepts_advisory_scope_metadata_without_granting_it(self) -> None:
+        patch = RepairPlanPatch.parse(
+            '{"rationale":"修复","base_plan_id":"plan-patch",'
+            '"operations":[{"operation":"add","ref":"fix","agent_id":"test_agent",'
+            '"objective":"重新验证","repair_paths":["tests/**"],'
+            '"owner_files":["tests/test_api.py"],"depends_on":[]}]}'
+        )
+
+        self.assertEqual(patch.operations[0].repair_paths, ["tests/**"])
+        self.assertEqual(patch.operations[0].owner_files, ["tests/test_api.py"])
+
+    def test_repair_patch_normalizes_verification_operation_alias(self) -> None:
+        patch = RepairPlanPatch.parse(
+            '{"rationale":"修复并验证","base_plan_id":"plan-patch",'
+            '"operations":[{"operation":"verify-http-service-dependency",'
+            '"agent_id":"test_agent","objective":"验证入口导入","depends_on":[]}]}'
+        )
+
+        self.assertEqual(patch.operations[0].operation, "add")
+        self.assertEqual(patch.operations[0].ref, "verify-http-service-dependency")
+
+    def test_repair_patch_canonicalizes_partial_scope_without_widening_authority(self) -> None:
+        patch = RepairPlanPatch.parse(
+            '{"rationale":"修复","base_plan_id":"plan-patch","repair_scope":["wi-api"],'
+            '"operations":[{"operation":"add","ref":"fix","agent_id":"test_agent",'
+            '"objective":"重新验证","depends_on":[]}]}'
+            ,
+            base_plan_id="plan-patch",
+            repair_scope=("wi-api", "wi-test"),
+        )
+
+        self.assertEqual(set(patch.repair_scope), {"wi-api", "wi-test"})
+
+    def test_repair_patch_rejects_scope_widening(self) -> None:
+        with self.assertRaisesRegex(PlanPatchError, "窗口之外"):
+            RepairPlanPatch.parse(
+                '{"rationale":"越界","base_plan_id":"plan-patch","repair_scope":["wi-other"],'
+                '"operations":[{"operation":"add","ref":"fix","agent_id":"test_agent",'
+                '"objective":"越界","depends_on":[]}]}'
+                ,
+                base_plan_id="plan-patch",
+                repair_scope=("wi-api",),
+            )
+
     def test_repair_patch_appends_only_new_work_items(self) -> None:
         patch = RepairPlanPatch.parse(
             '{"rationale":"修复","base_plan_id":"plan-patch","repair_scope":["wi-api"],'

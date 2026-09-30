@@ -14,6 +14,7 @@ from dotenv import dotenv_values
 
 from app.application.runs import RunCoordinator, RunService
 from app.bootstrap.runtime import build_container
+from app.architecture_execution_config import ArchitectureExecutionConfig
 from app.application.conversations import (
     ConversationBusy,
     ConversationService,
@@ -81,6 +82,8 @@ class LLMSelectionRequest(BaseModel):
 class StartRunRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=2000)
     workflow_id: str = Field(min_length=1, max_length=100)
+    architecture_mode: Literal["baseline", "checkpointed"] = "baseline"
+    architecture_candidate_strategy: Literal["all_or_nothing", "incremental_candidate"] | None = None
     provider: str | None = Field(default=None, min_length=1, max_length=64)
     model: str | None = Field(default=None, min_length=1, max_length=200)
     base_url: str | None = Field(default=None, min_length=1, max_length=500)
@@ -133,7 +136,12 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
             run_workers = 4
         coordinator = RunCoordinator(max_workers=max(1, run_workers))
         app.state.coordinator = coordinator
-        app.state.run_service = RunService(coordinator=coordinator)
+        preflight_setting = os.environ.get("PROJECTOS_PROVIDER_PREFLIGHT", "true")
+        provider_preflight = preflight_setting.strip().lower() not in {"0", "false", "off", "no"}
+        app.state.run_service = RunService(
+            coordinator=coordinator,
+            provider_preflight=provider_preflight,
+        )
         app.state.conversations = ConversationService(
             run_service=app.state.run_service
         )
@@ -348,12 +356,25 @@ def create_app(*, projects_root: str = "./projects") -> FastAPI:
                 else None
             )
             overrides = _resolve_llm_overrides(payload.llm_overrides)
+            options = {}
+            if (
+                payload.architecture_mode == "checkpointed"
+                or payload.architecture_candidate_strategy is not None
+            ):
+                options["architecture_config"] = ArchitectureExecutionConfig(
+                    mode=payload.architecture_mode,
+                    scheme="D",
+                    candidate_strategy=(
+                        payload.architecture_candidate_strategy or "all_or_nothing"
+                    ),
+                )
             started = service.start_controlled_workflow(
                 project_path=str(project_path),
                 goal=payload.goal,
                 workflow_id=payload.workflow_id,
                 llm_selection=selection,
                 llm_overrides=overrides,
+                **options,
             )
         except PlannerFailure as error:
             raise HTTPException(

@@ -13,6 +13,7 @@ class WorkspaceStore:
             ".css",
             ".html",
             ".js",
+            ".jsx",
             ".json",
             ".md",
             ".py",

@@ -53,17 +53,34 @@ curl -X POST http://127.0.0.1:8000/api/v1/projects/demo/conversations/CONV_ID/me
   -d '{"content":"实现一个 Todo 应用","provider":"siliconflow","model":"deepseek-ai/DeepSeek-V4-Pro"}'
 ```
 
-Worker 默认硬截止为 900 秒。LLM 默认使用流式响应，运行期间可查询真实进度：
+受控交付的 Architecture 节点内检查点是显式选择项；不传 `architecture_mode` 时保留 `baseline`，
+避免未完成端到端验收的实验路径影响现有 Trace。若要验证 `module-*`/`implementation-*`
+阶段的 `boundaries`、`interfaces`（实现设计还可包含 `files`、`tests`）分段恢复，启动时传入：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/projects/demo/runs \
+  -H 'content-type: application/json' \
+  -d '{"goal":"交付可运行项目","workflow_id":"delivery_default","provider":"wanfa","model":"gpt-6-sol","architecture_mode":"checkpointed"}'
+```
+
+配置固定在 `.projectos/runs/<trace_id>/trace.json` 中，Worker 重启和 `/resume` 会继续使用同一配置；
+阶段中间产物仅供恢复，不等同于架构正式提交或通过下游质量门禁。
+
+Worker 默认以“连续没有语义/控制面进展”的 900 秒作为截止，而不是按进程启动时间累计；同一 Worker 内完成新的 WorkItem、工具调用或产物提交会重新计时。LLM 默认使用流式响应，运行期间可查询真实进度：
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/projects/<project_id>/runs/<trace_id>/progress
 ```
 
-可用环境变量调整监管策略：`PROJECTOS_WORKER_TIMEOUT_SECONDS`（硬截止）、
+可用环境变量调整监管策略：`PROJECTOS_WORKER_TIMEOUT_SECONDS`（连续无语义/控制面进展截止）、
 `PROJECTOS_IDLE_LLM_STREAMING_SECONDS`（LLM 无 chunk 空闲阈值）、
 `PROJECTOS_IDLE_RUNNING_TOOL_SECONDS`（工具空闲阈值）、
 `PROJECTOS_IDLE_RUNNING_SANDBOX_SECONDS`（Sandbox 空闲阈值）和
-`PROJECTOS_PROVIDER_STALL_GRACE_SECONDS`（确认无真实进度后的终止宽限期）。LLM 无传输信号
+`PROJECTOS_PROVIDER_STALL_GRACE_SECONDS`（确认无真实进度后的终止宽限期）。
+使用 Responses SSE 时，`PROJECTOS_RESPONSES_READ_TIMEOUT_SECONDS` 同时限制等待响应头和相邻流事件的时长，
+`PROJECTOS_RESPONSES_STREAM_MAX_SECONDS` 限制单次流请求总时长，`PROJECTOS_RESPONSES_MAX_RETRIES`
+控制 SDK 内部重试次数（默认 0，恢复由 WorkItem 有界重试负责）。这些限制只针对单次 Provider 调用，
+不应通过增大 Worker 总时长替代。LLM 无传输信号
 或活动 WorkItem 无语义进展时先记录 `provider_stalled`；只有对应节点的
 `last_transport_at`/`meaningful_progress_at` 在宽限期内始终没有变化才终止 Worker，
 短暂慢请求或恢复的流式请求不会被误杀。并行节点分别监控。

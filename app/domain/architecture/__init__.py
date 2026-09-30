@@ -6,6 +6,7 @@ from app.domain.architecture.tools import (
 from app.domain.architecture.service import ArchitectureService
 from app.domain.architecture.implementation_contract import (
     ImplementationContract,
+    HttpOperationContract,
     ImplementationContractStore,
     ImplementationUnit,
     ProjectContract,
@@ -15,6 +16,7 @@ from app.domain.architecture.contract_input import (
     ContractEntrypointInput,
     ContractImplementationUnitInput,
     ContractInterfaceInput,
+    ContractHttpOperationInput,
     ContractLayerInput,
     ProjectContractInput,
 )
@@ -35,6 +37,7 @@ __all__ = [
     "ArchitectureContractToolSet",
     "register_architecture_tools",
     "ImplementationContract",
+    "HttpOperationContract",
     "ImplementationContractStore",
     "ImplementationUnit",
     "ProjectContract",
@@ -42,6 +45,7 @@ __all__ = [
     "ContractEntrypointInput",
     "ContractImplementationUnitInput",
     "ContractInterfaceInput",
+    "ContractHttpOperationInput",
     "ContractLayerInput",
     "ProjectContractInput",
     "ArchitectureBlueprint",

@@ -32,6 +32,7 @@ from app.workflow.templates import (
     delivery_default_template,
     delivery_incremental_template,
     architecture_only_template,
+    architecture_l0_template,
 )
 
 
@@ -66,6 +67,7 @@ def install_modules(container: "ProjectOSContainer") -> None:
     )
     container.templates.register(delivery_incremental_template())
     container.templates.register(architecture_only_template())
+    container.templates.register(architecture_l0_template())
     # 旧模板 (已废弃,仅供历史 Trace 兼容)
     container.templates.register(project_delivery_template(), status="compatibility_only")
     # container.templates.register(project_delivery_dynamic_template())  # 已禁用废弃模板

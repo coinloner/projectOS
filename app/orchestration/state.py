@@ -211,11 +211,15 @@ class RunState:
             raise ValueError(f"工作项 '{item.id}' 已有运行结果")
 
         self.node_results[item.id] = result
-        self.forced_rerun_work_item_ids.discard(item.id)
-        self.recovery_diagnostics.pop(item.id, None)
-        self.retry_recovery_contexts.pop(item.id, None)
-        if result.status is NodeStatus.COMPLETED and result.content is not None:
-            self.artifacts[item.output_key] = result.content
+        # A failed forced rerun must not unlock the old staged output on the
+        # next Worker resume.  Only a newly completed owner discharges the
+        # invalidation obligation established by the recovery coordinator.
+        if result.status is NodeStatus.COMPLETED:
+            self.forced_rerun_work_item_ids.discard(item.id)
+            self.recovery_diagnostics.pop(item.id, None)
+            self.retry_recovery_contexts.pop(item.id, None)
+            if result.content is not None:
+                self.artifacts[item.output_key] = result.content
 
     def is_complete(self) -> bool:
         return len(self.node_results) == len(self.plan.work_items) and all(

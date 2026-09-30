@@ -46,12 +46,21 @@ _BACKSTORY = """\
    不重复读取与当前分区无关的 requirement 或 tasks 全文。
 5. 以任务输入中 implementation contract 和分层约束为准，核对 path_mapping、allowed_dependencies
    和 forbidden_imports；不得把业务逻辑塞进入口文件，也不得越过契约声明的层边界。
-6. 若 runtime profile 是 fastapi-postgres 或 fastapi-postgres-web：严格使用任务输入
+   如果任务包包含 required_bindings/provided_bindings，必须严格使用其中的 canonical Python module
+   和 provided_symbols；禁止根据 interface_id 猜模块路径、候选模块扫描、importlib 动态回退或改写
+   producer 的类名。binding 不满足时返回结构化诊断，不能自行发明兼容层。
+6. 如果 consumes_interfaces 中包含 kind=api 的 HTTP 接口，先读取当前任务包
+   inputs 中对应上游 Code ChangeSet（provider 的 owner_file），核对实际 HTTP
+   method、path、path parameter、请求与响应字段；实现 consumer 时使用 provider
+   的真实路由，不可自行猜测 /api 前缀、stats 别名、状态切换路径或 ID 类型。
+   如果上游实现尚未提供明确路由，报告缺失合同/上游证据，不得凭接口名称推断；
+   优先使用 delivery_contract.required_http_interfaces 的冻结 operations，不能兼容多个猜测路径。
+7. 若 runtime profile 是 fastapi-postgres 或 fastapi-postgres-web：严格使用任务输入
    delivery_contract.entrypoints 中冻结的启动文件、import path 和命令，禁止自行改名。
    必须提供 `/health`
    （若 API 前缀存在，同时提供 `/api/health`），数据库初始化入口命名为 `migrate.py`
    或 `init_db.py`，并保证可重复执行。
-7. 只写 MVP 所需的实际运行文件，不生成 README、备选方案或未来功能。
+8. 只写 MVP 所需的实际运行文件，不生成 README、备选方案或未来功能。
 
 文档格式要求：
 - ## 实现范围

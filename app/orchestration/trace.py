@@ -17,6 +17,7 @@ from app.orchestration.evidence import RuntimeEvidence, SandboxEvidence
 from app.orchestration.retry import FailurePackage, FailureSignal
 from app.sandbox.result import SandboxResult, SandboxStatus
 from app.llm.config import LLMSelection
+from app.architecture_execution_config import ArchitectureExecutionConfig
 from app.orchestration.delivery import DeliveryStore
 
 
@@ -128,6 +129,7 @@ class TraceStore:
                 "plan_id": plan.id,
                 "template_id": plan.template_id,
                 "process_id": plan.process_id,
+                "validation_scope": plan.validation_scope,
                 "goal": plan.goal,
                 "work_items": [
                     {
@@ -237,6 +239,22 @@ class TraceStore:
             raise FileNotFoundError(f"计划扩展记录不存在: {plan_id}")
         return self._read_json(path)
 
+    def set_architecture_config(self, trace_id: str, config: ArchitectureExecutionConfig) -> None:
+        """Pin an Architecture profile before dispatching the Worker."""
+        payload = self.load_trace(trace_id)
+        payload["architecture_config"] = config.as_dict()
+        self._write_json(self._trace_root(trace_id) / "trace.json", payload)
+
+    def load_architecture_config(self, trace_id: str) -> ArchitectureExecutionConfig:
+        payload = self.load_trace(trace_id)
+        raw = payload.get("architecture_config")
+        if raw is None:
+            return ArchitectureExecutionConfig(scheme="D")
+        if not isinstance(raw, dict):
+            raise ValueError("Trace Architecture profile has invalid shape")
+        # Never downgrade a checkpointed Trace silently during Worker recovery.
+        return ArchitectureExecutionConfig(**raw)
+
     def set_llm_selection(self, trace_id: str, selection: LLMSelection) -> None:
         """将本轮模型选择写入 Trace，供隔离 Worker 和恢复流程使用。"""
         payload = self.load_trace(trace_id)
@@ -308,6 +326,39 @@ class TraceStore:
             / f"revision-{baseline.revision}.json",
             payload,
         )
+        return payload
+
+    def record_implementation_plan_compilation(
+        self, trace: TraceContext, details: dict[str, object]
+    ) -> None:
+        """Persist the deterministic Contract -> Code compilation receipt.
+
+        ``plan.json`` remains the executable source of truth.  This separate
+        receipt makes the control-plane decision auditable and gives resume
+        and repair code a stable place to inspect the unit/wave/ownership
+        mapping without reverse-engineering a mutable plan snapshot.
+        """
+        payload = {
+            "schema_version": 1,
+            "trace_id": trace.trace_id,
+            "updated_at": self._now(),
+            **details,
+        }
+        self._write_json(
+            self._trace_root(trace.trace_id) / "implementation-plan.json",
+            payload,
+        )
+
+    def load_implementation_plan_compilation(
+        self, trace_id: str
+    ) -> dict[str, object]:
+        self._validate_trace_id(trace_id)
+        path = self._trace_root(trace_id) / "implementation-plan.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"Trace 没有实现计划编译收据: {trace_id}")
+        payload = self._read_json(path)
+        if payload.get("schema_version") != 1 or payload.get("trace_id") != trace_id:
+            raise ValueError("实现计划编译收据元数据无效")
         return payload
 
     def load_plan_baseline(self, trace_id: str) -> dict[str, object]:
@@ -616,6 +667,7 @@ class TraceStore:
                 str(payload["template_id"]) if payload.get("template_id") else None
             ),
             process_id=str(payload.get("process_id") or "software_delivery"),
+            validation_scope=str(payload.get("validation_scope") or "full_delivery"),
             trace=TraceContext(
                 requirement_id=str(trace_payload["requirement_id"]),
                 trace_id=str(trace_payload["trace_id"]),

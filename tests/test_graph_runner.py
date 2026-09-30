@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 from threading import Barrier
 import tempfile
@@ -28,6 +28,8 @@ from app.orchestration.runner import (
     _refresh_review_quality_section,
     _summarize_sandbox_evidence,
     _tool_allowlist_for_attempt,
+    _provider_failure_kind,
+    _integration_owner_work_items,
 )
 from app.execution_context import ExecutionContext, ExecutionMode
 from app.orchestration.trace import TraceContext, TraceStore
@@ -43,6 +45,29 @@ from app.orchestration.work_item import (
     WorkItem,
     WorkItemDependency,
 )
+
+
+class ProviderFailureClassificationTest(unittest.TestCase):
+    def test_upstream_policy_rejection_is_never_classified_as_transport(self) -> None:
+        self.assertEqual(
+            _provider_failure_kind(RuntimeError(
+                "Error code: 403 - {'error': {'code': 'upstream_policy_rejected', "
+                "'retryable': False}}"
+            )),
+            FailureKind.PROVIDER_POLICY_REJECTED,
+        )
+
+    def test_responses_creation_and_relay_connection_failures_are_transport(self) -> None:
+        self.assertEqual(
+            _provider_failure_kind(RuntimeError(
+                "OpenAI API call failed: Responses API SSE create exceeded 45s without response headers"
+            )),
+            FailureKind.PROVIDER_TRANSPORT,
+        )
+        self.assertEqual(
+            _provider_failure_kind(RuntimeError("OpenAI API call failed: Connection error.")),
+            FailureKind.PROVIDER_TRANSPORT,
+        )
 
 
 class FakeAgent:
@@ -111,6 +136,28 @@ class ReviewQualityRefreshTest(unittest.TestCase):
         self.assertIn("不要写 layers", prompt)
         self.assertIn("不要写 consumed_interface_ids", prompt)
 
+    def test_provider_policy_rejection_blocks_without_retrying_agent(self) -> None:
+        agents = AgentRegistry()
+        agent = FakeAgent(RuntimeError(
+            "Error code: 403 - {'error': {'code': 'upstream_policy_rejected', "
+            "'message': 'Request blocked by upstream usage policy', 'retryable': False}}"
+        ))
+        agents.register(
+            AgentDefinition("requirement_agent", "requirement", "需求", "requirement"),
+            lambda: agent,
+        )
+        result = GraphRunner(agents, ToolGateway()).run(
+            ExecutionPlan(
+                id="policy-block", goal="测试不可重试的上游拒绝",
+                trace=TraceContext.ephemeral(),
+                work_items=(make_node("provider", agent_id="requirement_agent"),),
+            )
+        )
+        self.assertEqual(result.status, GraphRunStatus.NEEDS_REPLAN)
+        self.assertEqual(result.failure_signal.kind, FailureKind.PROVIDER_POLICY_REJECTED)
+        self.assertFalse(result.failure_signal.retryable)
+        self.assertEqual(len(agent.tasks), 1)
+
     def test_provider_transport_failure_is_classified_for_bounded_retry(self) -> None:
         agents = AgentRegistry()
         agents.register(
@@ -121,6 +168,26 @@ class ReviewQualityRefreshTest(unittest.TestCase):
             ExecutionPlan(
                 id="provider-failure",
                 goal="测试 Provider",
+                trace=TraceContext.ephemeral(),
+                work_items=(make_node("provider", agent_id="requirement_agent"),),
+            )
+        )
+        self.assertEqual(result.status, GraphRunStatus.FAILED)
+        self.assertIn("provider_transport", result.error or "")
+
+    def test_sse_inter_event_timeout_is_classified_as_provider_transport(self) -> None:
+        agents = AgentRegistry()
+        agents.register(
+            AgentDefinition("requirement_agent", "requirement", "需求", "requirement"),
+            lambda: FakeAgent(RuntimeError(
+                "OpenAI API call failed: Responses API SSE read exceeded "
+                "45s without an event"
+            )),
+        )
+        result = GraphRunner(agents, ToolGateway()).run(
+            ExecutionPlan(
+                id="sse-timeout",
+                goal="测试 Provider 半开连接",
                 trace=TraceContext.ephemeral(),
                 work_items=(make_node("provider", agent_id="requirement_agent"),),
             )
@@ -318,6 +385,46 @@ class ArchitectureToolNarrowingTest(unittest.TestCase):
 
 
 class GraphRunnerTest(unittest.TestCase):
+    def test_repair_graph_defers_full_project_quality_to_original_delivery(self) -> None:
+        self.register_agent("requirement_agent", AgentResult.completed("repair receipt"))
+        with patch("app.policy.quality.ProjectQualityPolicy.render", return_value=(
+            "policy_id=project.quality.v1\nstatus=failed\n- project.backend_layers_required"
+        )):
+            for plan_id, expected in (("delivery-repair-1", GraphRunStatus.COMPLETED),
+                                      ("delivery", GraphRunStatus.BLOCKED)):
+                with self.subTest(plan_id=plan_id), tempfile.TemporaryDirectory() as project_path:
+                    traces = TraceStore(project_path)
+                    trace = traces.start_trace("repair quality boundary")
+                    plan = ExecutionPlan(
+                        id=plan_id, goal="repair quality boundary", trace=trace,
+                        validation_scope="full_delivery",
+                        work_items=(make_node("receipt"),),
+                    )
+                    outcome = GraphRunner(self.agents, self.tools, traces=traces).run(plan)
+                    self.assertEqual(outcome.status, expected)
+
+    def test_integration_diagnostic_only_reruns_exact_code_owner(self) -> None:
+        code = WorkItem(
+            id="wi-code-http", agent_id="code_agent", objective="HTTP",
+            output_key="implementation_http", owned_files=("backend/app/main.py",),
+        )
+        unrelated = WorkItem(
+            id="wi-code-service", agent_id="code_agent", objective="Service",
+            output_key="implementation_service", owned_files=("backend/app/task_service.py",),
+        )
+        plan = ExecutionPlan(
+            id="delivery-owner", goal="HTTP", work_items=(code, unrelated),
+        )
+        self.assertEqual(
+            _integration_owner_work_items(plan,
+                "Integration 语义检查拒绝合并 [owner_files: backend/app/main.py]: import invalid"),
+            (code.id,),
+        )
+        self.assertEqual(
+            _integration_owner_work_items(plan,
+                "Integration Review: please change backend/app/task_service.py"),
+            (),
+        )
     def test_checkpoint_revalidation_invalidates_descendants_not_unrelated_work(self):
         with tempfile.TemporaryDirectory() as project_path:
             repository = ArtifactRepository(project_path)
@@ -574,6 +681,51 @@ class GraphRunnerTest(unittest.TestCase):
                 item, change, {"backend/domain/order.py"}
             )
             self.assertIn("交付文件缺少合同声明符号", " ".join(issues))
+
+    def test_code_delivery_ignores_persisted_interface_ids_as_python_symbols(self) -> None:
+        from app.orchestration.runner import GraphRunner
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "workspace" / "backend" / "app"
+            path.mkdir(parents=True)
+            (path / "main.py").write_text(
+                "from fastapi import FastAPI\napp = FastAPI()\n",
+                encoding="utf-8",
+            )
+            change = SimpleNamespace(worktree_path=directory)
+            item = SimpleNamespace(
+                delivery_contract={
+                    "provided_symbols": ["task_management.task_api", "task_management.health"],
+                    "provides_interfaces": ["task_management.task_api", "task_management.health"],
+                }
+            )
+            issues = GraphRunner._validate_delivered_content(
+                item, change, {"backend/app/main.py"}
+            )
+            self.assertEqual(issues, ())
+
+    def test_code_delivery_ignores_descriptive_symbol_annotations(self) -> None:
+        from app.orchestration.runner import GraphRunner
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "workspace" / "backend" / "domain"
+            path.mkdir(parents=True)
+            (path / "repository.py").write_text(
+                "class TaskRepository:\n    pass\n", encoding="utf-8"
+            )
+            change = SimpleNamespace(worktree_path=directory)
+            item = SimpleNamespace(
+                delivery_contract={
+                    "provided_symbols": [
+                        "TaskRepository",
+                        "SQLite 初始化与任务 CRUD/统计方法",
+                    ]
+                }
+            )
+            issues = GraphRunner._validate_delivered_content(
+                item, change, {"backend/domain/repository.py"}
+            )
+            self.assertEqual(issues, ())
 
     def setUp(self) -> None:
         self._architecture_project = tempfile.TemporaryDirectory()
@@ -1108,6 +1260,59 @@ class GraphRunnerTest(unittest.TestCase):
                 self.assertIsNotNone(calls[0].input_digests)
                 self.assertFalse(result.state.node_results[item.id].failure_signal.retryable)
 
+    def test_contract_compiler_receives_input_version_evidence(self) -> None:
+        """The deterministic Contract node must not consume unversioned designs."""
+        with tempfile.TemporaryDirectory() as project_path:
+            repository = ArtifactRepository(project_path)
+            source = repository.write_staged(
+                trace_id="tr-upstream",
+                work_item_id="producer",
+                artifact_key="architecture",
+                slot="blueprint",
+                content="{}",
+            ).ref
+            calls = []
+
+            class ContractAgent:
+                def run(self, task, *, context=None):
+                    calls.append(context)
+                    return AgentResult.completed("unused")
+
+            agents = AgentRegistry()
+            agents.register(
+                AgentDefinition(
+                    id="architecture_contract_agent",
+                    domain="architecture_contract",
+                    description="contract",
+                    output_key="architecture_contract",
+                ),
+                factory=ContractAgent,
+            )
+            item = WorkItem(
+                id="contract",
+                agent_id="architecture_contract_agent",
+                objective="compile",
+                output_key="architecture_contract",
+                artifact_key="architecture_contract",
+                stage_id="contract-not-recursive",
+                execution_mode=ExecutionMode.EXCLUSIVE,
+                input_refs=(source,),
+            )
+            result = GraphRunner(
+                agents, ToolGateway(), artifacts=repository
+            ).run(
+                ExecutionPlan(
+                    id="contract-input-evidence",
+                    goal="verify contract input evidence",
+                    trace=TraceContext(requirement_id="req-contract", trace_id="tr-contract"),
+                    work_items=(item,),
+                )
+            )
+            self.assertEqual(result.status, GraphRunStatus.COMPLETED)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(calls[0].input_refs), 1)
+            self.assertEqual(len(calls[0].input_digests or ()), 1)
+
     def test_markdown_integration_cannot_complete_without_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
             self.register_agent(
@@ -1298,6 +1503,36 @@ class GraphRunnerTest(unittest.TestCase):
                 "# Integrated architecture",
             )
 
+
+class WaveReintegrationTest(unittest.TestCase):
+    def test_completed_wave_event_does_not_skip_new_owner_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            trace = TraceContext(requirement_id="req-wave", trace_id="tr-wave")
+            item = WorkItem(
+                id="wi-http", agent_id="code_agent", objective="HTTP",
+                output_key="http", execution_mode=ExecutionMode.PARTITIONED,
+                slot="implementation-http", wave=3,
+                owned_files=("backend/app/main.py",),
+            )
+            plan = ExecutionPlan(
+                id="delivery-wave", goal="todo", trace=trace, work_items=(item,),
+            )
+            state = RunState(plan=plan, node_results={item.id: NodeResult.completed(
+                work_item_id=item.id, agent_id=item.agent_id, content="ready",
+            )})
+            traces = Mock(project_path=project_path)
+            traces.list_events.return_value = [
+                {"type": "code_wave_integrated", "details": {"wave": 3}}
+            ]
+            runner = GraphRunner(AgentRegistry(), ToolGateway(), traces=traces)
+            with patch("app.domain.code.git_service.GitCodeStagingService") as staging, \
+                 patch("app.domain.code.service.CodeIntegrationService") as integration:
+                staging.return_value.integrated_commits.return_value = frozenset({"old-commit"})
+                staging.return_value.load_change_set.return_value = SimpleNamespace(commit="new-commit")
+                integration.return_value.integrate_wave.return_value = "merged"
+                self.assertIsNone(runner._integrate_ready_waves(state))
+                integration.return_value.integrate_wave.assert_called_once()
+                traces.record_event.assert_called_once()
 
 class WorkflowTemplateTest(unittest.TestCase):
     def test_runner_rejects_uncompiled_standard_task_execution(self) -> None:

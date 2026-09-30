@@ -55,6 +55,19 @@ class ContractEntrypointInput(_ContractModel):
         return data
 
 
+class ContractHttpOperationInput(_ContractModel):
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+    path: str = Field(min_length=1, max_length=512)
+    request_schema: str | None = Field(default=None, max_length=4000)
+    response_schema: str | None = Field(default=None, max_length=4000)
+
+    @model_validator(mode="after")
+    def validate_path(self) -> "ContractHttpOperationInput":
+        if not self.path.startswith("/") or "?" in self.path or "#" in self.path:
+            raise ValueError("HTTP operation path 必须是以 / 开头且不含 query/fragment")
+        return self
+
+
 class ContractInterfaceInput(_ContractModel):
     interface_id: str = Field(min_length=1, max_length=128)
     kind: str = Field(min_length=1, max_length=32)
@@ -66,6 +79,7 @@ class ContractInterfaceInput(_ContractModel):
     output_schema: str | None = Field(default=None, max_length=4000)
     errors: list[str] = Field(default_factory=list, max_length=32)
     constraints: list[str] = Field(default_factory=list, max_length=32)
+    operations: list[ContractHttpOperationInput] = Field(default_factory=list, max_length=128)
     consumption_type: Literal["import_code", "http_call", "process_spawn", "shared_schema"] | None = Field(
         default=None,
         description="接口的消费方式"
@@ -164,6 +178,63 @@ class ContractImplementationUnitInput(_ContractModel):
             },
         )
 
+class CanonicalContractNormalizer:
+    """Normalize model drafts before they enter the canonical domain model.
+
+    This is intentionally a small, deterministic boundary.  It accepts only
+    compatibility aliases that have one unambiguous meaning; conflicting
+    canonical/alias values are rejected by ``normalize_aliases``.  Persisted
+    contracts never contain the aliases.
+    """
+
+    _TOP_LEVEL = {
+        "entrypoints": ("entrypoint",),
+        "implementation_units": ("implementationUnits", "units"),
+        "required_files": ("requiredPaths",),
+        "required_test_types": ("requiredTests",),
+        "compilation_strategy": ("strategy",),
+    }
+    _LAYER = {
+        "allowed_dependencies": ("depends_on", "dependencies"),
+        "forbidden_imports": ("forbidden",),
+        "path_mapping": ("paths", "allowed_paths"),
+    }
+    _INTERFACE = {
+        "interface_id": ("id",),
+        "owner_unit": ("owner",),
+        "owner_file": ("file",),
+    }
+
+    @classmethod
+    def normalize(cls, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise TypeError("contract 必须是 Project Contract 对象")
+        raw = normalize_aliases(value, cls._TOP_LEVEL)
+        if "layers" in raw and isinstance(raw["layers"], dict):
+            raw["layers"] = [
+                {"name": name, **(layer if isinstance(layer, dict) else {})}
+                for name, layer in raw["layers"].items()
+            ]
+        if isinstance(raw.get("layers"), list):
+            raw["layers"] = [normalize_aliases(layer, cls._LAYER) for layer in raw["layers"]]
+        if isinstance(raw.get("interfaces"), list):
+            raw["interfaces"] = [normalize_aliases(item, cls._INTERFACE) for item in raw["interfaces"]]
+        if isinstance(raw.get("implementation_units"), list):
+            raw["implementation_units"] = [
+                normalize_aliases(
+                    item,
+                    {
+                        "required_paths": ("required_files",),
+                        "slot": ("output_slot",),
+                        "provides_interfaces": ("provides",),
+                        "consumes_interfaces": ("consumes",),
+                    },
+                )
+                for item in raw["implementation_units"]
+            ]
+        return raw
+
+
 class ProjectContractInput(_ContractModel):
     """唯一 Project Contract 的结构化工具输入。"""
 
@@ -181,6 +252,24 @@ class ProjectContractInput(_ContractModel):
         names = [layer.name for layer in self.layers]
         if len(names) != len(set(names)):
             raise ValueError("layers 不能包含重复 name")
+        api_aliases = {
+            "api", "endpoint", "rest", "http", "http_endpoint", "http_api",
+            "rest_api", "api_endpoint", "route", "router", "route_handler",
+            "controller", "entrypoint", "process_entrypoint",
+            "process-entrypoint",
+        }
+        for interface in self.interfaces:
+            kind = interface.kind.strip().lower().replace("-", "_")
+            if kind not in api_aliases:
+                continue
+            if not interface.owner_file:
+                raise ValueError(
+                    f"interfaces.{interface.interface_id}: API 接口必须声明 owner_file"
+                )
+            if not interface.operations:
+                raise ValueError(
+                    f"interfaces.{interface.interface_id}: API 接口必须冻结 operations(method/path)"
+                )
         return self
 
     def to_canonical_dict(self) -> dict[str, Any]:
@@ -226,7 +315,9 @@ __all__ = [
     "ConsumedInterfaceRefInput",
     "ContractEntrypointInput",
     "ContractImplementationUnitInput",
+    "CanonicalContractNormalizer",
     "ContractInterfaceInput",
+    "ContractHttpOperationInput",
     "ContractLayerInput",
     "ProjectContractInput",
 ]

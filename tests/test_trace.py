@@ -382,6 +382,30 @@ class TraceStoreTest(unittest.TestCase):
             self.assertEqual(traces.load_plan(context.trace_id).id, repair.id)
             self.assertEqual(traces.load_delivery_plan(context.trace_id).id, original.id)
 
+    def test_implementation_plan_compilation_receipt_is_durable_and_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as project_path:
+            traces = TraceStore(project_path)
+            context = traces.start_trace("实现计划编译")
+            traces.record_implementation_plan_compilation(
+                context,
+                {
+                    "plan_id": "run-compile",
+                    "contract_digest": "contract-sha",
+                    "compiled_plan_digest": "compiled-sha",
+                    "implementation_unit_ids": ["unit-api"],
+                    "work_item_ids": ["wi-code-unit-api"],
+                    "wave_map": {"unit-api": 0},
+                    "ownership_map": {"unit-api": ["backend/app/main.py"]},
+                    "dependency_map": {"unit-api": []},
+                },
+            )
+
+            receipt = traces.load_implementation_plan_compilation(context.trace_id)
+
+            self.assertEqual(receipt["schema_version"], 1)
+            self.assertEqual(receipt["compiled_plan_digest"], "compiled-sha")
+            self.assertEqual(receipt["ownership_map"]["unit-api"], ["backend/app/main.py"])
+
     def test_finish_trace_clears_intermediate_error_on_resume(self) -> None:
         with tempfile.TemporaryDirectory() as project_path:
             traces = TraceStore(project_path)

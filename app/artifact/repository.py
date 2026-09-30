@@ -341,6 +341,29 @@ class ArtifactRepository:
                 raise RuntimeError(f"暂存产物清单校验失败: {ref.ref_id}")
             return content
 
+    def staged_source_versions(self, ref: ArtifactRef) -> tuple[tuple[ArtifactRef, ...], tuple[str, ...]]:
+        """Read and verify a staged output's frozen producer inputs.
+
+        An absent provenance field is not equivalent to a producer with no
+        inputs. This is deliberately strict for architecture integration.
+        """
+        if ref.layer != "staged":
+            raise ValueError("source versions require a staged ArtifactRef")
+        self.load_ref(ref)  # checks content against the manifest digest
+        manifest = self._read_json(self._staged_root(ref) / "manifest.json")
+        raw_refs = manifest.get("source_refs")
+        raw_digests = manifest.get("source_digests")
+        if not isinstance(raw_refs, list) or not isinstance(raw_digests, list):
+            raise RuntimeError(f"staged 缺少输入版本证据: {ref.ref_id}")
+        if len(raw_refs) != len(raw_digests) or any(
+            not isinstance(item, dict) for item in raw_refs
+        ) or any(not isinstance(digest, str) or not digest for digest in raw_digests):
+            raise RuntimeError(f"staged 输入版本证据不完整: {ref.ref_id}")
+        refs = tuple(ArtifactRef(**item) for item in raw_refs)
+        digests = tuple(raw_digests)
+        self.verify_input_versions(refs, digests)
+        return refs, digests
+
     def verify_staged(
         self,
         ref: ArtifactRef,

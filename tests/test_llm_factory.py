@@ -125,7 +125,7 @@ class LLMFactoryTest(unittest.TestCase):
         ):
             llm = build_llm()
 
-        self.assertEqual(llm.model, "gpt-5.6-terra")
+        self.assertEqual(llm.model, "gpt-6-sol")
         self.assertEqual(llm.provider, "openai")
         self.assertEqual(llm.base_url, "https://wanfaai.com")
         self.assertIsInstance(llm, OpenAIResponsesLLM)

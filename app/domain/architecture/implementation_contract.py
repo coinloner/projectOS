@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import re
 from typing import Any
 
 from app.orchestration.field_semantics import coalesce_alias
@@ -63,6 +64,51 @@ class EntrypointContract:
 
 
 @dataclass(frozen=True)
+class HttpOperationContract:
+    """冻结一个 API 的 method/path，避免各 CodeAgent 自行发明路由。"""
+
+    method: str
+    path: str
+    request_schema: str | None = None
+    response_schema: str | None = None
+
+    def __post_init__(self) -> None:
+        method = self.method.strip().upper()
+        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+            raise ValueError(f"HttpOperationContract.method 不支持: {self.method}")
+        path = self.path.strip()
+        if not path.startswith("/") or "?" in path or "#" in path:
+            raise ValueError("HttpOperationContract.path 必须是以 / 开头且不含 query/fragment 的路径")
+        parameters = re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", path)
+        residual = re.sub(r"\{[A-Za-z_][A-Za-z0-9_]*\}", "", path)
+        if "{" in residual or "}" in residual:
+            raise ValueError(f"HttpOperationContract.path 包含非法参数: {path}")
+        if len(parameters) != len(set(parameters)):
+            raise ValueError(f"HttpOperationContract.path 参数不能重复: {path}")
+        object.__setattr__(self, "method", method)
+        object.__setattr__(self, "path", path.rstrip("/") or "/")
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {
+            "method": self.method,
+            "path": self.path,
+            "request_schema": self.request_schema,
+            "response_schema": self.response_schema,
+        }
+
+    @classmethod
+    def parse(cls, raw: Any) -> "HttpOperationContract":
+        if not isinstance(raw, dict):
+            raise ValueError("API operations 中的元素必须是对象")
+        return cls(
+            method=str(raw.get("method", "")).strip(),
+            path=str(raw.get("path", "")).strip(),
+            request_schema=_optional_string(raw.get("request_schema")),
+            response_schema=_optional_string(raw.get("response_schema")),
+        )
+
+
+@dataclass(frozen=True)
 class InterfaceContract:
     """机器可读的跨单元接口/符号契约。"""
 
@@ -76,6 +122,9 @@ class InterfaceContract:
     output_schema: str | None = None
     errors: tuple[str, ...] = ()
     constraints: tuple[str, ...] = ()
+    # For API interfaces this is the frozen transport surface. Empty keeps
+    # historical contracts readable; new contracts should always populate it.
+    operations: tuple[HttpOperationContract, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("interface_id", "kind", "name", "owner_unit"):
@@ -165,6 +214,12 @@ class InterfaceContract:
                 "\n不要创造新的类型名称，必须从标准的 5 种中选择。"
             )
             raise ValueError(error_msg)
+        if self.kind == "api":
+            keys = [(operation.method, operation.path) for operation in self.operations]
+            if len(keys) != len(set(keys)):
+                raise ValueError(f"API 接口 {self.interface_id} 的 operations 不能重复")
+        elif self.operations:
+            raise ValueError(f"非 API 接口 {self.interface_id} 不能声明 HTTP operations")
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -178,6 +233,7 @@ class InterfaceContract:
             "output_schema": self.output_schema,
             "errors": list(self.errors),
             "constraints": list(self.constraints),
+            "operations": [operation.as_dict() for operation in self.operations],
         }
 
     @classmethod
@@ -195,6 +251,10 @@ class InterfaceContract:
             output_schema=_optional_string(raw.get("output_schema")),
             errors=_strings(raw.get("errors", []), "interfaces.errors", allow_empty=True),
             constraints=_strings(raw.get("constraints", []), "interfaces.constraints", allow_empty=True),
+            operations=tuple(
+                HttpOperationContract.parse(item)
+                for item in raw.get("operations", raw.get("http_operations", []))
+            ),
         )
 
 

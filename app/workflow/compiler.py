@@ -13,6 +13,7 @@ from app.orchestration.trace import TraceContext
 from app.orchestration.work_item import DependencySource, WorkItem, WorkItemDependency
 from app.workflow.template import WorkflowTemplate
 from app.domain.architecture.implementation_contract import ImplementationContract, ImplementationUnit
+from app.domain.architecture.bindings import canonical_binding, normalize_python_symbols, python_module_for_path
 from app.orchestration.delivery_contract import DeliveryContract
 
 
@@ -214,6 +215,115 @@ class ImplementationContractCompiler:
         units_by_id = {unit.unit_id: unit for unit in units}
         interfaces_by_id = {interface.interface_id: interface for interface in contract.interfaces}
 
+        # Binding is derived from trusted ownership and concrete symbols, never
+        # from an interface id or a model-invented module name.  Keep it in the
+        # WorkItem delivery contract so CodeAgent and Integration consume the
+        # same canonical import metadata.
+        provided_bindings_by_unit: dict[str, list[dict[str, object]]] = {}
+        for candidate in units:
+            symbols = self._normalize_provided_symbols(
+                candidate,
+                interface_ids=set(candidate.provides_interfaces)
+                | set(candidate.consumes_interfaces),
+            )
+            bindings: list[dict[str, object]] = []
+            python_files = [
+                path for path in candidate.owned_files
+                if python_module_for_path(path) is not None
+            ]
+            # A multi-file unit has no deterministic symbol-to-file mapping.
+            # Keep its module bindings, but only attach symbols when the file
+            # mapping is unambiguous.
+            for path in candidate.owned_files:
+                file_symbols = symbols if len(python_files) == 1 else ()
+                if len(python_files) > 1:
+                    # A multi-file unit must provide an explicit owner_file
+                    # on its InterfaceContract before a symbol can be bound
+                    # to a file.  Do not guess from file names or ordering.
+                    owned_path = path.removeprefix("workspace/")
+                    for interface_id in candidate.provides_interfaces:
+                        interface = interfaces_by_id.get(interface_id)
+                        if interface is None or not interface.owner_file:
+                            continue
+                        if interface.owner_file.removeprefix("workspace/") != owned_path:
+                            continue
+                        file_symbols = tuple(
+                            dict.fromkeys(
+                                (*file_symbols, *normalize_python_symbols((interface.name,)))
+                            )
+                        )
+                binding = canonical_binding(
+                    unit_id=candidate.unit_id,
+                    owned_file=path,
+                    provided_symbols=file_symbols,
+                )
+                if binding is not None:
+                    bindings.append(binding)
+            provided_bindings_by_unit[candidate.unit_id] = bindings
+
+        def required_bindings_for(unit: ImplementationUnit) -> list[dict[str, object]]:
+            required: list[dict[str, object]] = []
+            # Explicit implementation dependencies are the only trusted source
+            # for in-process code dependencies.  Wave/barrier dependencies are
+            # intentionally excluded: they may represent build/runtime order.
+            for dependency_id in unit.depends_on:
+                for binding in provided_bindings_by_unit.get(dependency_id, ()):
+                    required.append({
+                        "source": "depends_on",
+                        "consumption": "import_code",
+                        **binding,
+                    })
+            # Interface consumption is a second, explicit dependency signal.
+            # API contracts are crossed over HTTP and must never be turned
+            # into guessed Python imports; in-process service/symbol/data
+            # contracts may carry a canonical provider binding.
+            consumer_has_python = any(
+                python_module_for_path(path) is not None for path in unit.owned_files
+            )
+            if consumer_has_python:
+                for interface_id in unit.consumes_interfaces:
+                    interface = interfaces_by_id.get(interface_id)
+                    if interface is None or interface.kind == "api":
+                        continue
+                    provider_id = interface.owner_unit
+                    for binding in provided_bindings_by_unit.get(provider_id, ()):
+                        required.append({
+                            "source": "consumes_interface",
+                            "consumes_interface": interface_id,
+                            "consumption": "import_code",
+                            **binding,
+                        })
+            # Deduplicate by provider unit/file/module while preserving order.
+            seen: set[tuple[object, ...]] = set()
+            unique: list[dict[str, object]] = []
+            for binding in required:
+                key = (
+                    binding.get("unit_id"),
+                    binding.get("owned_file"),
+                    binding.get("module"),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(binding)
+            return unique
+
+        def required_http_interfaces_for(unit: ImplementationUnit) -> list[dict[str, object]]:
+            """Pass frozen HTTP routes to consumers without treating them as imports."""
+            required: list[dict[str, object]] = []
+            for interface_id in unit.consumes_interfaces:
+                interface = interfaces_by_id.get(interface_id)
+                if interface is None or interface.kind != "api":
+                    continue
+                required.append({
+                    "interface_id": interface.interface_id,
+                    "owner_unit": interface.owner_unit,
+                    "owner_file": interface.owner_file,
+                    "operations": [operation for operation in interface.as_dict().get("operations", [])],
+                    "consumption": "http_call",
+                })
+            return required
+
         def artifact_ref(value: str) -> ArtifactRef:
             """Parse canonical ref ids while accepting bare artifact keys.
 
@@ -410,10 +520,27 @@ class ImplementationContractCompiler:
                             for interface_id in (*unit.provides_interfaces, *unit.consumes_interfaces)
                             if interface_id in interfaces_by_id
                         ],
-                        "provided_symbols": list(unit.provided_symbols),
+                        # ``provided_symbols`` is a file-local AST contract.
+                        # Interface ids and prose belong in ``provides_interfaces``
+                        #/acceptance_criteria, not in a Python symbol gate.
+                        # Normalize older LLM output here so CodeAgent is not
+                        # asked to invent attributes such as
+                        # ``task_management.task_api`` merely because that is
+                        # the public interface id.
+                        "provided_symbols": list(
+                            self._normalize_provided_symbols(
+                                unit,
+                                interface_ids=set(unit.provides_interfaces)
+                                | set(unit.consumes_interfaces),
+                            )
+                        ),
                         "required_symbols": list(unit.required_symbols),
                         "provides_interfaces": list(unit.provides_interfaces),
                         "consumes_interfaces": list(unit.consumes_interfaces),
+                        "binding_schema_version": 1,
+                        "provided_bindings": provided_bindings_by_unit.get(unit.unit_id, []),
+                        "required_bindings": required_bindings_for(unit),
+                        "required_http_interfaces": required_http_interfaces_for(unit),
                     },
                 )
             )
@@ -424,6 +551,38 @@ class ImplementationContractCompiler:
             template_id="implementation-contract",
             trace=trace,
         )
+
+    @staticmethod
+    def _normalize_provided_symbols(
+        unit: ImplementationUnit, *, interface_ids: set[str]
+    ) -> tuple[str, ...]:
+        """Keep only concrete file-local Python symbols in the delivery contract.
+
+        Architecture LLMs historically mixed three different concepts into
+        ``provided_symbols``: Python names, human-readable capabilities, and
+        interface ids such as ``task_management.task_api``.  The runner's AST
+        check can only prove the first category.  Interface ids are already
+        carried by ``provides_interfaces`` and prose remains covered by the
+        acceptance criteria, so silently removing both here makes the compiled
+        contract semantically precise and deterministic.
+        """
+        normalized: list[str] = []
+        for raw in unit.provided_symbols:
+            value = raw.strip()
+            if not value or value in interface_ids:
+                continue
+            if not re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\(\))?",
+                value,
+            ):
+                continue
+            parts = value.removesuffix("()").split(".")
+            # A dotted symbol in this contract is a class member (for example
+            # ``TaskRepository.create``), not a module/interface namespace.
+            if len(parts) > 1 and not parts[0][:1].isupper():
+                continue
+            normalized.append(value)
+        return tuple(dict.fromkeys(normalized))
 
     @staticmethod
     def _is_review_artifact_unit(unit: ImplementationUnit) -> bool:

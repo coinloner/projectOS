@@ -24,6 +24,16 @@ class WorkspaceStoreTest(unittest.TestCase):
         self.assertEqual(tools.read_file("src/app.py"), "print('hello')\n")
         self.assertEqual(tools.list_files(), "src/app.py")
 
+    def test_workspace_toolset_accepts_react_jsx_files_declared_by_architecture_contract(self) -> None:
+        tools = WorkspaceToolSet(self.project_path)
+
+        self.assertEqual(
+            tools.write_file("frontend/src/App.jsx", "export default function App() { return null; }\n"),
+            "已写入 workspace/frontend/src/App.jsx",
+        )
+        self.assertIn("frontend/src/App.jsx", tools.list_files())
+        self.assertIn("export default function App", tools.read_file("frontend/src/App.jsx"))
+
     def test_workspace_toolset_can_limit_file_reads_for_review(self) -> None:
         tools = WorkspaceToolSet(self.project_path, read_char_limit=200)
         tools.write_file("src/app.py", "A" * 500 + "B" * 500)

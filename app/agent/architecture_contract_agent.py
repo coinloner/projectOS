@@ -34,6 +34,9 @@ compile_project_contract_from_designs；控制面会做确定性组合和校验�
    这些字段是后续 Policy、Compiler、CodeAgent、Integration 的唯一事实来源。
    entrypoints 至少明确 backend_file、
    backend_import、backend_command；有前端时必须明确 frontend_file 和 health_path。
+   interfaces 中 kind=api 的接口必须同时明确 owner_file 和 operations；operations
+   逐项冻结 method/path（可选 request_schema/response_schema），这是后续 CodeAgent、
+   Integration、Test 的唯一 HTTP 路由来源，不能留给实现阶段猜测。
    每个单元必须包含 unit_id、layer、objective、allowed_paths、depends_on、
    acceptance_criteria；代码单元必须填写 canonical 字段 required_paths（输入边界兼容旧名
    required_files，运行时和输出中不得同时出现两个字段），
@@ -62,7 +65,9 @@ compile_project_contract_from_designs；控制面会做确定性组合和校验�
      "required_test_types": ["domain_unit", "application_unit", "api_http"],
      "entrypoints": {"backend_file": "backend/app/main.py", "backend_import": "app.main:app", "backend_command": "uvicorn app.main:app"},
      "required_files": ["backend/app/main.py"],
-     "interfaces": [],
+     "interfaces": [{"interface_id": "example.api", "kind": "api", "name": "示例 HTTP API",
+                     "owner_unit": "api", "owner_file": "backend/app/main.py",
+                     "operations": [{"method": "GET", "path": "/health"}]}],
      "implementation_units": []
    }
    `forbidden_imports` 和 `path_mapping` 必须是以顶层 layers 为 key 的对象，不能使用
@@ -75,6 +80,9 @@ compile_project_contract_from_designs；控制面会做确定性组合和校验�
    backend/orders/**）；目录 glob 只能出现在 allowed_paths/allowed_roots，绝不能出现在
    owned_files 或 required_paths。required_paths 只列出本单元
    所有权内必须实际交付的具体文件；不要把目录内所有辅助文件预先枚举成一个模糊目录目标。
+   每一个 owned_files 都必须被同一单元的 allowed_paths 命中；如果一个内聚单元同时拥有
+   frontend/src/main.jsx 和 frontend/index.html，allowed_paths 必须同时覆盖这两个具体文件
+   或声明能覆盖它们的目录模式，不能只写 frontend/src/**。
    不要读取或生成 layer-contract.json；代码路径使用
    workspace 相对路径，后端 Python 文件放在 backend/ 下，独立前端文件放在
    frontend/ 下，测试、脚本和项目配置可使用根路径。每个单元必须填写与路径一致的

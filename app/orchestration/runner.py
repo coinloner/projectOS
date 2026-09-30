@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import fnmatch
 import ast
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -12,6 +13,7 @@ from threading import Lock
 from typing import Any
 
 from app.architecture_execution_config import ArchitectureExecutionConfig
+from app.domain.architecture.candidate_policy import ArchitectureCandidatePolicy
 from app.agent.registry import AgentRegistry
 from app.agent.result import AgentResult, AgentStatus
 from app.artifact.repository import ArtifactRef, ArtifactRepository
@@ -79,14 +81,25 @@ def _implementation_unit_count_from_item(item: WorkItem) -> int:
 def _provider_failure_kind(error: BaseException) -> FailureKind | None:
     """Classify transport/terminal failures separately from agent logic errors."""
     text = str(error).lower()
+    if "upstream_policy_rejected" in text:
+        return FailureKind.PROVIDER_POLICY_REJECTED
+    # OpenAI-compatible relays commonly wrap upstream 502/503 as
+    # "Error code: 503 - {...}".  Classify these before the generic Agent
+    # fallback so the provider-specific one-retry budget is applied.
+    if re.search(r"\b(?:error code|status code|http status)\s*:?\s*50[23]\b", text):
+        return FailureKind.PROVIDER_TRANSPORT
     transport_markers = (
         "peer closed connection",
         "incomplete chunked read",
         "connection reset",
         "connection aborted",
+        "connection error",
         "remote end closed",
         "read timeout",
         "timed out",
+        "stream exceeded request ceiling",
+        "sse read exceeded",
+        "sse create exceeded",
     )
     if any(marker in text for marker in transport_markers):
         return FailureKind.PROVIDER_TRANSPORT
@@ -380,6 +393,23 @@ class GraphRunResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class WaveIntegrationFailure:
+    """A code-wave merge failure with bounded implementation ownership.
+
+    Wave integration is a control-plane barrier, but the fix belongs to the
+    CodeAgent that owns the files named by the deterministic semantic check.
+    Keeping that attribution structured lets the run coordinator rerun only
+    the affected staged deliveries instead of terminally failing the whole
+    graph or replaying the integration agent.
+    """
+
+    wave: int
+    work_item_ids: tuple[str, ...]
+    affected_work_item_ids: tuple[str, ...]
+    error: str
+
+
 def _exclusive_code_repair_prompt(
     item: WorkItem,
     *,
@@ -475,8 +505,10 @@ def _architecture_retry_contract_prompt(slot: str, required_tool: str) -> str:
     if required_tool == "write_architecture_blueprint":
         return (
             "\n【Blueprint 字段闸门】design 必须是 depth=0 ArchitectureBlueprint；顶层只允许 "
-            "schema_version、design_id、depth、system_boundary、layers、modules、"
+            "schema_version、architecture_scheme、design_id、depth、system_boundary、layers、modules、"
             "global_constraints、runtime_profile、entrypoints、required_files、requirement_ids。"
+            "D 方案必须在 modules[].owned_required_files 中给每个 required_files 指定唯一模块责任人；"
+            "测试和 README 等需求文件也不能遗漏或凭空删除。"
             "不要写 implementation_units、provided_interfaces 或 consumed_interfaces。"
         )
     if required_tool == "write_module_design":
@@ -499,12 +531,31 @@ def _architecture_retry_contract_prompt(slot: str, required_tool: str) -> str:
             "如果当前模块没有实现该接口的 unit，就不要把它列入 provided_interfaces。"
             "consumed_interfaces 每项只能含 interface_id、usage、required，不得含 direction、summary、owner_unit。"
             "每个 implementation_units 元素必须含 unit_id、layer、objective、allowed_paths、owned_files，"
-            "且 owned_files 恰好一个具体文件；可选 required_paths、forbidden_paths、depends_on、input_refs、"
+            "且 D 方案 owned_files 为 1-3 个内聚的具体文件；可选 required_paths、forbidden_paths、depends_on、input_refs、"
             "acceptance_criteria、constraints、non_goals、policy_refs、skill_refs、parallel_group、"
             "output_key、slot、requirement_ids、wave、provides_interfaces、consumes_interfaces、"
             "provided_symbols、required_symbols。不要写 consumed_interface_ids、test_boundary 或 required_files。"
         )
     return ""
+
+
+def _integration_owner_work_items(plan: ExecutionPlan, error: str) -> tuple[str, ...]:
+    """Attribute deterministic integration errors to exact CodeAgent owners.
+
+    The validator emits ``[owner_files: ...]`` after the isolated merge. Only
+    concrete files owned by CodeAgent WorkItems in this plan are accepted;
+    free-form reviewer prose must never grant a new write scope.
+    """
+    match = re.search(r"\[owner_files: ([^\]]+)\]", error)
+    if match is None:
+        return ()
+    owner_files = {path.strip().removeprefix("workspace/") for path in match.group(1).split(",")}
+    return tuple(
+        item.id
+        for item in plan.work_items
+        if item.agent_id == "code_agent"
+        and any(path.removeprefix("workspace/") in owner_files for path in item.owned_files)
+    )
 
 
 class GraphRunner:
@@ -689,6 +740,43 @@ class GraphRunner:
                 self._finish_trace(state.plan, result)
                 return result
             self._expand_implementation_plan_if_ready(state)
+            # Integrate every completed code wave before selecting any next
+            # batch (and before declaring a fully completed graph). A merge
+            # conflict must freeze the baseline before a dependent WorkItem
+            # can read the unmerged workspace.
+            wave_failure = self._integrate_ready_waves(state)
+            if wave_failure is not None:
+                summary = (
+                    f"Wave {wave_failure.wave} 合并失败；需要修复责任 WorkItem "
+                    f"{', '.join(wave_failure.affected_work_item_ids)}：{wave_failure.error}"
+                )
+                signal = FailureSignal(
+                    FailureKind.CODE_DELIVERY_INCOMPLETE,
+                    summary,
+                    validator="CodeIntegrationService._validate_local_imports",
+                    field_path=wave_failure.affected_work_item_ids[0]
+                    if wave_failure.affected_work_item_ids
+                    else f"wave-{wave_failure.wave}-integration",
+                    retry_hint="rerun_affected_code_work_items_after_bounded_repair",
+                    scope="current_work_item",
+                    requires_control_plane=True,
+                    related_work_item_ids=wave_failure.affected_work_item_ids,
+                )
+                node_result = NodeResult.needs_replan(
+                    work_item_id=f"wave-{wave_failure.wave}-integration",
+                    agent_id="code_integration_agent",
+                    content=summary,
+                    signal=signal,
+                )
+                graph_result = GraphRunResult(
+                    status=GraphRunStatus.NEEDS_REPLAN,
+                    state=state,
+                    node_result=node_result,
+                    failure_signal=signal,
+                    error=summary,
+                )
+                self._finish_trace(state.plan, graph_result)
+                return graph_result
             if state.is_complete():
                 break
             # Expansion keeps the trace/plan id stable but replaces the DAG.
@@ -774,15 +862,6 @@ class GraphRunner:
                 self._finish_trace(plan, terminal_graph_result)
                 return terminal_graph_result
 
-            wave_error = self._integrate_ready_waves(state)
-            if wave_error is not None:
-                graph_result = GraphRunResult(
-                    status=GraphRunStatus.FAILED,
-                    state=state,
-                    error=wave_error,
-                )
-                self._finish_trace(state.plan, graph_result)
-                return graph_result
 
         review_item = next(
             (item for item in plan.work_items if item.agent_id == "review_agent"),
@@ -808,8 +887,18 @@ class GraphRunner:
             # stale text must not block a run after the actual project passes.
             from app.policy.quality import ProjectQualityPolicy
 
+            # A vertical-slice plan is an explicit intermediate gate. It must
+            # still validate its own ChangeSet/Wave/runtime evidence, but it
+            # must not be judged as if tests, review and the full requirement
+            # matrix had already been scheduled. Full delivery remains fail-closed.
             quality = ProjectQualityPolicy().render(self._traces.project_path)
-            if "policy_id=project.quality.v1\nstatus=failed" in quality:
+            # A repair DAG is not the release DAG: it only proves that its
+            # bounded change was written. Evaluate the full project after the
+            # original delivery frontier resumes, otherwise an unrelated
+            # missing test/layer blocks repair before it can reach that gate.
+            if (plan.validation_scope == "full_delivery"
+                    and "-repair-" not in plan.id
+                    and "policy_id=project.quality.v1\nstatus=failed" in quality):
                 graph_result = GraphRunResult(
                     status=GraphRunStatus.BLOCKED,
                     state=state,
@@ -834,7 +923,8 @@ class GraphRunner:
             # enforcing the project-level matrix here would block the repair
             # before `_run_with_repairs` can restore tests -> review.
             requires_delivery_matrix = (
-                "-repair-" not in state.plan.id
+                state.plan.validation_scope == "full_delivery"
+                and "-repair-" not in state.plan.id
                 and any(item.agent_id in delivery_nodes for item in state.plan.work_items)
             )
             if requires_delivery_matrix:
@@ -1202,7 +1292,7 @@ class GraphRunner:
         self._record_checkpoint(state)
         return None
 
-    def _integrate_ready_waves(self, state: RunState) -> str | None:
+    def _integrate_ready_waves(self, state: RunState) -> WaveIntegrationFailure | None:
         """在进入下一实现 Wave 前发布已完成 Wave 的代码 ChangeSet。"""
         if self._traces is None:
             return None
@@ -1220,11 +1310,26 @@ class GraphRunner:
             and str(event.get("details", {}).get("wave", "")).isdigit()
         }
         from app.domain.code.service import CodeIntegrationService
+        from app.domain.code.git_service import GitCodeStagingService
 
+        staging = GitCodeStagingService(self._traces.project_path)
+        integrated_commits = staging.integrated_commits(state.plan.trace.trace_id)
         for wave in sorted({item.wave for item in code_items}):
-            if wave in integrated:
-                continue
             members = [item for item in code_items if item.wave == wave]
+            if wave in integrated:
+                # A wave-completed event is historical. After an attributed
+                # CodeAgent rerun the same WorkItem has a *new* ChangeSet and
+                # must be merged again even though its wave number is old.
+                try:
+                    if all(
+                        staging.load_change_set(
+                            state.plan.trace.trace_id, member.id
+                        ).commit in integrated_commits
+                        for member in members
+                    ):
+                        continue
+                except FileNotFoundError:
+                    pass
             if not all(
                 state.node_results.get(item.id) is not None
                 and state.node_results[item.id].status is NodeStatus.COMPLETED
@@ -1251,13 +1356,32 @@ class GraphRunner:
             try:
                 summary = CodeIntegrationService(self._traces.project_path).integrate_wave(context)
             except Exception as error:
+                error_text = str(error)
+                affected = tuple(
+                    item.id
+                    for item in members
+                    if any(
+                        path in error_text
+                        for path in (item.owned_files or item.required_paths)
+                    )
+                ) or tuple(item.id for item in members)
                 self._traces.record_event(
                     state.plan.trace,
                     context.work_item_id,
                     "code_wave_integration_failed",
-                    details={"wave": wave, "error": str(error)},
+                    details={
+                        "wave": wave,
+                        "error": error_text,
+                        "work_item_ids": [item.id for item in members],
+                        "affected_work_item_ids": list(affected),
+                    },
                 )
-                return f"Wave {wave} 合并失败: {error}"
+                return WaveIntegrationFailure(
+                    wave=wave,
+                    work_item_ids=tuple(item.id for item in members),
+                    affected_work_item_ids=affected,
+                    error=error_text,
+                )
             self._traces.record_event(
                 state.plan.trace,
                 context.work_item_id,
@@ -1302,17 +1426,46 @@ class GraphRunner:
         from app.workflow.compiler import ImplementationContractCompiler
 
         contract = ProjectContractStore(self._traces.project_path).load()
+        contract_digest = hashlib.sha256(
+            json.dumps(
+                contract.as_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+        self._traces.record_event(
+            plan.trace,
+            "control",
+            "implementation_plan_compilation_started",
+            details={
+                "contract_digest": contract_digest,
+                "compilation_strategy": contract.compilation_strategy,
+                "source_work_item_id": contract_item.id,
+                "integration_work_item_id": integration.id,
+            },
+        )
         base_dependencies = tuple(
             dependency
             for dependency in integration.dependencies
             if dependency.work_item_id != integration.id
         )
-        compiled = ImplementationContractCompiler().compile(
-            contract,
-            goal=plan.goal,
-            plan_id=plan.id,
-            trace=plan.trace,
-        )
+        try:
+            compiled = ImplementationContractCompiler().compile(
+                contract,
+                goal=plan.goal,
+                plan_id=plan.id,
+                trace=plan.trace,
+            )
+        except Exception as error:
+            self._traces.record_event(
+                plan.trace,
+                "control",
+                "implementation_plan_compilation_failed",
+                details={
+                    "contract_digest": contract_digest,
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                },
+            )
+            raise
         code_items = tuple(
             replace(
                 item,
@@ -1362,14 +1515,69 @@ class GraphRunner:
         self._traces.record_plan(state.plan)
         self._traces.record_delivery_plan(state.plan, overwrite=True)
         self._traces.record_plan_baseline(state.plan)
+        mapping = {
+            "unit_ids": [item.implementation_unit_id for item in code_items],
+            "work_item_ids": [item.id for item in code_items],
+            "wave_map": {
+                item.implementation_unit_id or item.id: item.wave
+                for item in code_items
+            },
+            "ownership_map": {
+                item.implementation_unit_id or item.id: list(item.owned_files)
+                for item in code_items
+            },
+            "dependency_map": {
+                item.implementation_unit_id or item.id: [
+                    dependency.work_item_id for dependency in item.dependencies
+                ]
+                for item in code_items
+            },
+            "binding_map": {
+                item.implementation_unit_id or item.id: {
+                    "provided_bindings": list(
+                        (item.delivery_contract or {}).get("provided_bindings", [])
+                    ),
+                    "required_bindings": list(
+                        (item.delivery_contract or {}).get("required_bindings", [])
+                    ),
+                }
+                for item in code_items
+            },
+        }
+        compiled_plan_digest = hashlib.sha256(
+            json.dumps(mapping, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            .encode("utf-8")
+        ).hexdigest()
+        compilation_receipt = {
+            "plan_id": plan.id,
+            "contract_digest": contract_digest,
+            "compiled_plan_digest": compiled_plan_digest,
+            "compilation_strategy": contract.compilation_strategy,
+            "implementation_unit_ids": mapping["unit_ids"],
+            "work_item_ids": mapping["work_item_ids"],
+            "wave_map": mapping["wave_map"],
+            "ownership_map": mapping["ownership_map"],
+            "dependency_map": mapping["dependency_map"],
+            "binding_map": mapping["binding_map"],
+        }
+        self._traces.record_implementation_plan_compilation(
+            plan.trace, compilation_receipt
+        )
+        self._traces.record_event(
+            plan.trace,
+            "control",
+            "implementation_plan_compiled",
+            details=compilation_receipt,
+        )
         self._traces.record_event(
             plan.trace,
             "control",
             "implementation_plan_expanded",
             details={
-                "unit_ids": [item.implementation_unit_id for item in code_items],
-                "work_item_ids": [item.id for item in code_items],
+                "unit_ids": mapping["unit_ids"],
+                "work_item_ids": mapping["work_item_ids"],
                 "parallel_units": len(code_items),
+                "compiled_plan_digest": compiled_plan_digest,
             },
         )
         self._record_checkpoint(state)
@@ -1995,7 +2203,19 @@ class GraphRunner:
         # durable-output recovery and before creating the agent; expose a plan
         # repair instead of spending the consumer's model retry budget.
         input_digests = None
-        if item.agent_id == "architecture_agent" and self._artifacts is not None:
+        # Both the Architecture workers and the deterministic Contract
+        # compiler consume versioned structured-design artifacts.  Capturing
+        # digests only for ``architecture_agent`` left the Contract node with
+        # ``input_refs`` but no matching ``input_digests``; the D-scheme
+        # validator then indexed an empty tuple and surfaced the opaque
+        # ``tuple index out of range`` failure after all architecture work had
+        # already completed.  Treat the compiler as the same trusted consumer
+        # boundary so it gets the same immutable input-version evidence.
+        architecture_input_consumers = {
+            "architecture_agent",
+            "architecture_contract_agent",
+        }
+        if item.agent_id in architecture_input_consumers and self._artifacts is not None:
             from hashlib import sha256
 
             captured_digests = []
@@ -2367,7 +2587,7 @@ class GraphRunner:
                 prompt = _partitioned_code_retry_prompt(
                     item,
                     failure_reason=(
-                        retry_context
+                        "\n".join(part for part in (recovery_diagnostic, retry_context) if part)
                         or (
                             "上一次 Worker 被终止；当前节点必须从已有 checkpoint 直接完成文件落盘"
                             if prior_worker_abort
@@ -2425,14 +2645,7 @@ class GraphRunner:
                 and self._traces is not None
                 and self._has_prior_worker_abort(state.plan.trace.trace_id)
             )
-            integration_workspace_resume = (
-                item.agent_id == "code_integration_agent"
-                and self._traces is not None
-                and self._has_completed_workspace_repair(state.plan.trace.trace_id)
-            )
-            if integration_workspace_resume:
-                agent_result = self._complete_integration_from_workspace(context)
-            elif test_control_plane_resume:
+            if test_control_plane_resume:
                 # Once a Worker has stalled in the test node, retry the
                 # deterministic local evidence protocol instead of spending
                 # another unbounded LLM call on the same step.  The protocol
@@ -2736,6 +2949,9 @@ class GraphRunner:
                     signal=FailureSignal(
                         provider_kind,
                         f"Provider 请求异常（{provider_kind.value}）：{error}",
+                        retryable=provider_kind is not FailureKind.PROVIDER_POLICY_REJECTED,
+                        code=("upstream_policy_rejected"
+                              if provider_kind is FailureKind.PROVIDER_POLICY_REJECTED else None),
                     ),
                 )
             if (
@@ -2747,9 +2963,12 @@ class GraphRunner:
                         "适配 ChangeSet",
                         "集成语义检查",
                         "集成入口契约检查",
+                        "Integration 语义检查",
+                        "Integration 入口契约检查",
                     )
                 )
             ):
+                owner_ids = _integration_owner_work_items(state.plan, str(error))
                 return NodeResult.needs_replan(
                     work_item_id=item.id,
                     agent_id=item.agent_id,
@@ -2758,6 +2977,9 @@ class GraphRunner:
                         FailureKind.CODE_DELIVERY_INCOMPLETE,
                         "代码集成发现实现适配问题，需由已有 CodeAgent 在其责任文件内修复后重新集成："
                         + str(error),
+                        validator="GitCodeIntegrationService",
+                        related_work_item_ids=owner_ids,
+                        field_path=owner_ids[0] if len(owner_ids) == 1 else None,
                     ),
                 )
             return NodeResult.failed(
@@ -3320,56 +3542,6 @@ class GraphRunner:
         service.save_tests(report)
         return AgentResult.completed(report)
 
-    def _has_completed_workspace_repair(self, trace_id: str) -> bool:
-        """Whether a code repair already wrote the authorized files to workspace."""
-        if self._traces is None:
-            return False
-        return any(
-            event.get("type") == "work_item_completed"
-            and str(event.get("work_item_id", "")).startswith("wi-repair-01-")
-            for event in self._traces.list_events(trace_id)
-        )
-
-    def _complete_integration_from_workspace(self, context: ExecutionContext) -> AgentResult:
-        """Recover legacy repairs whose exclusive writer bypassed Git staging.
-
-        Exclusive repair WorkItems intentionally write the live workspace.  A
-        subsequent integration node must still be represented as completed,
-        but it cannot require a ChangeSet that the repair contract never
-        produced.  Validate the declared contract files before accepting the
-        already-applied workspace and publish the normal implementation
-        artifact for downstream tests/review.
-        """
-        if self._traces is None or self._artifacts is None:
-            return AgentResult.completed("修复后的 workspace 已存在，跳过重复集成。")
-        from app.domain.architecture.implementation_contract import ProjectContractStore
-
-        try:
-            contract = ProjectContractStore(self._traces.project_path).load()
-        except (FileNotFoundError, PermissionError, ValueError):
-            return AgentResult.completed("修复后的 workspace 已存在，跳过重复集成。")
-        workspace = Path(self._traces.project_path) / "workspace"
-        missing = [
-            path for path in contract.required_files
-            if not (workspace / path.removeprefix("workspace/")).is_file()
-        ]
-        if missing:
-            raise RuntimeError("修复后的 workspace 缺少合同文件: " + ", ".join(missing))
-        summary = (
-            "# 实现摘要\n\n## 集成记录\n\n"
-            "修复节点已将合同声明的文件写入正式 workspace；控制面完成文件存在性校验，"
-            "无需再次合并不存在的分区 ChangeSet。\n"
-        )
-        self._artifacts.save_artifact("implementation", summary)
-        self._record_memory(
-            context,
-            role="control",
-            event_type="integration_recovered_from_workspace",
-            content="修复后的 workspace 文件已通过合同存在性校验，跳过重复 ChangeSet 合并",
-            attempt=1,
-        )
-        return AgentResult.completed(summary)
-
     def _validate_code_delivery(self, state: RunState, item: WorkItem) -> tuple[str, ...]:
         """在 Agent 返回 completed 后验证真实 ChangeSet，而不是相信文字声明。"""
         from app.domain.code.service import CodeStagingService
@@ -3468,6 +3640,15 @@ class GraphRunner:
             provided_symbols = (provided_symbols,)
         if not isinstance(provided_symbols, (list, tuple)):
             provided_symbols = ()
+        # Persisted plans may predate compiler normalization and still contain
+        # interface ids in ``provided_symbols``. Those ids are checked through
+        # the interface contract/HTTP or runtime tests, not as Python AST names.
+        interface_ids = {
+            value
+            for key in ("provides_interfaces", "consumes_interfaces")
+            for value in (contract.get(key, ()) or ())
+            if isinstance(value, str)
+        }
         for relative in sorted(changed):
             path = root / relative
             if not path.is_file():
@@ -3535,6 +3716,21 @@ class GraphRunner:
                     if not isinstance(symbol, str) or not symbol.strip():
                         continue
                     value = symbol.strip()
+                    if value in interface_ids:
+                        continue
+                    # Architecture prompts sometimes put a human-readable
+                    # capability description in ``provided_symbols`` (for
+                    # example ``SQLite 初始化与任务 CRUD/统计方法``).  It is
+                    # useful documentation, but it is not a Python symbol
+                    # that an AST can verify.  Only identifier-shaped values
+                    # participate in the deterministic symbol gate; textual
+                    # semantics remain covered by acceptance criteria and
+                    # tests instead of creating false CodeAgent retries.
+                    if not re.fullmatch(
+                        r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\(\))?",
+                        value,
+                    ):
+                        continue
                     leaf = value.rsplit(".", 1)[-1].split("(", 1)[0].strip()
                     if value not in names and leaf not in names and leaf not in public_members:
                         issues.append(f"交付文件缺少合同声明符号 {relative}:{value}")
@@ -3754,6 +3950,10 @@ class GraphRunner:
                 expected_source_refs=producer.input_refs,
                 expected_contract_digest=producer.contract_digest,
             )
+            assessment = ArchitectureCandidatePolicy(self._architecture_config).assert_publishable(
+                (ref.ref_id for ref in producer.input_refs),
+                candidate.report.accepted_output_ids,
+            )
             self._artifacts.promote_candidate(
                 candidate.id, artifact_key=item.publish_target or ""
             )
@@ -3852,6 +4052,28 @@ class GraphRunner:
                 )
         if result.status is NodeStatus.COMPLETED:
             self._record_event(plan, item, "work_item_completed")
+            if (
+                self._traces is not None
+                and item.execution_mode is ExecutionMode.QUALITY_GATE
+                and item.publish_target == "architecture"
+            ):
+                self._traces.record_event(
+                    plan.trace,
+                    item.id,
+                    "architecture_contract_published",
+                    details={
+                        "quality_gate_work_item_id": item.id,
+                        "candidate_from_work_item_id": item.candidate_from_work_item_id,
+                        "publish_target": item.publish_target,
+                        "candidate_strategy": self._architecture_config.candidate_strategy,
+                        "retention_decision": (
+                            "retain_completed_siblings_for_local_recovery"
+                            if self._architecture_config.retains_partial_candidates
+                            else "discard_partial_candidate_from_publication"
+                        ),
+                        "complete_candidate_required": self._architecture_config.requires_complete_candidate,
+                    },
+                )
             definition = self._agents.definition(item.agent_id)
             if (
                 self._traces is not None
@@ -3889,6 +4111,8 @@ class GraphRunner:
                 details={
                     "kind": signal.kind.value if signal is not None else "unknown",
                     "evidence_id": signal.evidence_id if signal is not None else None,
+                    "error": signal.summary if signal is not None else result.error,
+                    "code": signal.code if signal is not None else None,
                 },
             )
             return
@@ -3923,6 +4147,18 @@ class GraphRunner:
         }.get(result.status, DeliveryState.FAILED)
         self._set_delivery_state(target, reason=result.error or result.status.value)
         if self._traces is not None:
+            if result.status is GraphRunStatus.COMPLETED:
+                events = self._traces.list_events(plan.trace.trace_id)
+                if any(event.get("type") == "architecture_contract_published" for event in events):
+                    self._traces.record_event(
+                        plan.trace,
+                        "control",
+                        "semantic_loop_completed",
+                        details={
+                            "architecture_contract_published": True,
+                            "completed_work_items": len(result.state.node_results),
+                        },
+                    )
             self._traces.finish_trace(
                 plan.trace,
                 result.status.value,

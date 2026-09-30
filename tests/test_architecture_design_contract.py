@@ -76,6 +76,7 @@ def _implementation(module_id: str) -> ImplementationDesign:
                 "allowed_paths": [f"backend/app/{module_id}/**"],
                 "required_files": [f"backend/app/{module_id}/main.py"],
                 "owned_files": [f"backend/app/{module_id}/main.py"],
+                "provided_symbols": ["app"] if module_id == "api" else [],
                 "acceptance_criteria": ["文件可导入"],
             }
         ],
@@ -96,6 +97,31 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                 blueprint=blueprint,
                 modules=[_module("domain"), _module("api")],
                 implementations=[_implementation("domain"), _implementation("api")],
+            )
+
+    def test_d_required_file_must_be_owned_by_assigned_module(self) -> None:
+        blueprint = _d_blueprint()
+        misplaced = _implementation("domain").model_copy(update={
+            "implementation_units": [
+                _implementation("domain").implementation_units[0].model_copy(update={
+                    "owned_files": ["backend/app/domain/main.py", "backend/app/api/main.py"],
+                    "required_paths": ["backend/app/domain/main.py"],
+                })
+            ],
+        })
+        api = _implementation("api").model_copy(update={
+            "implementation_units": [
+                _implementation("api").implementation_units[0].model_copy(update={
+                    "owned_files": ["backend/app/api/other.py"],
+                    "required_paths": ["backend/app/api/other.py"],
+                })
+            ],
+        })
+        with self.assertRaisesRegex(ValueError, "required_file_wrong_module_owner"):
+            ArchitectureDesignBundle(
+                schema_version=1, blueprint=blueprint,
+                modules=[_module("domain"), _module("api")],
+                implementations=[misplaced, api],
             )
 
     def test_blueprint_required_file_can_be_owned_by_any_implementation_unit(self) -> None:
@@ -142,6 +168,37 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                 "health_path": "/health",
             },
         )
+
+    def test_contract_derives_backend_entrypoint_when_explicit_fields_are_null(self) -> None:
+        runtime = ImplementationDesign(
+            schema_version=1,
+            design_id="implementation-backend-entrypoint",
+            parent_design_id="module-api",
+            module_id="api",
+            implementation_units=[
+                {
+                    "unit_id": "task-http",
+                    "layer": "backend",
+                    "objective": "实现任务 HTTP 入口",
+                    "allowed_paths": ["backend/app/**"],
+                    "owned_files": ["backend/app/main.py"],
+                }
+            ],
+        )
+        blueprint = _blueprint().model_copy(update={
+            "entrypoints": ContractEntrypointInput.model_validate({
+                "backend_file": None, "backend_import": None,
+                "backend_command": None,
+            }),
+        })
+        contract = ArchitectureDesignBundle(
+            schema_version=1,
+            blueprint=blueprint,
+            modules=[_module("domain"), _module("api")],
+            implementations=[_implementation("domain"), runtime],
+        ).to_project_contract()
+        assert contract["entrypoints"]["backend_file"] == "backend/app/main.py"
+        assert contract["entrypoints"]["backend_import"] == "app.main"
 
     def test_consumed_interface_wire_aliases_are_canonicalized(self) -> None:
         module = ModuleDesign.model_validate(
@@ -255,6 +312,58 @@ class ArchitectureDesignContractTest(unittest.TestCase):
                 }
             ],
         )
+
+    def test_d_bundle_projects_in_boundary_owned_files_into_allowed_scope(self) -> None:
+        blueprint = _d_blueprint()
+        domain_unit = _implementation("domain").implementation_units[0].model_copy(
+            update={
+                "allowed_paths": ["backend/app/domain/main.py"],
+                "owned_files": [
+                    "backend/app/domain/main.py",
+                    "backend/app/domain/extra.py",
+                ],
+            }
+        )
+        domain = _implementation("domain").model_copy(
+            update={"implementation_units": [domain_unit]}
+        )
+        bundle = ArchitectureDesignBundle(
+            schema_version=1,
+            blueprint=blueprint,
+            modules=[_module("domain"), _module("api")],
+            implementations=[domain, _implementation("api")],
+        )
+
+        normalized = next(
+            unit
+            for design in bundle.implementations
+            for unit in design.implementation_units
+            if unit.unit_id == "unit-domain"
+        )
+        self.assertIn("backend/app/domain/extra.py", normalized.allowed_paths)
+
+    def test_d_bundle_rejects_owned_file_outside_parent_layer_boundary(self) -> None:
+        blueprint = _d_blueprint()
+        domain_unit = _implementation("domain").implementation_units[0].model_copy(
+            update={
+                "owned_files": [
+                    "backend/app/domain/main.py",
+                    "backend/app/api/escape.py",
+                ],
+            }
+        )
+        domain = _implementation("domain").model_copy(
+            update={"implementation_units": [domain_unit]}
+        )
+        with self.assertRaisesRegex(
+            ValueError, "required_file_wrong_module_owner.*escape.py"
+        ):
+            ArchitectureDesignBundle(
+                schema_version=1,
+                blueprint=blueprint,
+                modules=[_module("domain"), _module("api")],
+                implementations=[domain, _implementation("api")],
+            )
 
     def test_implementation_design_rejects_more_than_three_owned_files(self) -> None:
         with self.assertRaisesRegex(ValueError, "1-3"):
@@ -965,3 +1074,178 @@ class BlueprintLayerDependencyValidationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _d_blueprint() -> ArchitectureBlueprint:
+    return _blueprint().model_copy(update={
+        "architecture_scheme": "D",
+        "entrypoints": ContractEntrypointInput.model_validate({
+            "backend_file": "backend/app/api/main.py",
+            "backend_import": "app.api.main:app",
+            "backend_command": "python -m uvicorn app.api.main:app",
+        }),
+        "required_files": [
+            "backend/app/domain/main.py",
+            "backend/app/api/main.py",
+        ],
+        "modules": [
+            _blueprint().modules[0].model_copy(update={
+                "boundary_role": "business_capability",
+                "owned_required_files": ["backend/app/domain/main.py"],
+            }),
+            _blueprint().modules[1].model_copy(update={
+                "boundary_role": "runtime",
+                "owned_required_files": ["backend/app/api/main.py"],
+            }),
+        ],
+    })
+
+
+def _source_digest(repository: ArtifactRepository, ref: ArtifactRef) -> str:
+    import hashlib
+    return hashlib.sha256(repository.load_ref(ref).encode()).hexdigest()
+
+
+def test_d_blueprint_rejects_missing_or_duplicate_module_file_assignments() -> None:
+    with tempfile.TemporaryDirectory() as project_path:
+        workflow = ArchitectureArtifactWorkflow(project_path)
+        context = ExecutionContext(
+            trace_id="tr-assignment", work_item_id="wi-blueprint", agent_id="architecture_agent",
+            execution_mode=ExecutionMode.PARTITIONED, slot="blueprint",
+            architecture_config=__import__(
+                "app.architecture_execution_config", fromlist=["ArchitectureExecutionConfig"]
+            ).ArchitectureExecutionConfig(scheme="D"),
+        )
+        design = _d_blueprint().model_dump(mode="json")
+        design["modules"][1]["owned_required_files"] = []
+        with __import__("pytest").raises(ValueError, match="required_file_without_module_owner"):
+            workflow.write_staged_design(context, design)
+        design["modules"][1]["owned_required_files"] = ["backend/app/domain/main.py"]
+        with __import__("pytest").raises(ValueError, match="duplicate_required_file_owner"):
+            workflow.write_staged_design(context, design)
+        # Old persisted D designs remain readable so recovery can diagnose
+        # and replace them; they are not accepted as new D writes.
+        historical = _d_blueprint().model_dump(mode="json")
+        for module in historical["modules"]:
+            module.pop("owned_required_files")
+        assert parse_design(historical).architecture_scheme == "D"
+        with __import__("pytest").raises(ValueError, match="required_file_without_module_owner"):
+            workflow.write_staged_design(context, historical)
+
+
+def test_d_implementation_rejects_unowned_files_before_integration() -> None:
+    with tempfile.TemporaryDirectory() as project_path:
+        workflow = ArchitectureArtifactWorkflow(project_path)
+        repository = ArtifactRepository(project_path)
+        repository.save_artifact("requirement", "订单 API")
+        requirement = ArtifactRef.published("requirement")
+        config = __import__(
+            "app.architecture_execution_config", fromlist=["ArchitectureExecutionConfig"]
+        ).ArchitectureExecutionConfig(scheme="D")
+        blueprint_context = ExecutionContext(
+            trace_id="tr-file-owner", work_item_id="wi-blueprint", agent_id="architecture_agent",
+            execution_mode=ExecutionMode.PARTITIONED, slot="blueprint",
+            input_refs=(requirement,), input_digests=(_source_digest(repository, requirement),),
+            architecture_config=config,
+        )
+        blueprint = _d_blueprint().model_dump(mode="json")
+        blueprint["required_files"].append("README.md")
+        blueprint["modules"][0]["owned_required_files"].append("README.md")
+        workflow.write_staged_design(blueprint_context, blueprint)
+        ref = ArtifactRef.staged(artifact_key="architecture", trace_id="tr-file-owner",
+                                 work_item_id="wi-blueprint", slot="blueprint")
+        context = ExecutionContext(
+            trace_id="tr-file-owner", work_item_id="wi-domain", agent_id="architecture_agent",
+            execution_mode=ExecutionMode.PARTITIONED, slot="implementation-domain",
+            input_refs=(ref,), input_digests=(_source_digest(repository, ref),),
+            architecture_config=config,
+        )
+        with __import__("pytest").raises(ValueError, match="module_required_file_not_owned") as error:
+            workflow.write_staged_design(context, _implementation("domain").model_dump(mode="json"))
+        assert "README.md" in str(error.value)
+        corrected = _implementation("domain").model_dump(mode="json")
+        corrected["implementation_units"].append({
+            "unit_id": "unit-domain-doc", "layer": "domain", "objective": "说明启动和访问",
+            "allowed_paths": ["**"], "owned_files": ["README.md"],
+        })
+        workflow.write_staged_design(context, corrected)
+
+
+def test_d_design_validates_real_provenance_chain_and_rejects_tampering() -> None:
+    """The D gate must validate the same frozen source chain used by producers."""
+    with tempfile.TemporaryDirectory() as project_path:
+        workflow = ArchitectureArtifactWorkflow(project_path)
+        repository = ArtifactRepository(project_path)
+        trace_id = "tr-d-provenance"
+        repository.save_artifact("requirement", "用户需要一个订单 API。")
+        requirement = ArtifactRef.published("requirement")
+        requirement_digest = _source_digest(repository, requirement)
+
+        blueprint_context = ExecutionContext(
+            trace_id=trace_id, work_item_id="wi-blueprint", agent_id="architecture_agent",
+            execution_mode=ExecutionMode.PARTITIONED, slot="blueprint",
+            input_refs=(requirement,), input_digests=(requirement_digest,),
+            architecture_config=__import__(
+                "app.architecture_execution_config", fromlist=["ArchitectureExecutionConfig"]
+            ).ArchitectureExecutionConfig(scheme="D"),
+        )
+        workflow.write_staged_design(blueprint_context, _d_blueprint().model_dump(mode="json"))
+        blueprint_ref = ArtifactRef.staged(
+            artifact_key="architecture", trace_id=trace_id,
+            work_item_id="wi-blueprint", slot="blueprint"
+        )
+        blueprint_digest = _source_digest(repository, blueprint_ref)
+
+        design_refs = [blueprint_ref]
+        for module_id in ("domain", "api"):
+            context = ExecutionContext(
+                trace_id=trace_id, work_item_id=f"wi-module-{module_id}", agent_id="architecture_agent",
+                execution_mode=ExecutionMode.PARTITIONED, slot=f"module-{module_id}",
+                input_refs=(blueprint_ref,), input_digests=(blueprint_digest,),
+                architecture_config=blueprint_context.architecture_config,
+            )
+            workflow.write_staged_design(
+                context, _module(module_id).model_copy(update={
+                    "parent_design_id": "blueprint-1",
+                }).model_dump(mode="json")
+            )
+            ref = ArtifactRef.staged(
+                artifact_key="architecture", trace_id=trace_id,
+                work_item_id=f"wi-module-{module_id}", slot=f"module-{module_id}"
+            )
+            design_refs.append(ref)
+
+        module_refs = tuple(design_refs[1:])
+        for module_id, module_ref in zip(("domain", "api"), module_refs):
+            module_digest = _source_digest(repository, module_ref)
+            context = ExecutionContext(
+                trace_id=trace_id, work_item_id=f"wi-implementation-{module_id}", agent_id="architecture_agent",
+                execution_mode=ExecutionMode.PARTITIONED, slot=f"implementation-{module_id}",
+                input_refs=(module_ref,), input_digests=(module_digest,),
+                architecture_config=blueprint_context.architecture_config,
+            )
+            workflow.write_staged_design(context, _implementation(module_id).model_dump(mode="json"))
+            design_refs.append(ArtifactRef.staged(
+                artifact_key="architecture", trace_id=trace_id,
+                work_item_id=f"wi-implementation-{module_id}", slot=f"implementation-{module_id}"
+            ))
+
+        integration = ExecutionContext(
+            trace_id=trace_id, work_item_id="wi-integration", agent_id="architecture_agent",
+            execution_mode=ExecutionMode.INTEGRATION, publish_target="architecture",
+            input_refs=tuple(design_refs),
+            input_digests=tuple(_source_digest(repository, ref) for ref in design_refs),
+            architecture_config=blueprint_context.architecture_config,
+        )
+        bundle = workflow.validate_design_inputs(integration)
+        assert bundle.blueprint.architecture_scheme == "D"
+
+        receipt_path = (
+            Path(project_path) / ".projectos/architecture/validation-receipts"
+            / trace_id / "wi-module-domain" / "module-domain.json"
+        )
+        raw = json.loads(receipt_path.read_text())
+        raw["parent_digests"] = ["tampered"]
+        receipt_path.write_text(json.dumps(raw), encoding="utf-8")
+        with __import__("pytest").raises(ValueError, match="parent digest"):
+            workflow.validate_design_inputs(integration)

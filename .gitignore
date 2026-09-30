@@ -9,6 +9,7 @@ venv/
 dist/
 
 # 运行时产物
+project/
 projects/
 workspace/
 # ProjectOS source package; the rule above is only for runtime workspace output.

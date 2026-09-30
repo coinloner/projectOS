@@ -90,6 +90,70 @@ def root_path_contract_payload():
 
 
 class ImplementationContractTest(unittest.TestCase):
+    def test_api_operations_are_frozen_and_round_trip(self) -> None:
+        payload = {
+            "schema_version": 1,
+            "interfaces": [{
+                "interface_id": "todo.api",
+                "kind": "api",
+                "name": "Todo HTTP API",
+                "owner_unit": "api",
+                "operations": [
+                    {"method": "get", "path": "/tasks"},
+                    {"method": "PATCH", "path": "/tasks/{task_id}/status",
+                     "request_schema": "{completed:boolean}"},
+                ],
+            }],
+            "implementation_units": [{
+                "unit_id": "api", "layer": "api", "objective": "HTTP API",
+                "allowed_paths": ["backend/app/main.py"],
+                "owned_files": ["backend/app/main.py"],
+                "provides_interfaces": ["todo.api"],
+            }],
+        }
+        contract = ImplementationContract.parse(payload)
+        self.assertEqual([item.method for item in contract.interfaces[0].operations], ["GET", "PATCH"])
+        restored = ImplementationContract.parse(contract.as_dict())
+        self.assertEqual(restored.interfaces[0].operations, contract.interfaces[0].operations)
+
+    def test_api_operations_reject_duplicate_method_and_path(self) -> None:
+        payload = {
+            "schema_version": 1,
+            "interfaces": [{"interface_id": "api", "kind": "api", "name": "api",
+                             "owner_unit": "u", "operations": [
+                                 {"method": "GET", "path": "/x"},
+                                 {"method": "get", "path": "/x"},
+                             ]}],
+            "implementation_units": [{"unit_id": "u", "layer": "api", "objective": "api",
+                                       "allowed_paths": ["backend/app.py"], "owned_files": ["backend/app.py"],
+                                       "provides_interfaces": ["api"]}],
+        }
+        with self.assertRaisesRegex(ValueError, "operations 不能重复"):
+            ImplementationContract.parse(payload)
+
+    def test_api_consumer_receives_frozen_http_operations(self) -> None:
+        payload = {
+            "schema_version": 1,
+            "interfaces": [{"interface_id": "todo.api", "kind": "api", "name": "Todo API",
+                             "owner_unit": "api", "owner_file": "backend/app/main.py",
+                             "operations": [{"method": "GET", "path": "/tasks"}]}],
+            "implementation_units": [
+                {"unit_id": "api", "layer": "api", "objective": "API",
+                 "allowed_paths": ["backend/app/main.py"], "owned_files": ["backend/app/main.py"],
+                 "provides_interfaces": ["todo.api"]},
+                {"unit_id": "web", "layer": "frontend", "objective": "UI",
+                 "allowed_paths": ["frontend/App.jsx"], "owned_files": ["frontend/App.jsx"],
+                 "consumes_interfaces": ["todo.api"]},
+            ],
+        }
+        contract = ImplementationContract.parse(payload)
+        plan = ImplementationContractCompiler().compile(
+            contract, goal="todo", plan_id="http-plan",
+            trace=TraceContext(requirement_id="req-http", trace_id="tr-http"),
+        )
+        web = next(item for item in plan.work_items if item.implementation_unit_id == "web")
+        self.assertEqual(web.delivery_contract["required_http_interfaces"][0]["operations"][0]["path"], "/tasks")
+
     def test_interface_kind_architecture_vocabulary_is_normalized(self) -> None:
         expected = {
             "rest": "api",
@@ -217,6 +281,39 @@ class ImplementationContractTest(unittest.TestCase):
         self.assertEqual(contract.entrypoints.backend_import, "app.main:app")
         self.assertEqual(contract.entrypoints.frontend_file, "frontend/src/main.ts")
         self.assertEqual(contract.required_files, ("backend/app/main.py", "frontend/src/main.ts"))
+
+    def test_compiler_normalizes_provided_symbols_away_from_interface_ids_and_prose(self) -> None:
+        payload = {
+            "schema_version": 1,
+            "interfaces": [{
+                "interface_id": "task_management.task_api",
+                "kind": "api",
+                "name": "任务 HTTP API",
+                "owner_unit": "http",
+            }],
+            "implementation_units": [{
+                "unit_id": "http",
+                "layer": "api",
+                "objective": "提供 HTTP API",
+                "allowed_paths": ["backend/app/main.py"],
+                "owned_files": ["backend/app/main.py"],
+                "provides_interfaces": ["task_management.task_api"],
+                "provided_symbols": [
+                    "app",
+                    "task_management.task_api",
+                    "FastAPI application",
+                ],
+            }],
+        }
+        plan = ImplementationContractCompiler().compile(
+            ImplementationContract.parse(payload),
+            goal="接口",
+            plan_id="normalize-symbols",
+            trace=TraceContext(requirement_id="req-normalize-symbols", trace_id="tr-normalize-symbols"),
+        )
+        item = plan.work_items[0]
+        self.assertEqual(item.delivery_contract["provided_symbols"], ["app"])
+        self.assertEqual(item.delivery_contract["provides_interfaces"], ["task_management.task_api"])
 
     def test_compiler_omits_control_plane_denies_but_keeps_business_exclusions(self) -> None:
         payload = {

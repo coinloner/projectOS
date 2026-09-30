@@ -79,6 +79,9 @@ class CodeIntegrationService:
     def review_evidence(self, context: ExecutionContext) -> str:
         return self._service.review_evidence(context)
 
+    def has_pending_change_sets(self, context: ExecutionContext) -> bool:
+        return self._service.has_pending_change_sets(context)
+
     def integrate(self, context: ExecutionContext, *, review: object | None = None) -> str:
         if context.execution_mode is not ExecutionMode.INTEGRATION:
             raise PermissionError("代码合并只能由 INTEGRATION 节点执行")

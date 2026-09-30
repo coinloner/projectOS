@@ -128,6 +128,46 @@ class TaskInputPackageTest(unittest.TestCase):
         self.assertIn("backend/app/main.py", prompt)
         self.assertIn("不能调用 save_implementation", prompt)
 
+    def test_main_prompt_forbids_placeholder_and_fallback_when_binding_exists(self) -> None:
+        item = WorkItem(
+            id="code-main",
+            agent_id="code_agent",
+            objective="实现组合根入口",
+            output_key="implementation_main",
+            execution_mode=ExecutionMode.PARTITIONED,
+            slot="backend",
+            implementation_unit_id="unit-main",
+            owned_files=("backend/app/main.py",),
+            required_paths=("backend/app/main.py",),
+            delivery_contract={
+                "provided_bindings": [],
+                "required_bindings": [
+                    {
+                        "interface_id": "task_management.task_service",
+                        "consumption": "import_code",
+                        "module": "app.task_service",
+                        "provided_symbols": ["TaskService"],
+                    }
+                ],
+            },
+        )
+        plan = ExecutionPlan(
+            id="plan-main-binding-prompt",
+            goal="交付 API",
+            work_items=(item,),
+            trace=TraceContext(
+                requirement_id="req-main-binding-prompt",
+                trace_id="tr-main-binding-prompt",
+            ),
+        )
+
+        prompt = build_task_input(RunState(plan=plan), item).as_prompt()
+
+        self.assertIn("不能使用适配导入、候选模块扫描、importlib 回退或最小占位接口", prompt)
+        self.assertIn("必须返回结构化 binding 诊断", prompt)
+        self.assertNotIn("若前置符号尚不存在，使用明确的适配导入或最小占位接口", prompt)
+        self.assertIn("from app.task_service import TaskService", prompt)
+
     def test_semantic_contract_exposes_local_lineage_and_code_field_rules(self) -> None:
         dependency = WorkItem(
             id="architecture", agent_id="architecture_agent", objective="设计", output_key="architecture"

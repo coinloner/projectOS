@@ -2,6 +2,8 @@ import os
 import json
 import tempfile
 import unittest
+import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -67,6 +69,75 @@ class _FakeAsyncClient:
         self.responses = _FakeAsyncResponses(events)
 
 
+class _BlockingStream:
+    def __init__(self):
+        self.closed = False
+
+    def __iter__(self):
+        yield SimpleNamespace(type="response.created", response=SimpleNamespace(id="r-blocking"))
+        while not self.closed:
+            time.sleep(10)
+
+    def close(self):
+        self.closed = True
+
+
+class _BlockingResponses:
+    def __init__(self, stream):
+        self.stream = stream
+
+    def create(self, **params):
+        return self.stream
+
+
+class _BlockingCreateResponses:
+    def __init__(self):
+        self.release = __import__("threading").Event()
+        self.late_stream = _BlockingStream()
+
+    def create(self, **params):
+        self.release.wait(timeout=1)
+        return self.late_stream
+
+
+class _BlockingAsyncCreateResponses:
+    async def create(self, **params):
+        await asyncio.sleep(1)
+        return _BlockingAsyncStream()
+
+
+class _BlockingAsyncStream:
+    def __init__(self):
+        self.sent_first = False
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.sent_first:
+            self.sent_first = True
+            return SimpleNamespace(type="response.created", response=SimpleNamespace(id="r-async-blocking"))
+        await asyncio.sleep(10)
+        raise StopAsyncIteration
+
+    async def close(self):
+        self.closed = True
+
+
+class _BlockingAsyncResponses:
+    def __init__(self, stream):
+        self.stream = stream
+
+    async def create(self, **params):
+        return self.stream
+
+
+class _BlockingAsyncClient:
+    def __init__(self, stream):
+        self.responses = _BlockingAsyncResponses(stream)
+
+
 def _llm(stream=True):
     return OpenAIResponsesLLM(
         model="gpt-5.5",
@@ -80,6 +151,86 @@ def _llm(stream=True):
 
 
 class ResponsesLLMTest(unittest.TestCase):
+    def test_stream_deadline_turns_nonterminal_relay_into_transport_failure(self):
+        llm = _llm()
+        stream = _BlockingStream()
+        with patch.dict(os.environ, {
+            "PROJECTOS_RESPONSES_STREAM_MAX_SECONDS": "0.01",
+            "PROJECTOS_RESPONSES_READ_TIMEOUT_SECONDS": "1",
+        }):
+            with patch.object(llm, "_get_sync_client", return_value=SimpleNamespace(
+                responses=_BlockingResponses(stream)
+            )):
+                with self.assertRaisesRegex(TimeoutError, "stream exceeded request ceiling"):
+                    llm.call("stall")
+
+    def test_responses_client_bounds_sse_read_and_disables_hidden_retries(self):
+        llm = _llm()
+        with patch.dict(os.environ, {"PROJECTOS_RESPONSES_READ_TIMEOUT_SECONDS": "17"}, clear=False):
+            params = llm._get_client_params()
+        self.assertEqual(params["timeout"].read, 17)
+        self.assertEqual(params["max_retries"], 0)
+
+    def test_blocking_sync_sse_fails_fast_and_writes_transport_diagnostic(self):
+        llm = _llm()
+        stream = _BlockingStream()
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "sse.jsonl")
+            env = {
+                "PROJECTOS_RESPONSES_READ_TIMEOUT_SECONDS": "0.01",
+                "PROJECTOS_SSE_DIAGNOSTICS_PATH": path,
+            }
+            with patch.dict(os.environ, env):
+                with patch.object(llm, "_get_sync_client", return_value=SimpleNamespace(
+                    responses=_BlockingResponses(stream)
+                )):
+                    with self.assertRaisesRegex(TimeoutError, "0.01s without an event"):
+                        llm.call("stall")
+            records = [json.loads(line) for line in open(path, encoding="utf-8")]
+        transport = next(record for record in records if record["kind"] == "transport_error")
+        self.assertEqual(transport["error_type"], "TimeoutError")
+        self.assertEqual(transport["mode"], "sync")
+        self.assertFalse(records[-1]["terminal"])
+
+    def test_lazy_client_initialization_is_inside_header_deadline(self):
+        llm = _llm()
+        release = __import__("threading").Event()
+
+        def blocked_client():
+            release.wait(timeout=1)
+            return _FakeClient([])
+
+        try:
+            with patch.dict(os.environ, {"PROJECTOS_RESPONSES_READ_TIMEOUT_SECONDS": "0.01"}):
+                with patch.object(llm, "_get_sync_client", side_effect=blocked_client):
+                    with self.assertRaisesRegex(TimeoutError, "SSE create exceeded 0.01s"):
+                        llm.call("lazy client stall")
+        finally:
+            release.set()
+
+    def test_blocking_response_headers_are_bounded_and_late_stream_is_closed(self):
+        llm = _llm()
+        responses = _BlockingCreateResponses()
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "sse.jsonl")
+            with patch.dict(os.environ, {
+                "PROJECTOS_RESPONSES_READ_TIMEOUT_SECONDS": "0.01",
+                "PROJECTOS_SSE_DIAGNOSTICS_PATH": path,
+            }):
+                with patch.object(llm, "_get_sync_client", return_value=SimpleNamespace(responses=responses)):
+                    with self.assertRaisesRegex(TimeoutError, "SSE create exceeded 0.01s"):
+                        llm.call("headers stall")
+                responses.release.set()
+                for _ in range(100):
+                    if responses.late_stream.closed:
+                        break
+                    time.sleep(0.001)
+            records = [json.loads(line) for line in open(path, encoding="utf-8")]
+        self.assertTrue(responses.late_stream.closed)
+        self.assertTrue(any(record["kind"] == "transport_error" and record.get("stage") == "create"
+                            for record in records))
+        self.assertFalse(records[-1]["terminal"])
+
     def test_streaming_text_uses_responses_wire_and_filters_seed(self):
         events = [
             SimpleNamespace(type="response.created", response=SimpleNamespace(id="r1")),
@@ -137,6 +288,34 @@ class ResponsesLLMTest(unittest.TestCase):
                 tools=[{"type": "function", "function": {"name": "lookup", "parameters": {}}}],
             )
         self.assertEqual(result, [{"id": "call-native-1", "name": "lookup", "arguments": '{"value": 4}'}])
+
+    def test_flat_architecture_writer_call_is_wrapped_without_bypassing_tool(self):
+        raw = '{"schema_version":1,"depth":1,"design_id":"module-tasks","module_id":"tasks"}'
+        item = SimpleNamespace(
+            type="function_call", call_id="call-flat", name="write_module_design",
+            arguments=raw,
+        )
+        events = [
+            SimpleNamespace(type="response.output_item.done", item=item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                id="r-flat", status="completed", usage=None)),
+        ]
+        llm = _llm()
+        with patch.object(llm, "_get_sync_client", return_value=_FakeClient(events)):
+            calls = llm.call(
+                "write module",
+                tools=[{"type": "function", "function": {
+                    "name": "write_module_design", "parameters": {}}}],
+            )
+        self.assertEqual(calls[0]["name"], "write_module_design")
+        self.assertEqual(json.loads(calls[0]["arguments"]), {"design": json.loads(raw)})
+        # Do not turn an unrelated or wrong-depth call into a valid writer.
+        self.assertEqual(llm._normalize_architecture_tool_arguments("lookup", raw), raw)
+        self.assertEqual(llm._normalize_architecture_tool_arguments(
+            "write_architecture_blueprint", raw), raw)
+        self.assertEqual(llm._normalize_architecture_tool_arguments(
+            "write_module_design", '{"design":{"depth":1}}'),
+            '{"design":{"depth":1}}')
 
     def test_function_argument_deltas_are_aggregated_and_diagnosed(self):
         events = [
@@ -283,9 +462,57 @@ class AsyncResponsesLLMTest(unittest.IsolatedAsyncioTestCase):
             [{"id": "call-async-native-1", "name": "lookup", "arguments": '{"value": 5}'}],
         )
 
+    async def test_async_flat_architecture_writer_call_is_wrapped(self):
+        raw = '{"depth":2,"design_id":"impl-tasks","implementation_units":[]}'
+        item = SimpleNamespace(
+            type="function_call", call_id="call-async-flat",
+            name="write_implementation_design", arguments=raw,
+        )
+        events = [
+            SimpleNamespace(type="response.output_item.done", item=item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                id="r-async-flat", status="completed", usage=None)),
+        ]
+        llm = _llm()
+        with patch.object(llm, "_get_async_client", return_value=_FakeAsyncClient(events)):
+            calls = await llm.acall(
+                "write implementation",
+                tools=[{"type": "function", "function": {
+                    "name": "write_implementation_design", "parameters": {}}}],
+            )
+        self.assertEqual(json.loads(calls[0]["arguments"]), {"design": json.loads(raw)})
+
     async def test_async_non_streaming_is_rejected_before_transport(self):
         with self.assertRaisesRegex(RuntimeError, "requires streaming"):
             await _llm(stream=False).acall("hello")
+
+    async def test_async_response_headers_have_creation_deadline(self):
+        llm = _llm()
+        with patch.dict(os.environ, {"PROJECTOS_RESPONSES_READ_TIMEOUT_SECONDS": "0.01"}):
+            with patch.object(llm, "_get_async_client", return_value=SimpleNamespace(
+                responses=_BlockingAsyncCreateResponses()
+            )):
+                with self.assertRaisesRegex(TimeoutError, "SSE create exceeded 0.01s"):
+                    await llm.acall("headers stall")
+
+    async def test_blocking_async_sse_fails_fast_and_writes_transport_diagnostic(self):
+        llm = _llm()
+        stream = _BlockingAsyncStream()
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "sse.jsonl")
+            env = {
+                "PROJECTOS_RESPONSES_READ_TIMEOUT_SECONDS": "0.01",
+                "PROJECTOS_SSE_DIAGNOSTICS_PATH": path,
+            }
+            with patch.dict(os.environ, env):
+                with patch.object(llm, "_get_async_client", return_value=_BlockingAsyncClient(stream)):
+                    with self.assertRaisesRegex(TimeoutError, "0.01s without an event"):
+                        await llm.acall("stall")
+            records = [json.loads(line) for line in open(path, encoding="utf-8")]
+        transport = next(record for record in records if record["kind"] == "transport_error")
+        self.assertEqual(transport["error_type"], "TimeoutError")
+        self.assertEqual(transport["mode"], "async")
+        self.assertFalse(records[-1]["terminal"])
 
     async def test_async_sse_diagnostics_jsonl_captures_terminal_summary(self):
         events = [

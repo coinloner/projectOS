@@ -55,6 +55,18 @@ class ArchitectureContractToolSet:
         return _save_contract(self._service, dict(fields))
 
 
+def _blueprint_tool_schema() -> dict[str, Any]:
+    """Keep the optional scheme unset until the trusted execution context binds it.
+
+    Pydantic/CrewAI otherwise inserts the DTO's historical ``legacy`` default
+    before calling the domain writer, making an omitted field indistinguishable
+    from a model's explicit (and incorrect) legacy selection on a D Trace.
+    """
+    schema = json.loads(json.dumps(ArchitectureBlueprint.model_json_schema()))
+    schema["properties"]["architecture_scheme"]["default"] = None
+    return schema
+
+
 def _module_design_tool_schema() -> dict[str, Any]:
     """Return the closed ModuleDesign schema with wire-only consumed aliases.
 
@@ -262,7 +274,7 @@ def register_architecture_tools(gateway: ToolGateway, project_path: str) -> None
                         description="写入 depth=0 的总体架构蓝图对象；只能描述系统边界、层级和模块清单。",
                         parameters={
                             "type": "object",
-                            "properties": {"design": ArchitectureBlueprint.model_json_schema()},
+                            "properties": {"design": _blueprint_tool_schema()},
                             "required": ["design"],
                             "additionalProperties": False,
                         },

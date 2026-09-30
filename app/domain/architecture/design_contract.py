@@ -88,6 +88,10 @@ class ModuleRef(_DesignModel):
         description="只引用 Blueprint 中已声明的 module_id",
     )
     requirement_ids: list[str] = Field(default_factory=list, max_length=64)
+    owned_required_files: list[str] = Field(
+        default_factory=list, max_length=128,
+        description="Blueprint.required_files assigned to this module for implementation ownership",
+    )
     tech_stack: list[str] = Field(
         default_factory=list,
         max_length=32,
@@ -175,6 +179,29 @@ class ArchitectureBlueprint(_DesignModel):
             normalized = path.replace("\\", "/").strip()
             if not normalized or normalized.endswith("/") or any(token in normalized for token in ("*", "?", "[", "]")):
                 raise ValueError("ArchitectureBlueprint.required_files 必须是具体文件路径")
+        # Historical D artifacts predate explicit assignments and must remain
+        # readable for recovery. New writes enforce coverage at the producer.
+        if self.architecture_scheme == "D" and any(module.owned_required_files for module in self.modules):
+            required = {path.replace("\\", "/").lstrip("/") for path in self.required_files}
+            assignments: dict[str, str] = {}
+            for module in self.modules:
+                for path in module.owned_required_files:
+                    normalized = path.replace("\\", "/").lstrip("/")
+                    if normalized not in required:
+                        raise ValueError(
+                            f"ArchitectureBlueprint.unknown_module_required_file: {module.module_id}: {path}"
+                        )
+                    if normalized in assignments:
+                        raise ValueError(
+                            f"ArchitectureBlueprint.duplicate_required_file_owner: {normalized}"
+                        )
+                    assignments[normalized] = module.module_id
+            missing = sorted(required - assignments.keys())
+            if missing:
+                raise ValueError(
+                    "ArchitectureBlueprint.required_file_without_module_owner: "
+                    + ", ".join(missing)
+                )
 
         # Validate layer dependencies reference only declared layers
         known_layers = set(layer_ids)
@@ -390,6 +417,47 @@ class ArchitectureDesignBundle(_DesignModel):
             for key in ready:
                 pending.pop(key)
 
+        # ``allowed_paths`` is the child authorization scope, while the
+        # Blueprint layer mapping is the parent boundary. A model may narrow
+        # the child scope too far (for example ``frontend/src/**`` while also
+        # owning the Vite entry file ``frontend/index.html``). That is a
+        # contradictory draft, not a reason to reject a file already inside
+        # the frozen parent boundary. Project missing owned files into the
+        # child scope exactly, without widening it to the whole parent tree.
+        # Files outside the parent layer still fail closed.
+        layer_paths = {
+            layer.name: tuple(layer.path_mapping)
+            for layer in self.blueprint.layers
+        }
+        normalized_implementations: list[ImplementationDesign] = []
+        for design in self.implementations:
+            units = []
+            for unit in design.implementation_units:
+                allowed_paths = list(unit.allowed_paths)
+                missing_scope: list[str] = []
+                for owned_file in unit.owned_files:
+                    if _architecture_path_matches_any(owned_file, allowed_paths):
+                        continue
+                    if not _architecture_path_matches_any(
+                        owned_file, layer_paths.get(unit.layer, ())
+                    ):
+                        raise ValueError(
+                            "ArchitectureBlueprint.required_file_wrong_module_owner: "
+                            f"{owned_file} assigned={design.module_id} "
+                            f"actual=layer:{unit.layer}"
+                        )
+                    missing_scope.append(owned_file)
+                if missing_scope:
+                    allowed_paths.extend(
+                        path for path in missing_scope if path not in allowed_paths
+                    )
+                    unit = unit.model_copy(update={"allowed_paths": allowed_paths})
+                units.append(unit)
+            normalized_implementations.append(
+                design.model_copy(update={"implementation_units": units})
+            )
+        object.__setattr__(self, "implementations", normalized_implementations)
+
         interface_ids: set[str] = set()
         for design in self.implementations:
             if design.parent_design_id not in {item.design_id for item in self.modules}:
@@ -455,6 +523,24 @@ class ArchitectureDesignBundle(_DesignModel):
                 "ArchitectureBlueprint.required_file_not_owned: "
                 + ", ".join(missing_required)
             )
+        if self.blueprint.architecture_scheme == "D" and any(
+            module.owned_required_files for module in self.blueprint.modules
+        ):
+            implementation_owners = {
+                path.replace("\\", "/").lstrip("/"): design.module_id
+                for design in self.implementations
+                for unit in design.implementation_units
+                for path in unit.owned_files
+            }
+            for module in self.blueprint.modules:
+                for path in module.owned_required_files:
+                    normalized = path.replace("\\", "/").lstrip("/")
+                    if implementation_owners.get(normalized) != module.module_id:
+                        raise ValueError(
+                            "ArchitectureBlueprint.required_file_wrong_module_owner: "
+                            f"{normalized} assigned={module.module_id} "
+                            f"actual={implementation_owners.get(normalized) or 'none'}"
+                        )
 
         # Layer.path_mapping remains a directory boundary; concrete ownership
         # is now guaranteed by the cross-level check above.
@@ -617,7 +703,7 @@ def _derived_entrypoints(
     candidates: list[str] = []
     for design in implementations:
         for unit in design.implementation_units:
-            if unit.layer.strip().lower() not in {"runtime", "application", "app"}:
+            if unit.layer.strip().lower() not in {"runtime", "application", "app", "backend", "api", "interface"}:
                 continue
             for path in unit.owned_files:
                 normalized = path.replace("\\", "/").lstrip("/")
@@ -629,7 +715,8 @@ def _derived_entrypoints(
     if len(candidates) != 1:
         return result
     backend_file = candidates[0]
-    result.setdefault("backend_file", backend_file)
+    if not result.get("backend_file"):
+        result["backend_file"] = backend_file
     if not result.get("backend_import"):
         module = backend_file.removeprefix("backend/").removesuffix(".py").replace("/", ".")
         result["backend_import"] = module
@@ -650,6 +737,29 @@ def parse_design(value: dict[str, object] | str) -> ArchitectureBlueprint | Modu
     if model is None:
         raise ValueError("架构设计 depth 只能是 0、1 或 2")
     return model.model_validate(raw)
+
+
+def _architecture_path_matches_any(
+    path: str, patterns: tuple[str, ...] | list[str]
+) -> bool:
+    """Match a concrete workspace path against a bounded architecture scope."""
+    import fnmatch
+
+    candidate = path.replace("\\", "/").lstrip("/")
+    candidates = (candidate, f"workspace/{candidate}")
+    for raw_pattern in patterns:
+        pattern = raw_pattern.replace("\\", "/").strip()
+        if not pattern:
+            continue
+        normalized = pattern.rstrip("/")
+        if any(
+            fnmatch.fnmatch(item, normalized)
+            or fnmatch.fnmatch(item, normalized.replace("**", "*"))
+            or (pattern.endswith("/") and item.startswith(normalized + "/"))
+            for item in candidates
+        ):
+            return True
+    return False
 
 
 __all__ = [

@@ -16,6 +16,7 @@ from typing import Callable
 from uuid import uuid4
 
 from app.bootstrap.runtime import ProjectOSContainer, build_container
+from app.architecture_execution_config import ArchitectureExecutionConfig
 from app.application.environment import EnvironmentProvisioner
 from app.agent.result import normalize_capability
 from app.orchestration.runner import GraphRunResult, GraphRunStatus
@@ -31,6 +32,7 @@ from app.orchestration.retry import (
     RetryRecord,
     RetryScope,
 )
+from app.domain.architecture.bindings import canonical_binding, normalize_python_symbols
 from app.domain.architecture.design_contract import (
     ArchitectureBlueprint,
     ImplementationDesign,
@@ -41,6 +43,7 @@ from app.execution_context import ExecutionMode
 from app.orchestration.trace import TraceStore
 from app.planner.service import PlannerFailure
 from app.orchestration.progress import (
+    ExecutionActivity,
     ExecutionLifecycle,
     ExecutionOutcome,
     WorkerHeartbeat,
@@ -52,6 +55,7 @@ from app.orchestration.progress import (
     transport_idle_for,
 )
 from app.llm.config import LLMSelection
+from app.llm.preflight import ProviderPreflight, ProviderPreflightError
 
 
 ContainerBuilder = Callable[[str], ProjectOSContainer]
@@ -65,7 +69,7 @@ _ARCHITECTURE_REQUIRED_PATH_NOT_OWNED = re.compile(
     r"([A-Za-z0-9._/-]+)"
 )
 _ARCHITECTURE_REQUIRED_FILE_NOT_OWNED = re.compile(
-    r"ArchitectureBlueprint\.required_file_not_owned:\s*([A-Za-z0-9._/-]+)"
+    r"ArchitectureBlueprint\.required_file_not_owned:\s*([A-Za-z0-9._/,-]+(?:\s+[A-Za-z0-9._/-]+)*)"
 )
 _ARCHITECTURE_MODULE_PARENT_MISMATCH = re.compile(
     r"模块设计\s+([A-Za-z0-9._-]+)\s+未引用当前总体蓝图"
@@ -128,6 +132,46 @@ class _StallObservation:
 class _StallWindow:
     observed_at: float
     observation: _StallObservation
+
+
+def _worker_meaningful_marker(
+    progress: dict[str, object] | None, *, monitor_started_at: datetime
+) -> str | None:
+    """Only a fresh semantic/control signal may renew the Worker deadline.
+
+    Heartbeats and raw LLM chunks prove process/network activity but not that
+    a delivery WorkItem made progress. A snapshot from a previous Worker on
+    resume must never renew the new Worker's deadline.
+    """
+    run = (progress or {}).get("run")
+    if not isinstance(run, dict):
+        return None
+    marker = run.get("last_meaningful_at")
+    if not isinstance(marker, str):
+        return None
+    try:
+        if datetime.fromisoformat(marker) < monitor_started_at:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return marker
+
+
+def _renew_worker_deadline(
+    progress: dict[str, object] | None,
+    *,
+    monitor_started_at: datetime,
+    previous_marker: str | None,
+    last_progress_at: datetime,
+    now: datetime,
+) -> tuple[str | None, datetime]:
+    marker = _worker_meaningful_marker(progress, monitor_started_at=monitor_started_at)
+    if marker is not None and marker != previous_marker:
+        # Use wall time, not Mach's monotonic clock: a suspended desktop can
+        # resume with the relay idle for many real minutes. Clamp a future
+        # provider/host timestamp instead of making the deadline negative.
+        return marker, min(datetime.fromisoformat(marker), now)
+    return previous_marker, last_progress_at
 
 
 def _monitor_failure_kind(event: str, details: dict[str, object]) -> FailureKind | None:
@@ -422,7 +466,8 @@ def _stall_observations(
                 )
             )
         elif (
-            meaningful_idle_seconds is not None
+            not llm_open
+            and meaningful_idle_seconds is not None
             and meaningful_idle_seconds >= semantic_threshold
         ):
             observations.append(
@@ -633,32 +678,45 @@ def _load_delivery_resume(
         if "-repair-" not in plan.id
         else (container.traces.load_delivery_checkpoint, container.traces.load_checkpoint)
     )
-    state = None
+    checkpoint_states: list[RunState] = []
     for load_checkpoint in checkpoint_loaders:
         try:
             checkpoint = load_checkpoint(trace_id)
             if checkpoint.get("plan_id") in {None, plan.id}:
-                state = RunState.from_checkpoint(plan, checkpoint)
-                # A hard Worker stop can leave a syntactically valid but empty
-                # checkpoint. The event log is append-only and already records
-                # completed WorkItems, so rebuild from those facts instead of
-                # replaying the whole delivery DAG.
-                rebuilt = _rebuild_delivery_state(container, plan, trace_id, persist=False)
-                # A partial checkpoint can be newer than the original
-                # delivery checkpoint but still omit nodes completed before a
-                # Worker interruption.  Prefer the event-derived state when
-                # it contains additional *latest-successful* WorkItems; this
-                # keeps failed nodes pending while preserving prior progress.
-                if (
-                    not state.forced_rerun_work_item_ids
-                    and len(rebuilt.node_results) > len(state.node_results)
-                ):
-                    state = rebuilt
-                break
+                checkpoint_states.append(RunState.from_checkpoint(plan, checkpoint))
         except (FileNotFoundError, ValueError):
             continue
-    if state is None:
-        state = _rebuild_delivery_state(container, plan, trace_id)
+
+    # A Trace can contain three durable views of progress: the live checkpoint,
+    # the pre-repair delivery checkpoint, and the append-only event log.  The
+    # first two are intentionally written at different barriers, so choosing
+    # the first syntactically valid file can replay already completed upstream
+    # nodes (or discard a completed repair).  Rebuild the successful frontier
+    # from events and choose the richest valid state.  Recovery markers from a
+    # checkpoint are merged only for WorkItems that are still absent from that
+    # frontier; a later successful completion must clear a stale forced-rerun
+    # marker rather than causing the node's descendants to replay.
+    rebuilt = _rebuild_delivery_state(container, plan, trace_id, persist=False)
+    candidates = [*checkpoint_states, rebuilt]
+    if candidates:
+        state = max(
+            candidates,
+            key=lambda candidate: (
+                len(candidate.node_results),
+                candidate is rebuilt,
+            ),
+        )
+        completed_ids = set(state.node_results)
+        for checkpoint_state in checkpoint_states:
+            for item_id in checkpoint_state.forced_rerun_work_item_ids:
+                if item_id in completed_ids:
+                    continue
+                state.forced_rerun_work_item_ids.add(item_id)
+                diagnostic = checkpoint_state.recovery_diagnostics.get(item_id)
+                if diagnostic:
+                    state.recovery_diagnostics[item_id] = diagnostic
+    else:
+        state = rebuilt
     state = _apply_monitor_retry_recovery(container, trace_id, state)
     state = _sanitize_resume_state(container, state)
     return plan, _prepare_architecture_contract_recovery(
@@ -668,12 +726,15 @@ def _load_delivery_resume(
 
 def _sanitize_resume_state(container: ProjectOSContainer, state: RunState) -> RunState:
     """Revalidate persisted architecture hand-offs before resuming downstream work."""
+    # ExecutionPlan stores the original template anchors before dynamically
+    # expanded architecture/code WorkItems. Its serialization order is *not*
+    # topological: an integration anchor may precede all of its producers.
+    # First verify every persisted node's own durable evidence, then prune
+    # nodes whose dependencies are absent, irrespective of list order.
     valid: dict[str, NodeResult] = {}
     for item in state.plan.work_items:
         result = state.node_results.get(item.id)
         if result is None:
-            continue
-        if any(dep not in valid for dep in item.dependency_ids):
             continue
         if item.agent_id == "architecture_agent" and item.execution_mode.value == "partitioned":
             ref = ArtifactRef.staged(
@@ -702,7 +763,28 @@ def _sanitize_resume_state(container: ProjectOSContainer, state: RunState) -> Ru
                 )
             except (FileNotFoundError, RuntimeError, ValueError):
                 continue
+        if item.agent_id == "code_integration_agent":
+            # A historical exclusive repair could mark this node completed
+            # after checking only that files existed. Revalidate the actual
+            # published imports/bindings before reusing its checkpoint. A
+            # failed gate drops this node and every dependent result below.
+            from app.domain.code.git_service import GitCodeIntegrationService
+
+            try:
+                GitCodeIntegrationService(container.project_path).validate_published_workspace(
+                    state.plan.trace.trace_id
+                )
+            except RuntimeError as error:
+                state.recovery_diagnostics[item.id] = str(error)
+                continue
         valid[item.id] = result
+    changed = True
+    while changed:
+        changed = False
+        for item in state.plan.work_items:
+            if item.id in valid and any(dep not in valid for dep in item.dependency_ids):
+                valid.pop(item.id)
+                changed = True
     artifacts: dict[str, str] = {}
     for item_id, result in valid.items():
         if result.content is not None:
@@ -1058,7 +1140,7 @@ def _prepare_architecture_contract_recovery(
         (
             event
             for event in reversed(container.traces.list_events(trace_id))
-            if event.get("type") == "work_item_failed"
+            if event.get("type") in {"work_item_failed", "work_item_needs_replan"}
         ),
         None,
     )
@@ -1074,7 +1156,10 @@ def _prepare_architecture_contract_recovery(
         return state
     details = latest_failure.get("details", {})
     error = str(details.get("error", "")) if isinstance(details, dict) else ""
-    if "architecture_contract_missing" not in error:
+    if "architecture_contract_missing" not in error and not (
+        latest_failure.get("type") == "work_item_needs_replan"
+        and "Architecture integration inputs failed deterministic validation" in error
+    ):
         return state
     undeclared_interface = _ARCHITECTURE_UNDECLARED_INTERFACE.search(error)
     required_path_not_owned = _ARCHITECTURE_REQUIRED_PATH_NOT_OWNED.search(error)
@@ -1084,7 +1169,7 @@ def _prepare_architecture_contract_recovery(
     unknown_implementation_dependency = _ARCHITECTURE_UNKNOWN_IMPLEMENTATION_DEPENDENCY.search(error)
     module_purpose_mismatch = _ARCHITECTURE_MODULE_PURPOSE_MISMATCH.search(error)
     if required_file_not_owned is not None:
-        required_file = required_file_not_owned.group(1)
+        required_files = required_file_not_owned.group(1).strip()
         owners = [
             item
             for item in plan.work_items
@@ -1094,7 +1179,7 @@ def _prepare_architecture_contract_recovery(
         ]
         diagnostic = (
             "集成校验发现 Blueprint.required_files 中的文件 "
-            f"'{required_file}' 没有任何 implementation unit 在 owned_files 中声明。"
+            f"'{required_files}' 没有任何 implementation unit 在 owned_files 中声明。"
             "请重新生成 Blueprint：required_files 只能列出由 implementation units 实际拥有、"
             "并会在交付中产出的具体文件；不要凭空添加入口或包初始化文件。"
         )
@@ -1350,6 +1435,7 @@ def _worker_entry(
             llm_selection=selection,
             llm_overrides=trace_store.load_llm_overrides(trace_id),
             retry_policy=retry_policy,
+            architecture_config=trace_store.load_architecture_config(trace_id),
         )
         traces = container.traces
         _restore_approved_sources(container, trace_id)
@@ -1696,9 +1782,27 @@ class RunCoordinator:
         except ValueError:
             provider_stall_grace_seconds = 120.0
         monitor_started_at = started
+        timeout_marker: str | None = None
+        last_progress_at = started
+        meaningful_idle_seconds = 0.0
         while process.is_alive():
-            elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-            remaining = self._worker_timeout_seconds - elapsed
+            # The Worker can execute many WorkItems in one process. A fixed
+            # process-age budget kills a healthy delivery in the middle of an
+            # active model response. Bound lack of semantic/control progress
+            # instead; the SSE adapter and per-activity stall monitor bound
+            # individual provider requests separately.
+            progress = progress_store.read(trace_id)
+            now = datetime.now(timezone.utc)
+            timeout_marker, last_progress_at = _renew_worker_deadline(
+                progress,
+                monitor_started_at=monitor_started_at,
+                previous_marker=timeout_marker,
+                last_progress_at=last_progress_at,
+                now=now,
+            )
+            meaningful_idle_seconds = max(0.0, (now - last_progress_at).total_seconds())
+            elapsed = (now - started).total_seconds()
+            remaining = self._worker_timeout_seconds - meaningful_idle_seconds
             if remaining <= 0:
                 break
             wait_timeout = min(0.5, remaining)
@@ -1838,6 +1942,46 @@ class RunCoordinator:
                     self._processes.pop(trace_id, None)
                 return "failed"
         if process.is_alive():
+            # The parent timeout check can win the same polling tick in which
+            # a provider stall reaches its grace period. Prefer the more
+            # actionable stall classification so resume/retry preserves the
+            # real cause instead of reporting a generic Worker timeout.
+            if stall_windows:
+                stalled = min(stall_windows.values(), key=lambda window: window.observed_at).observation
+                try:
+                    trace = TraceStore(project_path).load_trace(trace_id)
+                    from app.orchestration.trace import TraceContext
+                    context_data = TraceContext(
+                        requirement_id=str(trace["requirement_id"]), trace_id=trace_id,
+                        parent_trace_id=trace.get("parent_trace_id"),
+                    )
+                    error = (
+                        f"WorkItem '{stalled.work_item_id}' 出现 {stalled.kind}，"
+                        f"Worker 预算已耗尽，已终止当前 Worker，可从 checkpoint 重试"
+                    )
+                    _finalize_external_run(
+                        project_path, trace_id,
+                        outcome=ExecutionOutcome.FAILED,
+                        event="provider_stall_timeout",
+                        summary="Provider/语义进度超时，已完成控制面收口",
+                        error=error,
+                        details={
+                            "activity": stalled.activity,
+                            "stall_kind": stalled.kind,
+                            "idle_timeout_seconds": stalled.threshold,
+                            "grace_seconds": provider_stall_grace_seconds,
+                            "work_item_id": stalled.work_item_id,
+                            "timeout_boundary": True,
+                            "contract_digest": ((progress_store.read(trace_id) or {}).get("work_items", {}).get(stalled.work_item_id, {}) or {}).get("contract_digest"),
+                        },
+                        retry_policy=self._retry_policy,
+                    )
+                except Exception:
+                    pass
+                self._stop_process(process)
+                with self._lock:
+                    self._processes.pop(trace_id, None)
+                return "failed"
             if progress_store.cancel_requested(trace_id):
                 self._stop_process(process)
                 try:
@@ -1864,10 +2008,13 @@ class RunCoordinator:
                     outcome=ExecutionOutcome.FAILED,
                     event="worker_timed_out",
                     summary="Worker 超时，已完成控制面收口",
-                    error=f"Worker 执行超过 {self._worker_timeout_seconds:g} 秒，已终止",
+                    error=(
+                        f"Worker 连续 {self._worker_timeout_seconds:g} 秒没有语义进展，已终止"
+                    ),
                     details={
                         "timeout_seconds": self._worker_timeout_seconds,
                         "elapsed_seconds": elapsed,
+                        "meaningful_idle_seconds": meaningful_idle_seconds,
                         "stalled_work_items": sorted(stall_windows),
                         "work_item_id": next(iter(sorted(stall_windows)), None),
                     },
@@ -1947,6 +2094,76 @@ class RunCoordinator:
             )
             if failure is None:
                 break
+            # A Wave integration failure is an implementation defect discovered
+            # after the CodeAgent had produced a staged ChangeSet.  Do not add
+            # an EXCLUSIVE workspace repair node here: that node cannot see the
+            # unintegrated task worktree and would leave the stale ChangeSet in
+            # the next merge.  Instead, invalidate only the attributed code
+            # WorkItems, attach the bounded diagnostic, and rerun them through
+            # the normal PARTITIONED write_staged_code_file protocol.
+            if (
+                failure.kind is FailureKind.CODE_DELIVERY_INCOMPLETE
+                and result.node_result is not None
+                and result.node_result.agent_id == "code_integration_agent"
+                and failure.related_work_item_ids
+            ):
+                rerun_ids = tuple(
+                    item_id
+                    for item_id in failure.related_work_item_ids
+                    if plan.work_item(item_id) is not None
+                    and plan.work_item(item_id).agent_id == "code_agent"
+                )
+                if rerun_ids:
+                    recovery_state = result.state
+                    # The failed integration NodeResult is itself persisted
+                    # in RunState. After rerunning a producer it must not
+                    # remain as a terminal result, nor may tests/review reuse
+                    # old evidence. Invalidate the exact descendant closure
+                    # while keeping independent producers completed.
+                    affected = set(rerun_ids)
+                    while True:
+                        descendants = {
+                            item.id for item in plan.work_items
+                            if item.id not in affected
+                            and any(dep in affected for dep in item.dependency_ids)
+                        }
+                        if not descendants:
+                            break
+                        affected.update(descendants)
+                    for affected_id in affected:
+                        affected_item = plan.work_item(affected_id)
+                        recovery_state.node_results.pop(affected_id, None)
+                        if affected_item is not None:
+                            recovery_state.artifacts.pop(affected_item.output_key, None)
+                    for item_id in rerun_ids:
+                        item = plan.work_item(item_id)
+                        if item is None:
+                            continue
+                        recovery_state.node_results.pop(item_id, None)
+                        recovery_state.artifacts.pop(item.output_key, None)
+                        recovery_state.forced_rerun_work_item_ids.add(item_id)
+                        recovery_state.recovery_diagnostics[item_id] = (
+                            failure.summary + _canonical_code_recovery_diagnostic(plan, item_id)
+                        )
+                    container.traces.record_delivery_checkpoint(
+                        plan.trace, recovery_state.as_checkpoint()
+                    )
+                    container.traces.record_event(
+                        plan.trace,
+                        "control",
+                        "code_wave_repair_scheduled",
+                        details={
+                            "attempt": repair_attempt,
+                            "work_item_ids": list(rerun_ids),
+                            "reason": failure.summary,
+                            "mode": "rerun_partitioned_code_items",
+                        },
+                    )
+                    container.traces.mark_running(plan.trace.trace_id)
+                    result = container.runner.run(plan, state=recovery_state)
+                    if result.status != GraphRunStatus.NEEDS_REPLAN:
+                        break
+                    continue
             if not failure.retryable:
                 container.traces.record_event(
                     plan.trace, "control", "repair_cycle_blocked",
@@ -2021,6 +2238,55 @@ class RunCoordinator:
             if result.status != GraphRunStatus.NEEDS_REPLAN:
                 break
         return result
+
+
+
+def _canonical_code_recovery_diagnostic(plan, owner_id: str) -> str:
+    """Recover import facts from frozen CodeAgent ownership, not LLM prose.
+
+    Historical plans predate ``required_bindings``. Their delivery contracts
+    still contain owned files, symbols and explicit dependency edges. This
+    diagnostic only narrows a rerun prompt; it never modifies plan permissions
+    or the frozen contract digest.
+    """
+    owner = plan.work_item(owner_id)
+    if owner is None or owner.agent_id != "code_agent":
+        return ""
+    bindings: list[str] = []
+    for dependency_id in owner.dependency_ids:
+        provider = plan.work_item(dependency_id)
+        if provider is None or provider.agent_id != "code_agent":
+            continue
+        python_files = [
+            path for path in provider.owned_files
+            if canonical_binding(unit_id=provider.implementation_unit_id or provider.id,
+                                 owned_file=path) is not None
+        ]
+        declared = (provider.delivery_contract or {}).get("provided_symbols", ())
+        symbols = normalize_python_symbols(
+            declared if isinstance(declared, (list, tuple)) else ()
+        ) if len(python_files) == 1 else ()
+        for path in python_files:
+            binding = canonical_binding(
+                unit_id=provider.implementation_unit_id or provider.id,
+                owned_file=path, provided_symbols=symbols,
+            )
+            if binding is None:
+                continue
+            exports = binding["provided_symbols"]
+            detail = (
+                f"{binding['owned_file']} -> {binding['module']}"
+                + (f" (declared symbols: {', '.join(exports)})" if exports else "")
+            )
+            bindings.append(detail)
+    if not bindings:
+        return ""
+    return (
+        "\n【冻结合同的 canonical Python binding】依赖文件的 import module "
+        "只能从 owned_files 推导，不要根据 interface id 或审查文字猜路径："
+        + "; ".join(dict.fromkeys(bindings))
+        + "。只在代码确实消费相应 provider 时导入其实际导出的符号。"
+    )
 
 
 def _repair_scope(plan, failed_id: str) -> tuple[str, ...]:
@@ -2115,20 +2381,25 @@ class RunService:
         *,
         coordinator: RunCoordinator,
         container_builder: ContainerBuilder = build_container,
+        provider_preflight: bool = False,
     ) -> None:
         self._coordinator = coordinator
         self._container_builder = container_builder
+        # Direct unit/integration callers can disable network preflight; the
+        # production API enables it explicitly so a long Worker run never
+        # starts against an incompatible Provider.
+        self._provider_preflight = provider_preflight
 
     def start_controlled_workflow(
         self, *, project_path: str, goal: str, workflow_id: str,
         llm_selection: LLMSelection | None = None,
         llm_overrides: dict[str, LLMSelection] | None = None,
+        architecture_config: ArchitectureExecutionConfig | None = None,
     ) -> StartedRun:
-        container = self._container_builder(
-            project_path,
-            llm_selection=llm_selection,
-            llm_overrides=llm_overrides,
-        )
+        builder_options = {"llm_selection": llm_selection, "llm_overrides": llm_overrides}
+        if architecture_config is not None:
+            builder_options["architecture_config"] = architecture_config
+        container = self._container_builder(project_path, **builder_options)
         plan_id = f"run-{uuid4().hex[:12]}"
         try:
             template = container.templates.get(workflow_id)
@@ -2159,10 +2430,47 @@ class RunService:
         except PlannerFailure:
             raise
         container.traces.record_plan_baseline(planning.plan)
+        if architecture_config is not None:
+            container.traces.set_architecture_config(planning.plan.trace.trace_id, architecture_config)
         container.traces.set_llm_selection(planning.plan.trace.trace_id, container.llm_selection)
         container.traces.set_llm_overrides(
             planning.plan.trace.trace_id, container.llm_overrides
         )
+        if self._provider_preflight:
+            trace = planning.plan.trace
+            container.traces.record_event(
+                trace,
+                "control",
+                "provider_preflight_started",
+                details={
+                    "provider": container.llm_selection.provider,
+                    "model": container.llm_selection.model,
+                    "wire_api": container.llm_selection.wire_api,
+                },
+            )
+            try:
+                preflight = ProviderPreflight().check(container.llm_selection)
+            except ProviderPreflightError as error:
+                result = error.result
+                container.traces.record_event(
+                    trace,
+                    "control",
+                    "provider_preflight_failed",
+                    details=result.as_dict(),
+                )
+                container.traces.finish_trace(
+                    trace, "blocked", error=result.message
+                )
+                raise PlannerFailure(
+                    result.message,
+                    trace_id=trace.trace_id,
+                ) from error
+            container.traces.record_event(
+                trace,
+                "control",
+                "provider_preflight_passed",
+                details=preflight.as_dict(),
+            )
         self._coordinator.submit(container, planning.plan)
         return StartedRun(
             trace_id=planning.plan.trace.trace_id,

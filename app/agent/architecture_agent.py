@@ -21,7 +21,15 @@ class ArchitectureAgent(BaseAgent):
             )
             and {"load_architecture_intermediate", "write_architecture_intermediate"}.issubset(names)
         )
-        return _BACKSTORY + scheme_note + ("\n\n" + _CHECKPOINT_RULES if checkpoint_enabled else "")
+        backstory = _BACKSTORY
+        if context is not None and context.execution_mode is ExecutionMode.PARTITIONED:
+            # The delivery contract exposes only the frozen input reader and
+            # the current depth's writer. Do not instruct the model to call
+            # selection helpers which the partition cannot access.
+            begin = backstory.index("## 技术栈声明规则（重要）")
+            end = backstory.index("## 消费方式分类（核心原则）", begin)
+            backstory = backstory[:begin] + _PARTITIONED_DESIGN_RULES + backstory[end:]
+        return backstory + scheme_note + ("\n\n" + _CHECKPOINT_RULES if checkpoint_enabled else "")
 
     def __init__(self, gateway: ToolGateway) -> None:
         super().__init__(
@@ -30,8 +38,45 @@ class ArchitectureAgent(BaseAgent):
             role="系统架构师",
             goal="基于已确认需求产出边界清晰、可落地的技术架构",
             backstory=_BACKSTORY,
-            max_iterations=3,
+            # Read -> optional progress -> write -> repair needs more than
+            # three CrewAI turns. At max_iter=3 CrewAI asks for a final answer
+            # before a writer call, and the runner sees a missing artifact.
+            # Keep this bounded so a bad model cannot loop indefinitely.
+            max_iterations=6,
         )
+
+
+_PARTITIONED_DESIGN_RULES = """## 当前分区的技术栈与接口声明
+
+只调用本次 WorkItem 可见的工具：按冻结引用读取输入，再使用当前 depth 对应的
+结构化写入工具提交对象。select_tech_stack 和 select_interface_kind 不在分区工具集，
+不要把它们报告为缺失的外部能力。技术栈按需求与已声明的父设计选择具体、真实的框架或
+运行依赖（如 fastapi、sqlite），不可用语言、文件名或泛泛的 frontend/backend 充数。
+分区的核心技术栈只使用以下白名单中的真实标签：后端 fastapi/flask/django/express，
+前端 react/vue/vite，数据库 sqlite/postgresql，接口 openapi/json-schema，容器 docker；
+不要将 python、javascript、httpx、pytest、uvicorn 放进 tech_stack。依赖库、测试工具和
+语言可以放在后续实现或测试设计，不属于 Blueprint.modules[].tech_stack。
+接口 kind 只能取 symbol（导入符号）、service（服务/进程）、api（HTTP）、
+data（数据定义）、event（事件）；未确定的细节需标记待验证，结构化写入时由
+控制面校验对象和依赖，拒绝时修正当前对象并重试同一个写入工具。
+
+对于 depth=0，只向 write_architecture_blueprint 传 {"design": Blueprint}：Blueprint
+必填 schema_version=1、depth=0、design_id、system_boundary、layers、modules；
+每个 layer 只用 name、allowed_dependencies、forbidden_imports、path_mapping；
+每个 module 只用 module_id、boundary_role、responsibility、purpose、
+depends_on_modules、requirement_ids、owned_required_files、tech_stack。
+顶层包含 architecture_scheme、global_constraints、runtime_profile、entrypoints、
+required_files、requirement_ids。D 方案如有运行模块，须选定真实后端入口文件、
+导入目标（包含已计划提供的 app 符号时使用 module:app）和启动命令；如有浏览器体验模块，
+须选定前端入口文件。入口必须列入 required_files，且由对应模块的
+owned_required_files 唯一拥有；启动命令须包含同一导入目标。这里是架构设计选择，
+不是把需求未指定的文件名伪称为用户要求。后续实现单元必须真正拥有这些路径并提供符号。
+不要在 Blueprint 写 provided_interfaces、
+consumed_interfaces、required_test_types；这些属于后续层。不要给 layer 写
+``depends_on``/``forbidden_dependencies``，不要给 module 写 ``name``/``path_mapping``。
+字段必须严格按当前写入工具的闭合 schema，不能用相近字段名替代。
+
+"""
 
 
 _BACKSTORY = """\
@@ -262,9 +307,11 @@ Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用�
 - 工具调用成功后，最终回答只简短确认完成，不要再次输出 Markdown 正文。
 
 结构化对象语义：
-- ``required_files`` 是项目级的精确路径承诺，不是文件名建议。声明时必须与层目录规划一致，
-  并在模块职责中明确负责方；不要为每个模块重复分配全部必需文件。实现节点读取父层后，
-  必须保留本模块负责的必需路径；发现父层路径与目录约束冲突时报告冲突，不自行改写路径。
+- ``required_files`` 是项目级的精确路径承诺，不是文件名建议。D 方案必须把每个必需文件
+  通过一个且仅一个 Blueprint.modules[].owned_required_files 指定给业务能力、用户体验或运行模块；
+  测试、README 等交付文件也要明确归属，不要因此新增纯技术顶层业务模块，也不要擅自删去
+  需求明确要求的文件。实现节点读取父层后，必须在当前模块 implementation_units[].owned_files
+  中覆盖它负责的全部必需路径；发现父层路径与目录约束冲突时报告冲突，不自行改写路径。
 - ``ArchitectureBlueprint`` 是 depth=0 的系统级事实；``ModuleDesign`` 是 depth=1 的单模块事实；
   ``ImplementationDesign`` 是 depth=2 的可执行边界。对象中的 design_id、parent_design_id、
   module_id、requirement_ids 和 interface_id 必须保持原样传递，不能改名或用自然语言替代。
@@ -280,7 +327,10 @@ Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用�
   ``provided_interfaces``、``consumed_interfaces``、``implementation_units``、
   ``required_test_types``、``requirement_ids``。其中 ``provided_interfaces`` 的每项使用
   ``ContractInterfaceInput``：``interface_id``、``kind``、``name``、``owner_unit``，以及可选的
-  ``owner_file``、``signature``、``input_schema``、``output_schema``、``errors``、``constraints``；
+  ``owner_file``、``signature``、``input_schema``、``output_schema``、``errors``、``constraints``、
+  ``operations``。当 ``kind=api`` 时，必须填写 ``owner_file`` 和非空 ``operations``；每个
+  operation 必须包含冻结的 HTTP ``method`` 与 ``path``（可选 ``request_schema``、
+  ``response_schema``），不能只写“提供 CRUD”或让 CodeAgent 猜测路径、前缀、统计/状态别名。
   ``consumed_interfaces`` 的每项只能使用 ``interface_id``、``usage``、``required``，不得出现
   ``direction``、``summary``、``owner_unit``。每个 ``implementation_units`` 元素至少包含
   ``unit_id``、``layer``、``objective``、``allowed_paths`` 和一个具体 ``owned_files``；可选字段
@@ -288,7 +338,7 @@ Layer 的 path_mapping 用于定义层级的代码组织边界，**只能使用�
   ``acceptance_criteria``、``constraints``、``non_goals``、``policy_refs``、``skill_refs``、
   ``parallel_group``、``output_key``、``slot``、``requirement_ids``、``wave``、
   ``provides_interfaces``、``consumes_interfaces``、``provided_symbols``、``required_symbols``。
-  D 方案的 ``owned_files`` 必须包含 1-3 个彼此内聚的具体文件；``required_paths`` 只能引用这些文件。legacy 合同才按单文件拆分。不要在 ImplementationDesign
+  D 方案的 ``owned_files`` 必须包含 1-3 个彼此内聚的具体文件；``required_paths`` 只能引用这些文件；每个 owned_files 都必须被同一单元的 allowed_paths 命中，不能只覆盖其中一个子目录。legacy 合同才按单文件拆分。不要在 ImplementationDesign
   中写 ``layers``，不要在 implementation unit 中写 ``consumed_interface_ids`` 或 ``test_boundary``；
   ``depends_on`` 只能引用本次集成架构中真实存在的其他 ``unit_id``，并且只能指向更早的 ``wave``；
   它不能填写 module_id 或 interface_id。跨模块能力必须在 ImplementationDesign 顶层

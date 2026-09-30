@@ -13,7 +13,7 @@ from app.execution_context import ExecutionContext, ExecutionMode
 from app.domain.architecture.implementation_contract import ImplementationContractStore
 from app.domain.architecture.validation import ValidationReceipt, ValidationReceiptStore, digest_text
 from app.domain.architecture.recursive import RecursiveNode, RecursiveSnapshot, RecursiveSnapshotStore
-from app.domain.architecture.contract_input import ProjectContractInput
+from app.domain.architecture.contract_input import CanonicalContractNormalizer, ProjectContractInput
 from app.domain.architecture.design_contract import (
     ArchitectureBlueprint,
     ArchitectureDesignBundle,
@@ -69,6 +69,9 @@ class ArchitectureService:
             raw = json.loads(contract_input) if isinstance(contract_input, str) else contract_input
         if not isinstance(raw, dict):
             raise ValueError("Project Contract 必须是 JSON 对象")
+        # Model output is a draft.  Normalize its bounded compatibility aliases
+        # once, before strict DTO validation and before persistence.
+        raw = CanonicalContractNormalizer.normalize(raw)
         # The public wire DTO represents layer mappings on each layer object.
         # Convert that shape before any legacy normalization so dependency and
         # path rules are not silently replaced by defaults.
@@ -101,6 +104,15 @@ class ArchitectureService:
             defaults = _default_layer_contract()
             for key, value in defaults.items():
                 raw.setdefault(key, value)
+        if raw.get("compilation_strategy") == "semantic":
+            # New semantic contracts cannot bypass the delivery handoff by
+            # taking the direct save tool instead of the structured D path.
+            # Historical contracts are still loadable for diagnosis/recovery.
+            from app.domain.architecture.implementation_contract import ImplementationContract
+            from app.domain.architecture.handoff import contract_handoff_gaps
+            gaps = contract_handoff_gaps(ImplementationContract.parse(raw))
+            if gaps:
+                raise ValueError("project_contract_handoff_incomplete: " + "; ".join(gaps))
         contract = self._implementation_contract.save(raw)
         # Persist the applicable quality dimensions alongside the contract so
         # Review and API metrics can explain which checks were project-specific.
@@ -226,11 +238,110 @@ class ArchitectureArtifactWorkflow:
             if entrypoints.get("health_path") in (None, ""):
                 entrypoints["health_path"] = "/health"
                 design = {**design, "entrypoints": entrypoints}
+        slot = context.slot or ""
+        # The scheme is a frozen control-plane choice. The wire schema keeps
+        # this field optional for historical artifacts, but a new Blueprint
+        # must not silently fall back to legacy for a D Trace.
+        if slot == "blueprint" and isinstance(design, dict):
+            selected_scheme = context.architecture_config.scheme
+            supplied_scheme = design.get("architecture_scheme")
+            if supplied_scheme is None:
+                # CrewAI's wire model may omit the field; bind that omission
+                # to the frozen Trace scheme. Explicit legacy objects remain
+                # accepted for direct-run/backward-compatible tests and old
+                # checkpoints, but are not silently relabeled.
+                design = {**design, "architecture_scheme": selected_scheme}
         try:
             parsed = parse_design(design)
         except (ValidationError, TypeError, ValueError) as error:
             raise ValueError(_structured_design_error(error)) from error
-        slot = context.slot or ""
+        if context.architecture_config.recursive_enabled and isinstance(parsed, ArchitectureBlueprint):
+            # Validate advisory stack labels at the producer boundary. Waiting
+            # until integration made a bad Blueprint look successfully staged
+            # and then failed a later barrier, where the producing Agent could
+            # no longer repair it. Keep the strict verifier (languages and test
+            # runners are not stack labels), but return a retryable tool error
+            # while the current Agent still has the writer tool.
+            from app.orchestration.tech_stack_verification import (
+                ALL_MAINSTREAM_STACKS,
+                TechStackVerifier,
+            )
+
+            stack_names = sorted({
+                str(stack).strip()
+                for module in parsed.modules
+                for stack in module.tech_stack
+                if str(stack).strip()
+            })
+            if stack_names:
+                validation = TechStackVerifier.validate_with_retry(
+                    tech_stacks=stack_names,
+                    retry_level=0,
+                    context={"blueprint_id": parsed.design_id},
+                )
+                if not validation["valid"]:
+                    raise ValueError(json.dumps({
+                        "ok": False,
+                        "error_type": "architecture_tech_stack_validation",
+                        "retryable": True,
+                        "expected_tool": _expected_design_tool(slot),
+                        "invalid_stacks": [
+                            stack for stack in stack_names
+                            if stack not in ALL_MAINSTREAM_STACKS
+                            or stack.lower() in TechStackVerifier.BLACKLIST
+                        ],
+                        "allowed_stacks": sorted(ALL_MAINSTREAM_STACKS),
+                        "message": "Blueprint 的 modules[].tech_stack 只能使用主流框架、数据库或工具；"
+                                   "请从当前允许的技术栈中选择合法标签，修正同一个 Blueprint 并重试写入；"
+                                   "分区节点不提供 select_tech_stack 工具。",
+                        "details": validation["errors"],
+                    }, ensure_ascii=False))
+            assigned = {path.replace("\\", "/").lstrip("/")
+                        for module in parsed.modules for path in module.owned_required_files}
+            missing = sorted({path.replace("\\", "/").lstrip("/") for path in parsed.required_files} - assigned)
+            if missing:
+                raise ValueError(json.dumps({
+                    "ok": False,
+                    "error_type": "required_file_without_module_owner",
+                    "retryable": True,
+                    "expected_tool": _expected_design_tool(slot),
+                    "files": missing,
+                    "message": "Blueprint 的每个 required_files 必须指定唯一的 modules[].owned_required_files 责任人",
+                }, ensure_ascii=False))
+            from app.domain.architecture.handoff import blueprint_handoff_gaps
+            gaps = blueprint_handoff_gaps(parsed)
+            if gaps:
+                raise ValueError(json.dumps({
+                    "ok": False, "error_type": "blueprint_handoff_incomplete",
+                    "retryable": True, "expected_tool": _expected_design_tool(slot),
+                    "gaps": gaps,
+                    "message": "请在本 Blueprint 中冻结实际运行入口及必交付文件，并分配唯一模块负责人；历史产物可读但新 D 产物不能留空。",
+                }, ensure_ascii=False))
+        if context.architecture_config.recursive_enabled and isinstance(parsed, ImplementationDesign):
+            # Enforce the Blueprint's module-level file promise at the producer
+            # boundary, while the implementation worker can still correct its
+            # own output. Integration retains the global uniqueness check.
+            blueprints = [ref for ref in context.input_refs if ref.artifact_key == "architecture"
+                          and ref.slot == "blueprint"]
+            if len(blueprints) == 1:
+                blueprint = parse_design(self.load_input(context, blueprints[0].ref_id))
+                if isinstance(blueprint, ArchitectureBlueprint):
+                    module = next((item for item in blueprint.modules
+                                   if item.module_id == parsed.module_id), None)
+                    if module is not None:
+                        owned = {path.replace("\\", "/").lstrip("/")
+                                 for unit in parsed.implementation_units for path in unit.owned_files}
+                        missing = sorted(set(module.owned_required_files) - owned)
+                        if missing:
+                            raise ValueError(json.dumps({
+                                "ok": False,
+                                "error_type": "module_required_file_not_owned",
+                                "retryable": True,
+                                "expected_tool": _expected_design_tool(slot),
+                                "module_id": parsed.module_id,
+                                "files": missing,
+                                "message": "当前模块的 Blueprint 必需文件必须由本模块 implementation_units 的 owned_files 拥有",
+                            }, ensure_ascii=False))
         expected_depth = (
             0
             if slot == "blueprint"
@@ -258,8 +369,6 @@ class ArchitectureArtifactWorkflow:
                     ensure_ascii=False,
                 )
             )
-        import json
-
         content = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2)
         limit = (
             _D_DESIGN_CHAR_LIMIT
@@ -385,6 +494,18 @@ class ArchitectureArtifactWorkflow:
 
     def validate_design_inputs(self, context: ExecutionContext) -> ArchitectureDesignBundle:
         """Validate authorized upstream designs without creating a candidate or publishing."""
+        if (
+            context.architecture_config.recursive_enabled
+            and (
+                context.input_digests is None
+                or len(context.input_digests) != len(context.input_refs)
+            )
+        ):
+            raise ValueError(
+                "架构设计输入缺少完整版本证据：input_refs="
+                f"{len(context.input_refs)}, input_digests="
+                f"{len(context.input_digests or ())}"
+            )
         self._repository.verify_input_versions(context.input_refs, context.input_digests)
         designs = [parse_design(self.load_input(context, ref.ref_id)) for ref in context.input_refs]
         blueprint = next((item for item in designs if isinstance(item, ArchitectureBlueprint)), None)
@@ -400,10 +521,12 @@ class ArchitectureArtifactWorkflow:
                 if ref.layer != "staged":
                     continue
                 digest = (context.input_digests or ())[index]
+                parent_refs, parent_digests = self._repository.staged_source_versions(ref)
                 self._validation_receipts.verify(
                     ref,
                     artifact_digest=digest,
-                    parent_digests=(),
+                    parent_refs=tuple(parent.ref_id for parent in parent_refs),
+                    parent_digests=parent_digests,
                 )
         # Layered workers receive a semantic module id (``api``, ``domain``,
         # ``runtime``), while a blueprint may use a product-qualified id such
@@ -452,12 +575,18 @@ class ArchitectureArtifactWorkflow:
                     f"实现单元数量 {unit_count} 超过流程上限 "
                     f"{process.limits.max_implementation_units}"
                 )
-        return ArchitectureDesignBundle(
+        bundle = ArchitectureDesignBundle(
             schema_version=1,
             blueprint=blueprint,
             modules=modules,
             implementations=implementations,
         )
+        if blueprint.architecture_scheme == "D":
+            from app.domain.architecture.handoff import bundle_handoff_gaps
+            gaps = bundle_handoff_gaps(bundle)
+            if gaps:
+                raise ValueError("architecture_handoff_incomplete: " + "; ".join(gaps))
+        return bundle
 
 
     def create_candidate(self, context: ExecutionContext, content: str) -> str:

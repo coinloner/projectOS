@@ -869,6 +869,8 @@ def delivery_default_template() -> WorkflowTemplate:
                 output_key="architecture_contract",
                 depends_on=("architecture-quality-gate",),
                 stage_id="contract",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture_contract",
                 acceptance_criteria=(
                     "合同包含实现单元、文件所有权、wave 和接口定义。",
                     "允许路径不重叠,依赖图无环。",
@@ -1199,6 +1201,33 @@ def architecture_only_template() -> WorkflowTemplate:
                 acceptance_criteria=(
                     "架构满足所有功能需求和非功能需求。",
                     "层次清晰,职责分离,依赖关系合理。",
+                ),
+            ),
+        ),
+    )
+
+
+def architecture_l0_template() -> WorkflowTemplate:
+    """Bounded Requirement -> recursive Architecture -> deterministic Contract.
+
+    Keep architecture_only unchanged for existing traces; this variant makes
+    the Contract a real dependent WorkItem without appending delivery/Code.
+    """
+    architecture = architecture_only_template()
+    return WorkflowTemplate(
+        id="architecture_l0", name="需求架构合同闭环",
+        description="只发布需求、架构和结构化项目合同；不执行代码。",
+        nodes=architecture.nodes + (
+            TaskBlueprint(
+                id="contract", agent_id="architecture_contract_agent",
+                objective="在架构质量门后确定性编译并保存 Project Contract。",
+                output_key="architecture_contract", artifact_key="architecture_contract",
+                depends_on=("architecture-quality-gate",), stage_id="contract",
+                execution_mode=ExecutionMode.INTEGRATION,
+                publish_target="architecture_contract",
+                acceptance_criteria=(
+                    "只从已发布的结构化架构对象编译 Project Contract。",
+                    "实现单元、文件所有权、接口和依赖必须通过校验。",
                 ),
             ),
         ),

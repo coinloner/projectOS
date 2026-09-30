@@ -449,6 +449,70 @@ class CrewAIAgentAdapterTest(unittest.TestCase):
         self.assertEqual(raised.exception.result.error_type, "tool_validation")
         self.assertEqual(raised.exception.result.expected_tool, "write_module_design")
 
+    def test_replays_design_envelope_after_prose_and_capability_request(self) -> None:
+        """恢复 relay 将摘要、tool arguments 和 capability JSON 串接时的落盘。"""
+        calls: list[dict[str, object]] = []
+        gateway = ToolGateway()
+        gateway.register_toolset(
+            "architecture",
+            "local",
+            ToolSetSource(
+                [
+                    (
+                        ToolDef(
+                            name="write_architecture_blueprint",
+                            description="写入架构蓝图",
+                            parameters={
+                                "type": "object",
+                                "properties": {
+                                    "design": {
+                                        "type": "object",
+                                        "properties": {"depth": {"type": "integer"}},
+                                        "required": ["depth"],
+                                        "additionalProperties": True,
+                                    }
+                                },
+                                "required": ["design"],
+                            },
+                        ),
+                        lambda design: calls.append(design) or "saved",
+                    )
+                ]
+            ),
+        )
+
+        class RelayAgent(FakeCrewAgent):
+            def execute_task(self, task: object) -> str:
+                return (
+                    "已完成失败分类。"
+                    "{\"summary\":\"repair\",\"work_stage\":\"write\"}"
+                    "{\"design\":{\"depth\":0,\"design_id\":\"d0\"}}"
+                    "{\"type\":\"capability_request\",\"capability\":\"write_architecture_blueprint\",\"reason\":\"relay fallback\"}"
+                )
+
+        with patch("app.agent.base_agent.Agent", side_effect=RelayAgent), patch(
+            "app.agent.base_agent.Task", side_effect=lambda **kwargs: kwargs
+        ), patch("app.agent.base_agent.build_llm", return_value=object()):
+            result = BaseAgent(
+                gateway=gateway,
+                domain="architecture",
+                role="架构师",
+                goal="设计蓝图",
+                backstory="按结构化合同落盘",
+            ).run(
+                "生成架构蓝图",
+                context=ExecutionContext(
+                    trace_id="tr-relay-envelope",
+                    work_item_id="wi-blueprint",
+                    agent_id="architecture_agent",
+                    execution_mode=ExecutionMode.PARTITIONED,
+                    slot="blueprint",
+                ),
+            )
+
+        self.assertEqual(result.status, AgentStatus.COMPLETED)
+        self.assertEqual(calls, [{"depth": 0, "design_id": "d0"}])
+
     def test_replays_design_when_capability_request_is_appended(self) -> None:
         calls: list[dict[str, object]] = []
         gateway = ToolGateway()

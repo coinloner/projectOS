@@ -19,6 +19,7 @@ from app.workflow.template import WorkflowTemplateRegistry
 from app.skill.module import SkillModule
 from app.policy.module import PolicyModule
 from app.llm.config import LLMSelection, resolve_llm_selection
+from app.architecture_execution_config import ArchitectureExecutionConfig
 
 
 @dataclass
@@ -52,6 +53,7 @@ def build_container(
     llm_selection: LLMSelection | None = None,
     llm_overrides: dict[str, LLMSelection] | None = None,
     retry_policy: RetryPolicy | None = None,
+    architecture_config: ArchitectureExecutionConfig | None = None,
 ) -> ProjectOSContainer:
     """组装完整运行时；不创建项目目录，也不发起 LLM 请求。"""
     artifacts = ArtifactStore(project_path)
@@ -99,6 +101,7 @@ def build_container(
         retry_policy=retry_policy,
         llm_selection=container.llm_selection,
         llm_overrides=container.llm_overrides,
+        architecture_config=architecture_config or ArchitectureExecutionConfig(scheme="D"),
     )
     return container
 

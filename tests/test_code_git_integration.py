@@ -1,16 +1,80 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from app.artifact.repository import ArtifactRef
 from app.domain.code.service import CodeIntegrationService, CodeStagingService
-from app.agent.code_integration_agent import IntegrationReview
+from app.agent.result import AgentResult
+from app.agent.code_integration_agent import (
+    CodeIntegrationAgent, IntegrationReview, _reconcile_duplicate_path_findings,
+)
 from app.policy.quality import GitCodeIntegrationPolicy
 from app.workspace.git_repository import ChangeSet
 from app.execution_context import ExecutionContext, ExecutionMode
+from app.tool_manager.gateway import ToolGateway
 
 
 class CodeGitIntegrationTest(unittest.TestCase):
+    def test_no_pending_changesets_bypass_stale_llm_review_but_revalidate(self) -> None:
+        service = Mock()
+        service.has_pending_change_sets.return_value = False
+        service.integrate.return_value = "published workspace validated"
+        reviewer = Mock()
+        agent = CodeIntegrationAgent(ToolGateway(), service, reviewer=reviewer)
+        context = ExecutionContext(
+            trace_id="tr", work_item_id="integrate", agent_id="code_integration_agent",
+            execution_mode=ExecutionMode.INTEGRATION, publish_target="implementation",
+        )
+        result = agent.run("Integrate", context=context)
+        self.assertIn("published workspace validated", result.content or "")
+        service.integrate.assert_called_once_with(context)
+        reviewer.run.assert_not_called()
+
+    def test_transient_reviewer_outage_uses_deterministic_merge_fallback(self) -> None:
+        service = Mock()
+        service.has_pending_change_sets.return_value = True
+        service.review_evidence.return_value = '{"changesets":[]}'
+        service.integrate.return_value = "merged"
+        reviewer = Mock()
+        reviewer.run.side_effect = RuntimeError(
+            "Error code: 502 - {'error': {'message': 'Upstream service temporarily unavailable'}}"
+        )
+        agent = CodeIntegrationAgent(ToolGateway(), service, reviewer=reviewer)
+        context = ExecutionContext(
+            trace_id="tr", work_item_id="integrate", agent_id="code_integration_agent",
+            execution_mode=ExecutionMode.INTEGRATION, publish_target="implementation",
+        )
+        result = agent.run("Integrate", context=context)
+        self.assertIn("merged", result.content or "")
+        self.assertIn("后续 Review 未豁免", result.content or "")
+        service.record_review.assert_called_once()
+        service.integrate.assert_called_once()
+        fallback = service.record_review.call_args.args[1]
+        self.assertEqual(fallback.verdict, "approve")
+        self.assertEqual(fallback.findings[0].code, "integration.reviewer_unavailable")
+
+    def test_adapter_request_accepts_owned_workspace_prefix(self) -> None:
+        service = Mock()
+        service.has_pending_change_sets.return_value = True
+        service.review_evidence.return_value = (
+            '{"changesets":[{"changed_files":["workspace/backend/app/main.py"]}]}'
+        )
+        service.integrate.return_value = "merged"
+        reviewer = Mock()
+        reviewer.run.return_value = AgentResult.completed(
+            '{"verdict":"needs_adapter","rationale":"main fix",'
+            '"findings":[],"adapter_requests":["workspace/backend/app/main.py"]}'
+        )
+        agent = CodeIntegrationAgent(ToolGateway(), service, reviewer=reviewer)
+        context = ExecutionContext(
+            trace_id="tr", work_item_id="integrate", agent_id="code_integration_agent",
+            execution_mode=ExecutionMode.INTEGRATION, publish_target="implementation",
+        )
+        result = agent.run("Integrate", context=context)
+        self.assertIn("merged", result.content or "")
+        service.integrate.assert_called_once()
+
     def test_integration_review_accepts_only_decision_fields(self) -> None:
         review = IntegrationReview.parse(
             '{"verdict":"approve","rationale":"ChangeSet 与合同一致",'
@@ -47,6 +111,77 @@ class CodeGitIntegrationTest(unittest.TestCase):
         )
 
         self.assertEqual(review.verdict, "approve")
+
+    def test_review_duplicate_path_claim_must_match_changeset_metadata(self) -> None:
+        review = IntegrationReview.parse(
+            '{"verdict":"reject","rationale":"same path",'
+            '"findings":[{"code":"DUPLICATE_PATH_AND_CONFLICT",'
+            '"severity":"blocker","summary":"two changesets own main.py"}],'
+            '"adapter_requests":[]}'
+        )
+        distinct = ('{"changesets":[{"changed_files":["workspace/backend/app/main.py"]},'
+                    '{"changed_files":["workspace/backend/app/task_service.py"]}]}')
+        reconciled = _reconcile_duplicate_path_findings(review, distinct)
+        self.assertEqual(reconciled.findings[0].severity, "warning")
+        duplicated = ('{"changesets":[{"changed_files":["workspace/backend/app/main.py"]},'
+                      '{"changed_files":["workspace/backend/app/main.py"]}]}')
+        self.assertEqual(
+            _reconcile_duplicate_path_findings(review, duplicated).findings[0].severity,
+            "blocker",
+        )
+
+    def test_noop_integration_revalidates_published_workspace_after_repair(self) -> None:
+        from app.domain.code.git_service import GitCodeStagingService
+        root = Path(self.project_path)
+        main = root / "workspace/backend/app/main.py"
+        main.parent.mkdir(parents=True)
+        main.write_text(
+            "from app.task_management.service import get_service\n", encoding="utf-8"
+        )
+        GitCodeStagingService(self.project_path).refresh_baseline("trace-noop")
+        context = ExecutionContext(
+            trace_id="trace-noop", work_item_id="integration",
+            agent_id="code_integration_agent",
+            execution_mode=ExecutionMode.INTEGRATION,
+            publish_target="workspace",
+        )
+        with self.assertRaisesRegex(RuntimeError, "已发布 workspace.*backend/app/main.py"):
+            CodeIntegrationService(self.project_path).integrate(context)
+
+    def test_published_workspace_rejects_missing_relative_local_import(self) -> None:
+        from app.domain.code.git_service import GitCodeIntegrationService
+        root = Path(self.project_path) / "workspace/backend/app"
+        root.mkdir(parents=True)
+        (root / "main.py").write_text(
+            "from .task_management.service import TaskManagementService\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, r"不存在的本地模块 \.task_management.service"):
+            GitCodeIntegrationService(self.project_path).validate_published_workspace("trace")
+
+    def test_deterministic_import_diagnostic_precedes_llm_rejection(self) -> None:
+        context = ExecutionContext(
+            trace_id="trace-review-order", work_item_id="code-main", agent_id="code_agent",
+            execution_mode=ExecutionMode.PARTITIONED, slot="backend",
+            allowed_paths=("backend/app/main.py",), required_paths=("backend/app/main.py",),
+            owned_files=("backend/app/main.py",),
+        )
+        self.staging.write_staged_file(
+            context, "backend/app/main.py",
+            "from fastapi import FastAPI\nfrom app.missing_service import MissingService\napp = FastAPI()\n",
+        )
+        integration = ExecutionContext(
+            trace_id="trace-review-order", work_item_id="integrate", agent_id="code_integration_agent",
+            execution_mode=ExecutionMode.INTEGRATION,
+            input_refs=(ArtifactRef.staged(
+                artifact_key="implementation", trace_id="trace-review-order",
+                work_item_id="code-main", slot="backend",
+            ),), publish_target="workspace",
+        )
+        review = IntegrationReview("reject", "hallucinated duplicate")
+        with self.assertRaisesRegex(RuntimeError, "Integration 语义检查拒绝合并.*backend/app/main.py"):
+            CodeIntegrationService(self.project_path).integrate(integration, review=review)
+        self.assertFalse((Path(self.project_path) / "workspace/backend/app/main.py").exists())
 
     def test_integration_review_does_not_extract_json_from_natural_language(self) -> None:
         with self.assertRaisesRegex(ValueError, "必须是 JSON"):

@@ -236,11 +236,21 @@ def _replay_structured_architecture_output(
     if expected is None:
         return None
 
-    payload = _strict_json_object(output)
-    if payload is None or payload.get("type") == "capability_request":
-        return None
-    expected_depth = 0 if expected == "write_architecture_blueprint" else 1 if expected == "write_module_design" else 2
-    if payload.get("depth") != expected_depth:
+    expected_depth = (
+        0
+        if expected == "write_architecture_blueprint"
+        else 1
+        if expected == "write_module_design"
+        else 2
+    )
+    # Some OpenAI-compatible relays prepend a short summary and append a
+    # capability_request after the actual function arguments.  In that case
+    # the output is no longer one JSON document, so a whole-string parse would
+    # silently lose the corrected design.  Extract only a candidate whose
+    # shape is the expected depth and, for native-style arguments, unwrap the
+    # ``{"design": {...}}`` envelope.
+    payload = _extract_architecture_design(output, expected_depth)
+    if payload is None:
         return None
 
     tool = next(
@@ -263,38 +273,44 @@ def _replay_structured_architecture_output(
         raise
 
 
-def _strict_json_object(output: str) -> dict[str, object] | None:
-    """Parse one leading JSON object, accepting a known trailing capability envelope."""
-    candidate = output.strip()
-    if candidate.startswith("```") and candidate.endswith("```"):
-        lines = candidate.splitlines()
+def _extract_architecture_design(output: str, expected_depth: int) -> dict[str, object] | None:
+    """Extract one schema-shaped architecture payload from relay text.
+
+    Native tool calls normally never reach this function.  It is only a
+    compatibility path for relays that serialize several JSON envelopes into
+    ordinary assistant text.  We therefore accept no arbitrary JSON: a
+    candidate must either be a direct design object or contain a ``design``
+    object with the expected depth.  The last matching candidate wins so a
+    model can emit an initial invalid draft followed by its repaired payload.
+    """
+    candidate_text = output.strip()
+    if candidate_text.startswith("```") and candidate_text.endswith("```"):
+        lines = candidate_text.splitlines()
         if len(lines) >= 3:
-            candidate = "\n".join(lines[1:-1]).strip()
-    try:
-        payload = json.loads(candidate)
-        return payload if isinstance(payload, dict) else None
-    except (TypeError, ValueError, json.JSONDecodeError):
-        # A relay may concatenate the intended tool arguments and its textual
-        # capability fallback.  Recover only the first complete object when
-        # the remainder is a capability_request envelope; arbitrary prose is
-        # never treated as structured output.
-        decoder = json.JSONDecoder()
+            candidate_text = "\n".join(lines[1:-1]).strip()
+
+    decoder = json.JSONDecoder()
+    matches: list[dict[str, object]] = []
+    # ``raw_decode`` lets us recover adjacent objects and an object embedded
+    # after natural-language text without accepting arbitrary prose as JSON.
+    for index, marker in enumerate(candidate_text):
+        if marker != "{":
+            continue
         try:
-            payload, end = decoder.raw_decode(candidate)
+            value, _ = decoder.raw_decode(candidate_text[index:])
         except (TypeError, ValueError, json.JSONDecodeError):
-            return None
-        if not isinstance(payload, dict):
-            return None
-        remainder = candidate[end:].strip()
-        if not remainder:
-            return payload
-        try:
-            trailing = json.loads(remainder)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return None
-        if isinstance(trailing, dict) and trailing.get("type") == "capability_request":
-            return payload
-        return None
+            continue
+        if not isinstance(value, dict):
+            continue
+        design = value.get("design")
+        if isinstance(design, dict):
+            if design.get("depth") == expected_depth:
+                matches.append(design)
+            continue
+        if value.get("depth") == expected_depth and value.get("type") != "capability_request":
+            matches.append(value)
+
+    return matches[-1] if matches else None
 
 
 def _expected_architecture_writer(context: ExecutionContext | None) -> str | None:

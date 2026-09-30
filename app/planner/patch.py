@@ -28,6 +28,13 @@ class PatchOperation(BaseModel):
     ref: str | None = Field(default=None, max_length=100)
     agent_id: str | None = Field(default=None, max_length=100)
     objective: str | None = Field(default=None, max_length=500)
+    # Advisory attribution echoed by some planner models.  The control plane
+    # never treats these fields as authority; actual repair_paths/owner_files
+    # always come from the trusted FailurePackage.  Keeping them in the wire
+    # schema prevents a well-formed diagnostic patch from being rejected just
+    # because the model repeated its evidence envelope.
+    repair_paths: list[str] = Field(default_factory=list, max_length=32)
+    owner_files: list[str] = Field(default_factory=list, max_length=32)
     depends_on: list[str] = Field(default_factory=list, max_length=10)
 
 
@@ -44,7 +51,7 @@ class RepairPlanPatch(BaseModel):
     rationale: str = Field(min_length=1, max_length=1_000)
     schema_version: int = Field(default=1, ge=1, le=1)
     base_plan_id: str = Field(min_length=1, max_length=128)
-    repair_scope: list[str] = Field(default_factory=list, max_length=10)
+    repair_scope: list[str] = Field(default_factory=list, max_length=32)
     # Diagnostic metadata is advisory but structured so retries can be
     # audited without scraping natural-language rationale.
     failure_kind: str | None = Field(default=None, min_length=1, max_length=64)
@@ -67,7 +74,37 @@ class RepairPlanPatch(BaseModel):
             raise PlanPatchError("RepairPlanPatch 顶层必须是对象")
         if base_plan_id and not raw.get("base_plan_id"):
             raw["base_plan_id"] = base_plan_id
-        if repair_scope and not raw.get("repair_scope"):
+        raw_operations = raw.get("operations")
+        if isinstance(raw_operations, list):
+            # Models occasionally name a verification step as a custom
+            # operation (for example ``verify-http-service-dependency``),
+            # even though the repair protocol only permits adding bounded
+            # WorkItems.  Normalize only explicit verification/test aliases
+            # to ``add``; arbitrary operation names remain schema errors.
+            normalized_operations = []
+            for operation in raw_operations:
+                if isinstance(operation, dict):
+                    operation = dict(operation)
+                    operation_name = str(operation.get("operation", "")).strip().lower()
+                    if operation_name.startswith(("verify", "validate", "check", "test")):
+                        operation["operation"] = "add"
+                        operation.setdefault("ref", operation_name[:100])
+                normalized_operations.append(operation)
+            raw["operations"] = normalized_operations
+        if repair_scope:
+            # The control plane owns the repair window.  The model may omit
+            # it or echo only part of the window, but it must never be able to
+            # widen the authority envelope.  Reject explicit out-of-scope IDs,
+            # then canonicalize the field to the trusted control-plane value.
+            submitted_scope = raw.get("repair_scope") or []
+            if not isinstance(submitted_scope, list):
+                raise PlanPatchError("RepairPlanPatch.repair_scope 必须是数组")
+            out_of_scope = set(str(item) for item in submitted_scope) - set(repair_scope)
+            if out_of_scope:
+                raise PlanPatchError(
+                    "RepairPlanPatch.repair_scope 包含控制面窗口之外的 WorkItem: "
+                    + ", ".join(sorted(out_of_scope))
+                )
             raw["repair_scope"] = list(repair_scope)
         # Canonicalize legacy planner responses that omitted verification.
         # The control plane still requires a concrete evidence-producing step;
@@ -80,8 +117,6 @@ class RepairPlanPatch(BaseModel):
             raise PlanPatchError(f"RepairPlanPatch 不符合 JSON schema: {error}") from error
         if any(operation.operation != "add" for operation in patch.operations):
             raise PlanPatchError("RepairPlanPatch 只允许追加修复 WorkItem")
-        if repair_scope and set(patch.repair_scope) != set(repair_scope):
-            raise PlanPatchError("RepairPlanPatch.repair_scope 必须与控制面修复窗口完全一致")
         if any(not step.strip() for step in patch.verification):
             raise PlanPatchError("RepairPlanPatch.verification 不能包含空步骤")
         return patch

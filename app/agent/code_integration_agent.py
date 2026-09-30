@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 
 from app.agent.base_agent import BaseAgent
@@ -104,11 +105,84 @@ def _findings(value: Any) -> tuple[IntegrationFinding, ...]:
     return tuple(findings)
 
 
+def _reconcile_duplicate_path_findings(
+    review: IntegrationReview, evidence: str
+) -> IntegrationReview:
+    """Do not let an LLM invent duplicate ChangeSet paths.
+
+    The integration policy still rejects real duplicates. This only downgrades
+    a reviewer's *duplicate-path* finding when the authoritative ChangeSet
+    metadata proves there is no duplicate in the reviewed batch. Other
+    findings remain untouched and can still veto the merge.
+    """
+    try:
+        payload = json.loads(evidence)
+        changesets = payload["changesets"]
+        if not isinstance(changesets, list):
+            return review
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for changeset in changesets:
+            if not isinstance(changeset, dict) or not isinstance(changeset.get("changed_files"), list):
+                return review
+            for path in set(changeset["changed_files"]):
+                if not isinstance(path, str):
+                    return review
+                if path in seen:
+                    duplicates.add(path)
+                seen.add(path)
+    except (TypeError, ValueError, KeyError):
+        return review
+    if duplicates:
+        return review
+    findings = tuple(
+        IntegrationFinding(
+            code=item.code,
+            severity="warning"
+            if item.severity == "blocker" and item.code.upper().startswith(("DUPLICATE_PATH", "DUPLICATE_FILE"))
+            else item.severity,
+            summary=item.summary,
+            stage=item.stage,
+            evidence=item.evidence,
+        )
+        for item in review.findings
+    )
+    if findings == review.findings:
+        return review
+    return IntegrationReview(
+        verdict=review.verdict,
+        rationale=review.rationale,
+        findings=findings,
+        adapter_requests=review.adapter_requests,
+    )
+
+
 def _has_merge_blocking_finding(review: IntegrationReview) -> bool:
     # Only an explicit structured blocker can veto this stage. Deterministic
     # GitCodeIntegrationPolicy remains the authority for actual path/conflict
     # violations; natural-language keywords are never used as a gate.
     return any(item.severity == "blocker" for item in review.findings)
+
+
+_TRANSIENT_REVIEWER_FAILURE = re.compile(
+    r"(?:error\s*code\s*[:=]\s*(?:502|503)\b|"
+    r"upstream service temporarily unavailable|"
+    r"service temporarily unavailable|"
+    r"upstream_error|api_error)",
+    re.IGNORECASE,
+)
+
+
+def _is_transient_reviewer_failure(error: BaseException) -> bool:
+    """Return true only for explicit upstream-availability failures.
+
+    Integration must remain fail-closed for malformed reviews, policy errors,
+    semantic contract failures, and arbitrary agent exceptions.  A temporary
+    relay outage is different: the deterministic integration gates still
+    provide the merge authority, while the later Review node remains required
+    for human-readable quality findings.
+    """
+    return bool(_TRANSIENT_REVIEWER_FAILURE.search(str(error)))
 
 
 class CodeIntegrationAgent:
@@ -128,6 +202,13 @@ class CodeIntegrationAgent:
     def run(self, task: str, *, context: ExecutionContext | None = None) -> AgentResult:
         if context is None or context.execution_mode is not ExecutionMode.INTEGRATION:
             raise RuntimeError("CodeIntegrationAgent 只能运行在 INTEGRATION WorkItem")
+        if not self._service.has_pending_change_sets(context):
+            # All input commits were merged by earlier Waves. Review of the
+            # old ChangeSet excerpts cannot authorize an adapter that does
+            # not exist in the current batch; revalidate the published code
+            # deterministically and leave business acceptance to tests/review.
+            summary = self._service.integrate(context)
+            return AgentResult.completed(summary)
         evidence = self._service.review_evidence(context)
         prompt = (
             "你只能审核已有 ChangeSet，不能编写、修改或输出任何代码。\n"
@@ -143,10 +224,40 @@ class CodeIntegrationAgent:
             "只有确定性 Policy 违反、越权路径、重复文件、缺失 ChangeSet、Git 冲突或无法解析的变更才可 reject。\n"
             f"项目任务：{task}\n只读 ChangeSet 证据：{evidence}"
         )
-        result = self._reviewer.run(prompt, context=context)
+        try:
+            result = self._reviewer.run(prompt, context=context)
+        except Exception as error:
+            if not _is_transient_reviewer_failure(error):
+                raise
+            # The deterministic policy/semantic/entrypoint gates remain the
+            # authority for whether a ChangeSet is safe to publish.  Record
+            # the temporary reviewer outage explicitly instead of turning a
+            # relay 502/503 into a multi-hour delivery blocker.  Tests and the
+            # later Review node still have to run before delivery is accepted.
+            fallback = IntegrationReview(
+                verdict="approve",
+                rationale=(
+                    "LLM Integration Review 因上游临时不可用未完成；"
+                    "本节点仅依据确定性 Git/AST/HTTP/入口门发布，后续 Review 仍为必需。"
+                ),
+                findings=(IntegrationFinding(
+                    code="integration.reviewer_unavailable",
+                    severity="warning",
+                    summary=f"Integration Review 暂时不可用：{error}",
+                    stage="integration",
+                    evidence=("deterministic_policy", "semantic_gate", "entrypoint_gate"),
+                ),),
+            )
+            self._service.record_review(context, fallback)
+            return AgentResult.completed(
+                self._service.integrate(context, review=fallback)
+                + "（已记录 LLM Review 暂时不可用；后续 Review 未豁免）"
+            )
         if result.capability_request is not None:
             raise RuntimeError("Integration Review 不允许请求外部能力")
-        review = IntegrationReview.parse(result.content or "")
+        review = _reconcile_duplicate_path_findings(
+            IntegrationReview.parse(result.content or ""), evidence
+        )
         if review.verdict == "reject" and not _has_merge_blocking_finding(review):
             review = IntegrationReview(
                 verdict="approve",
@@ -162,7 +273,10 @@ class CodeIntegrationAgent:
                 if isinstance(change, dict)
                 for path in change.get("changed_files", [])
             }
-            missing = [path for path in review.adapter_requests if path not in available]
+            missing = [
+                path for path in review.adapter_requests
+                if path.removeprefix("workspace/") not in available
+            ]
             if missing:
                 raise RuntimeError(
                     "Integration Review 需要适配 ChangeSet，但适配文件尚未由实现节点提供: "
