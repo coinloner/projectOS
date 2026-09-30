@@ -1,0 +1,29 @@
+{
+  "status": "f_backend_and_runtime_contract_repaired",
+  "classification": "F",
+  "date": "2026-09-28",
+  "scope": "backend TASK_DB_PATH plus Docker/Compose alignment plus frontend build/proxy artifacts",
+  "changed_files": [
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/backend/app/task_repository.py",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/backend/requirements.txt",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/ops/Dockerfile",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/package.json",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/vite.config.js",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/Dockerfile",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/nginx.conf",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/docker-compose.yml"
+  ],
+  "checks": {
+    "backend_http_test": "1 passed",
+    "task_db_path": "passed",
+    "compose_contract": "passed",
+    "frontend_build": "passed",
+    "docker_compose_config": "passed"
+  },
+  "remaining": [
+    "No real Wanfa call performed",
+    "No Docker container runtime smoke recorded yet",
+    "No original Live Trace contract migration performed",
+    "Frontend npm lockfile not committed/generated as part of this slice"
+  ]
+}

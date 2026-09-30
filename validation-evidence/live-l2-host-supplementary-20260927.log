@@ -1,0 +1,31 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________________ test_http_lifecycle_and_process_restart ____________________
+
+tmp_path = PosixPath('/private/var/folders/sp/7swk15cx1hz_5rj1_xvdb9m40000gn/T/pytest-of-coinloner/pytest-569/test_http_lifecycle_and_proces0')
+
+    def test_http_lifecycle_and_process_restart(tmp_path):
+        """所有业务断言只取自 HTTP，重启不复用服务对象或进程内存。"""
+        with _server(tmp_path) as base:
+>           initial = _tasks(base)
+                      ^^^^^^^^^^^^
+
+tests/test_mvp_delivery.py:103: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_mvp_delivery.py:91: in _tasks
+    payload = _ok(base, "GET", "/tasks" + (f"?status={status}" if status else ""))
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+base = 'http://127.0.0.1:63622', method = 'GET', path = '/tasks', body = None
+
+    def _ok(base: str, method: str, path: str, body: dict | None = None):
+        status, payload = _request(base, method, path, body)
+>       assert 200 <= status < 300, (method, path, status, payload)
+E       AssertionError: ('GET', '/tasks', 404, {'detail': 'Not Found'})
+E       assert 404 < 300
+
+tests/test_mvp_delivery.py:86: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_mvp_delivery.py::test_http_lifecycle_and_process_restart - ...
+1 failed in 0.57s

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "isolation": "/Users/coinloner/projectOS/validation-evidence/phase4-closure-20260928-traces",
+  "method": "isolated mock Git conflict plus real Python startup failure; not a Live Provider run",
+  "cases": [
+    {
+      "case": "wave-conflict",
+      "trace_id": "tr-9073de41cc52",
+      "status": "needs_replan",
+      "injection_boundary": "CodeIntegrationService.integrate_wave before downstream dispatch",
+      "before_frontier": [
+        "wi-owner",
+        "wi-sibling"
+      ],
+      "after_frontier": [
+        "wi-owner",
+        "wi-sibling"
+      ],
+      "executed_work_items": [
+        "wi-owner"
+      ],
+      "downstream_not_started": true,
+      "completed_sibling_preserved": true,
+      "affected_work_item_ids": [
+        "wi-owner"
+      ],
+      "forced_rerun": [
+        "wi-owner"
+      ],
+      "raw_events": "/Users/coinloner/projectOS/validation-evidence/phase4-closure-20260928-traces/wave-conflict/.projectos/runs/tr-9073de41cc52/events.jsonl",
+      "raw_checkpoint": "/Users/coinloner/projectOS/validation-evidence/phase4-closure-20260928-traces/wave-conflict/.projectos/runs/tr-9073de41cc52/checkpoint.json"
+    },
+    {
+      "case": "runtime-start-failure",
+      "trace_id": "tr-f56a23108b65",
+      "status": "blocked",
+      "injection_boundary": "real subprocess failure -> SandboxEvidence -> GraphRunner Test gate",
+      "static_preflight_passed": true,
+      "exit_code": 1,
+      "sandbox_evidence_id": "ev-5c27b6101a5a",
+      "failure_kind": "sandbox_setup",
+      "review_not_started": true,
+      "raw_events": "/Users/coinloner/projectOS/validation-evidence/phase4-closure-20260928-traces/runtime-start-failure/.projectos/runs/tr-f56a23108b65/events.jsonl",
+      "raw_checkpoint": "/Users/coinloner/projectOS/validation-evidence/phase4-closure-20260928-traces/runtime-start-failure/.projectos/runs/tr-f56a23108b65/checkpoint.json"
+    }
+  ],
+  "summary": {
+    "passed": 2,
+    "total": 2
+  }
+}

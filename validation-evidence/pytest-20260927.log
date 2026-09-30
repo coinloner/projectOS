@@ -1,0 +1,177 @@
+........................................................................ [  9%]
+....................................................................................................................................... [ 27%]
+........................................................................ [ 37%]
+........................................................................ [ 46%]
+................................................................. [ 55%]
+........................................................................ [ 65%]
+.....................................................................╭─────────────────────────── ✅ Agent Final Answer ────────────────────────────╮
+│                                                                              │
+│  {"value": 6}                                                                │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯.╭──────────────────────────────── ❌ LLM Error ────────────────────────────────╮
+│                                                                              │
+│  LLM Call Failed                                                             │
+│  Error: OpenAI API call failed: Responses API SSE create exceeded 0.01s      │
+│  without response headers                                                    │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+.. [ 74%]
+.╭─────────────────────────── ✅ Agent Final Answer ────────────────────────────╮
+│                                                                              │
+│  ok                                                                          │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯.....╭──────────────────────────────── ❌ LLM Error ────────────────────────────────╮
+│                                                                              │
+│  LLM Call Failed                                                             │
+│  Error: OpenAI API call failed: Responses API stream exceeded request        │
+│  ceiling of 0.01s without a terminal event                                   │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+.╭────────────────────── ✅ Tool Execution Completed (#1) ──────────────────────╮
+│                                                                              │
+│  Tool Completed                                                              │
+│  Tool: lookup                                                                │
+│  Output: found:3                                                             │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+..╭─────────────────────────── ✅ Agent Final Answer ────────────────────────────╮
+│                                                                              │
+│  hello                                                                       │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯............................................................... [ 84%]
+.....................................................................................................................                       [100%]
+=============================== warnings summary ===============================
+.venv/lib/python3.13/site-packages/fastapi/testclient.py:1
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+app/domain/test/service.py:11
+  /Users/coinloner/projectOS/app/domain/test/service.py:11: PytestCollectionWarning: cannot collect test class 'TestService' because it has a __init__ constructor (from: tests/test_domain_services.py)
+    class TestService:
+
+app/domain/test/service.py:11
+  /Users/coinloner/projectOS/app/domain/test/service.py:11: PytestCollectionWarning: cannot collect test class 'TestService' because it has a __init__ constructor (from: tests/test_sandbox_evidence.py)
+    class TestService:
+
+app/workspace/toolset.py:37
+  /Users/coinloner/projectOS/app/workspace/toolset.py:37: PytestCollectionWarning: cannot collect test class 'TestToolSet' because it has a __init__ constructor (from: tests/test_workspace_toolset.py)
+    class TestToolSet(WorkspaceToolSet):
+
+tests/test_api.py: 8 warnings
+tests/test_architecture_config_roundtrip.py: 1 warning
+tests/test_bootstrap_runtime.py: 2 warnings
+tests/test_layered_instance_validation.py: 1 warning
+tests/test_planner.py: 2 warnings
+tests/test_run_coordinator.py: 12 warnings
+  /Users/coinloner/projectOS/app/bootstrap/modules.py:70: DeprecationWarning: project_delivery_template 已废弃,请使用 delivery_default_template。该模板仅供历史 Trace 兼容。
+    container.templates.register(project_delivery_template(), status="compatibility_only")
+
+tests/test_api.py: 8 warnings
+tests/test_architecture_config_roundtrip.py: 1 warning
+tests/test_bootstrap_runtime.py: 2 warnings
+tests/test_layered_instance_validation.py: 1 warning
+tests/test_planner.py: 2 warnings
+tests/test_run_coordinator.py: 12 warnings
+  /Users/coinloner/projectOS/app/bootstrap/modules.py:72: DeprecationWarning: project_delivery_layered_template 已废弃(实验性模板),请使用 delivery_default_template。该模板仅供历史 Trace 兼容。
+    container.templates.register(project_delivery_layered_template())
+
+tests/test_api.py: 8 warnings
+tests/test_architecture_config_roundtrip.py: 1 warning
+tests/test_bootstrap_runtime.py: 2 warnings
+tests/test_layered_instance_validation.py: 1 warning
+tests/test_planner.py: 2 warnings
+tests/test_run_coordinator.py: 12 warnings
+tests/test_workflow_compiler.py: 1 warning
+  /Users/coinloner/projectOS/app/workflow/templates.py:239: DeprecationWarning: project_delivery_template 已废弃,请使用 delivery_default_template。该模板仅供历史 Trace 兼容。
+    base = project_delivery_template()
+
+tests/test_api.py: 8 warnings
+tests/test_architecture_config_roundtrip.py: 1 warning
+tests/test_bootstrap_runtime.py: 2 warnings
+tests/test_layered_instance_validation.py: 1 warning
+tests/test_planner.py: 2 warnings
+tests/test_run_coordinator.py: 12 warnings
+  /Users/coinloner/projectOS/app/bootstrap/modules.py:73: DeprecationWarning: project_delivery_minimal_template 已废弃(实验性模板),请使用 delivery_default_template 或 delivery_incremental_template。该模板仅供历史 Trace 兼容。
+    container.templates.register(project_delivery_minimal_template())
+
+tests/test_graph_runner.py::WorkflowTemplateTest::test_project_delivery_template_defines_the_standard_task_pipeline
+  /Users/coinloner/projectOS/tests/test_graph_runner.py:1518: DeprecationWarning: project_delivery_template 已废弃,请使用 delivery_default_template。该模板仅供历史 Trace 兼容。
+    template = project_delivery_template()
+
+tests/test_graph_runner.py::WorkflowTemplateTest::test_runner_rejects_uncompiled_standard_task_execution
+  /Users/coinloner/projectOS/tests/test_graph_runner.py:1511: DeprecationWarning: project_delivery_template 已废弃,请使用 delivery_default_template。该模板仅供历史 Trace 兼容。
+    plan = plan_from_template(project_delivery_template())
+
+tests/test_implementation_contract.py::ImplementationContractTest::test_project_delivery_expands_contract_into_parallel_code_items
+  /Users/coinloner/projectOS/tests/test_implementation_contract.py:646: DeprecationWarning: project_delivery_template 已废弃,请使用 delivery_default_template。该模板仅供历史 Trace 兼容。
+    project_delivery_template(),
+
+tests/test_task_input.py::TaskInputPackageTest::test_minimal_code_template_uses_narrow_inputs_and_explicit_constraints
+  /Users/coinloner/projectOS/tests/test_task_input.py:223: DeprecationWarning: project_delivery_minimal_template 已废弃(实验性模板),请使用 delivery_default_template 或 delivery_incremental_template。该模板仅供历史 Trace 兼容。
+    project_delivery_minimal_template(),
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/agent/core.py:366: DeprecationWarning: function_calling_llm is deprecated and will be removed in a future release.
+    if self.function_calling_llm and not isinstance(
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/agent/core.py:374: DeprecationWarning: deprecated
+    if self.allow_code_execution:
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/agent/core.py:385: DeprecationWarning: deprecated
+    if self.reasoning and self.planning_config is None:
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/crew.py:643: DeprecationWarning: function_calling_llm is deprecated and will be removed in a future release.
+    if self.function_calling_llm and not isinstance(self.function_calling_llm, LLM):
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/telemetry/telemetry.py:448: DeprecationWarning: function_calling_llm is deprecated and will be removed in a future release.
+    if getattr(agent, "function_calling_llm", None)
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/telemetry/telemetry.py:455: DeprecationWarning: deprecated
+    "allow_code_execution?": getattr(
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/crews/utils.py:372: DeprecationWarning: function_calling_llm is deprecated and will be removed in a future release.
+    crew.function_calling_llm,
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/crews/utils.py:87: DeprecationWarning: function_calling_llm is deprecated and will be removed in a future release.
+    if not agent.function_calling_llm:  # type: ignore[attr-defined]
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/agent/core.py:1163: DeprecationWarning: function_calling_llm is deprecated and will be removed in a future release.
+    function_calling_llm=self.function_calling_llm,
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/crew.py:1652: DeprecationWarning: deprecated
+    if hasattr(agent, "allow_code_execution") and getattr(
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/crew.py:1659: DeprecationWarning: deprecated
+    and hasattr(agent, "multimodal")
+
+tests/test_tech_stack_verification.py::TestTechStackVerifier::test_verify_invalid_stacks
+  /Users/coinloner/projectOS/.venv/lib/python3.13/site-packages/crewai/crew.py:1660: DeprecationWarning: deprecated
+    and getattr(agent, "multimodal", False)
+
+tests/test_workflow_compiler.py::WorkflowCompilerTest::test_dynamic_delivery_template_is_a_small_lifecycle_anchor
+  /Users/coinloner/projectOS/tests/test_workflow_compiler.py:24: DeprecationWarning: project_delivery_dynamic_template 已废弃,请使用 delivery_default_template。该模板仅供历史 Trace 兼容。
+    template = project_delivery_dynamic_template()
+
+tests/test_workflow_compiler.py::WorkflowCompilerTest::test_layered_delivery_template_contains_architecture_barrier
+  /Users/coinloner/projectOS/tests/test_workflow_compiler.py:40: DeprecationWarning: project_delivery_layered_template 已废弃(实验性模板),请使用 delivery_default_template。该模板仅供历史 Trace 兼容。
+    template = project_delivery_layered_template()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+749 passed, 130 warnings, 21 subtests passed in 70.38s (0:01:10)

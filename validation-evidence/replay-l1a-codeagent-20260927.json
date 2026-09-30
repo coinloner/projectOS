@@ -1,0 +1,40 @@
+{
+  "status": "completed",
+  "scope": "Replay L1a",
+  "trace_id": "tr-7530cb707a3f",
+  "provider_mode": "deterministic recorded CrewAI tool-call response; no external provider call",
+  "agent": "production CodeAgent via AgentRegistry and GraphRunner",
+  "crewai_agent_calls": 1,
+  "work_item_id": "wi-code-health-entrypoint",
+  "owned_files": [
+    "backend/app/main.py"
+  ],
+  "changeset_commit": "7cf50dfe9e61017291b34db7b54d49a339ab1006",
+  "changeset_files": [
+    "workspace/backend/app/main.py"
+  ],
+  "wave_integration": "当前输入中的 ChangeSet 已全部在前置 Wave 合并，无需重复发布。",
+  "wave_merge_commit": "当前输入中的 ChangeSet 已全部在前置 Wave 合并，无需重复发布",
+  "workspace_file": "/private/var/folders/sp/7swk15cx1hz_5rj1_xvdb9m40000gn/T/projectos-replay-l1a-codeagent-u69di4mc/workspace/backend/app/main.py",
+  "runtime_smoke": {
+    "status": 200,
+    "body": "{\"status\":\"ok\"}"
+  },
+  "event_types": [
+    "work_item_planned",
+    "work_item_planned",
+    "batch_started",
+    "work_item_started",
+    "tool_contract_preflight",
+    "work_item_completed",
+    "batch_completed",
+    "code_wave_integrated"
+  ],
+  "assertions": {
+    "actual_code_agent_registry_path": true,
+    "gateway_serialized_tool_dispatch": true,
+    "single_owned_file_changeset": true,
+    "wave_integration": true,
+    "health_200": true
+  }
+}

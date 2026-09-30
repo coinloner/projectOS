@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "status": "candidate_validated_not_activated",
+  "classification": {
+    "contract_revision": "F",
+    "handoff_gate": "R",
+    "evidence": "V"
+  },
+  "trace_id": "tr-b23fd9b89e41",
+  "trace_status": "completed",
+  "source_blueprint_ref": "staged:tr-b23fd9b89e41:wi-02-architecture-blueprint:blueprint",
+  "source_blueprint_digest": "2c574c9c35633edfee8492c2851fc3fc94d59d59ca9b55be65f9c0ab5ad8d8dd",
+  "source_artifact_sha256": {
+    "contract": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/architecture/project-contract.json",
+      "sha256": "2362103f7c86189e8ccfbd627d44ee7d9686a6b1bd1f32773bd340dadf3640db"
+    },
+    "trace": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/trace.json",
+      "sha256": "afaf107f3387f87ac4b6c1587a7c8c5f2eff85b266d135274064f06d9d8ef5d0"
+    },
+    "plan": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/plan.json",
+      "sha256": "27f494dd1bda5c91e3c0231476c34a507128066aacaebb5bd3425ab1bd0a9acf"
+    },
+    "checkpoint": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/checkpoint.json",
+      "sha256": "937026a3f0f0c699595cb0cadac71c022865ebb7acd0fe027ee7beb64f0096c1"
+    },
+    "events": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/events.jsonl",
+      "sha256": "094f1a9fd6ba26def8eb17e044e6968a9d7ecf91afb79a6c7531a2ffd01361e8"
+    },
+    "architecture": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/architecture.md",
+      "sha256": "a859e02fdef7852f834b89c699ad7789994279f69538fb2e466d78c7e9091b1f"
+    },
+    "requirement": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/requirement.md",
+      "sha256": "51d870e674acf0b79d0610e482aeb3ca69fac0e541263637e3590622cd40f971"
+    }
+  },
+  "original_contract_digest": "096a45b5e6fe3813b12ca7b8a86e4923a47972036b010e3dbdc47eef6fee5fde",
+  "original_handoff_gaps": [
+    "required_files empty",
+    "entrypoints.backend_file missing",
+    "entrypoints.backend_import missing",
+    "entrypoints.backend_command missing",
+    "entrypoints.frontend_file missing"
+  ],
+  "candidate_path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/architecture/revisions/project-contract-f-handoff-v1-20260929.json",
+  "candidate_file_sha256": "9cba2fd5f10e3efca2c72c1c836dbd256da92b9c40f559d2a1f153a61261bf46",
+  "candidate_digest": "a3b81ece79f99947e7d77226987630195fbae9e92f4e5a49a850f80b3ddcec6f",
+  "candidate_handoff_gaps": [],
+  "required_files": [
+    "backend/http_service.py",
+    "backend/task_management/operations.py",
+    "backend/task_management/storage.py",
+    "frontend/index.html",
+    "frontend/package.json",
+    "frontend/src/App.jsx",
+    "frontend/src/api.js",
+    "frontend/src/main.jsx",
+    "frontend/vite.config.js",
+    "tests/test_http_service.py",
+    "tests/test_task_management.py"
+  ],
+  "compiled_code_work_items_not_run": 8,
+  "changes": [
+    "entrypoints",
+    "required_files",
+    "implementation_units[].required_paths"
+  ],
+  "decision_basis": {
+    "backend_file": "source unit http_service.api owns backend/http_service.py; FastAPI entry objective",
+    "backend_symbol": "source unit http_service.api declares provided_symbols=['app']",
+    "frontend_file": "source unit browser_task_experience.frontend_runtime owns frontend/index.html",
+    "command": "proposed uvicorn command from source FastAPI runtime profile and owned app symbol; not executed",
+    "required_files": "all 11 existing owned files, with no new unit/path"
+  },
+  "limitations": [
+    "Candidate has not been published or activated; canonical Trace remains unchanged and Live L0 gate remains blocked",
+    "Startup command is a proposed engineering decision, not provider output or runtime proof",
+    "Source requirement AC-10 startup/access instructions have no dedicated owned documentation file; needs explicit design revision before final delivery",
+    "No Provider, CodeAgent, Runtime, API or browser execution in this slice"
+  ]
+}

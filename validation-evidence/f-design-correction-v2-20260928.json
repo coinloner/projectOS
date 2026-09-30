@@ -1,0 +1,100 @@
+{
+  "status": "candidate_validated_not_activated",
+  "classification": "F",
+  "source_trace": "tr-2e4924e985cf",
+  "source_trace_status": "failed",
+  "canonical_contract_path": "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/architecture/project-contract.json",
+  "canonical_contract_digest": "70953d6408bb740f4d3c5226f532ed3295893da821e3be9ac4c28875d1d5a2ea",
+  "candidate_path": "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/architecture/revisions/project-contract-f-correction-v2-20260928.json",
+  "candidate_digest": "4d8d5958040d7f3e702e459aaf1ff05c46981cb111418b62b7f05878418f98f5",
+  "revision_note": "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/architecture-f-correction-v2-20260928.md",
+  "full_units": 9,
+  "compiled_work_items": 9,
+  "bindings": {
+    "service_requires_repository": [
+      {
+        "source": "depends_on",
+        "consumption": "import_code",
+        "unit_id": "task-management-repository",
+        "owned_file": "backend/app/task_repository.py",
+        "language": "python",
+        "module": "app.task_repository",
+        "provided_symbols": [
+          "TaskRepository"
+        ]
+      }
+    ],
+    "http_requires_service": [
+      {
+        "source": "depends_on",
+        "consumption": "import_code",
+        "unit_id": "task-management-service",
+        "owned_file": "backend/app/task_service.py",
+        "language": "python",
+        "module": "app.task_service",
+        "provided_symbols": [
+          "TaskService"
+        ]
+      }
+    ]
+  },
+  "operations": [
+    {
+      "method": "POST",
+      "path": "/tasks"
+    },
+    {
+      "method": "GET",
+      "path": "/tasks"
+    },
+    {
+      "method": "GET",
+      "path": "/tasks/{task_id}"
+    },
+    {
+      "method": "PATCH",
+      "path": "/tasks/{task_id}/status"
+    },
+    {
+      "method": "DELETE",
+      "path": "/tasks/{task_id}"
+    },
+    {
+      "method": "GET",
+      "path": "/tasks/statistics"
+    }
+  ],
+  "static_checks": {
+    "command_validator": true,
+    "http_contract_gate": "one_known_cross_interface_misattribution",
+    "http_contract_gate_diagnostics": [
+      "tests/test_mvp_delivery.py:66 消费接口 task_management.task_api 使用 GET /health，provider=backend/app/main.py 未提供匹配路由（可用: POST /tasks, GET /tasks, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}, GET /tasks/statistics）"
+    ],
+    "frontend_canonical_route_source": {
+      "base": true,
+      "list": true,
+      "create": true,
+      "statistics": true,
+      "status": true,
+      "delete": true
+    },
+    "frontend_source_sha256": "d3a295368c88b776fa9194fd4ff31e3838d906046ffbd89341e474891f9bd959",
+    "frontend_build_manifest_present": false,
+    "frontend_vite_config_present": false,
+    "provider_source_sha256": "b9ef47775345b54d4b8bc7302730fac8f574ddea48395d455e18ef62cf8da14e"
+  },
+  "originals_sha256_unchanged": {
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/architecture/project-contract.json": "d91ca5f8c0764050bc8dd3222aa0d5bfa96220a4de6fa6af31337d254f5b8c39",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/runs/tr-2e4924e985cf/trace.json": "38037d974372dc53ab10bf1f313ffbcaec41d0ac191f8b69bdf9afff4da926ed",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/runs/tr-2e4924e985cf/implementation-plan.json": "5953291ea66ba22ad1fc46a3c13b88c43791169708e2d09857040e635923b93f",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/runs/tr-2e4924e985cf/checkpoint.json": "dfc35b4fe7fef6e4afc53feb39353ca21b9cf1d77ac6ca31cb7aecca15cbf7d9"
+  },
+  "remaining_F_implementation_gaps": [
+    "repository ignores TASK_DB_PATH",
+    "Dockerfile backend import/cwd and dependency install are inconsistent",
+    "docker-compose backend command and read-only database volume are inconsistent",
+    "frontend has no package/Vite manifest; Compose serves raw JSX and does not proxy /tasks"
+  ],
+  "migration_needed": "explicit replan of persisted WorkItem contracts; no silent checkpoint rewrite",
+  "command": ".venv/bin/python scripts/validate_live_f_contract_correction.py"
+}

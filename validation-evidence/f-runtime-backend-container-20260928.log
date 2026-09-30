@@ -1,0 +1,76 @@
+backend-1  | INFO:     Started server process [1]
+backend-1  | INFO:     Waiting for application startup.
+backend-1  | INFO:     Application startup complete.
+backend-1  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+backend-1  | INFO:     127.0.0.1:42934 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:42944 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:59510 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:59530 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:59554 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:32822 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:32830 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:32842 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:50836 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:50846 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:50868 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:45306 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:45332 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:45344 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     172.23.0.3:55740 - "GET /tasks HTTP/1.0" 200 OK
+backend-1  | INFO:     172.23.0.3:55756 - "POST /tasks HTTP/1.0" 201 Created
+backend-1  | INFO:     172.23.0.3:55772 - "POST /tasks HTTP/1.0" 400 Bad Request
+backend-1  | INFO:     Shutting down
+backend-1  | INFO:     Waiting for application shutdown.
+backend-1  | INFO:     Application shutdown complete.
+backend-1  | INFO:     Finished server process [1]
+backend-1  | INFO:     Started server process [1]
+backend-1  | INFO:     Waiting for application startup.
+backend-1  | INFO:     Application startup complete.
+backend-1  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+backend-1  | INFO:     192.168.65.1:39378 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     172.23.0.3:35178 - "GET /tasks HTTP/1.0" 200 OK
+backend-1  | INFO:     127.0.0.1:39526 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:39538 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:39544 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:38752 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:38766 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:38792 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:47962 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:47968 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:47988 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:48722 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:48744 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:48758 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:48778 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:54466 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:54484 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:54498 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:52790 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:52802 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:52826 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:38122 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:38138 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:38160 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:38838 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:38860 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:38890 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:38906 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:52870 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:52894 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:52910 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:54030 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:54044 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:54066 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:56450 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:56480 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:56488 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:55942 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:55968 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:55988 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:59856 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:59860 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     127.0.0.1:59876 - "GET /health HTTP/1.1" 200 OK
+backend-1  | INFO:     172.23.0.3:51596 - "GET /health HTTP/1.0" 200 OK
+backend-1  | INFO:     172.23.0.3:51608 - "GET /tasks HTTP/1.0" 200 OK
+backend-1  | INFO:     172.23.0.3:51622 - "GET /tasks/00cccb14-2557-4a8e-8d39-e07aae8af277 HTTP/1.0" 200 OK
+backend-1  | INFO:     172.23.0.3:51638 - "DELETE /tasks/00cccb14-2557-4a8e-8d39-e07aae8af277 HTTP/1.0" 200 OK

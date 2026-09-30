@@ -1,0 +1,16 @@
+{
+  "status": "completed",
+  "completed_nodes": 10,
+  "planned_nodes": 10,
+  "architecture_published": true,
+  "contract_published": true,
+  "contract_units": 3,
+  "compiled_work_items": [
+    "wi-code-unit-api",
+    "wi-code-unit-domain",
+    "wi-code-unit-runtime"
+  ],
+  "contract_digest": "dc61a7037b29de2daf85c03cd8d64ad3813c195f8183b10fccabcb97f5ec77b1",
+  "semantic_loop_completed": true,
+  "trace_id": "tr-0984a9da91c1"
+}

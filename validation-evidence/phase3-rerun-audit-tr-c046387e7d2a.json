@@ -1,0 +1,31 @@
+{
+  "status": "verified_replay_backend_slice_only",
+  "classification": "V",
+  "rerun_evidence": "/Users/coinloner/projectOS/validation-evidence/replay-l1-business-f-candidate-20260928-075247-411229.json",
+  "new_trace_id": "tr-c046387e7d2a",
+  "old_live_trace_status": "failed",
+  "candidate_contract_source_matches_replay_except_selected_refs_slot": true,
+  "compiled_units": 9,
+  "selected_code_agents": 3,
+  "changesets": 3,
+  "wave_commits_valid": 3,
+  "api_statuses": {
+    "health": 200,
+    "blank_title": 400,
+    "created": 201,
+    "list_after_restart": 200
+  },
+  "sqlite_row_persisted": true,
+  "original_sha256_unchanged": {
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/architecture/project-contract.json": "d91ca5f8c0764050bc8dd3222aa0d5bfa96220a4de6fa6af31337d254f5b8c39",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/runs/tr-2e4924e985cf/trace.json": "38037d974372dc53ab10bf1f313ffbcaec41d0ac191f8b69bdf9afff4da926ed",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/runs/tr-2e4924e985cf/implementation-plan.json": "5953291ea66ba22ad1fc46a3c13b88c43791169708e2d09857040e635923b93f",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/runs/tr-2e4924e985cf/checkpoint.json": "dfc35b4fe7fef6e4afc53feb39353ca21b9cf1d77ac6ca31cb7aecca15cbf7d9"
+  },
+  "historical_phase3_evidence_preserved": true,
+  "limitations": [
+    "recorded repository does not read TASK_DB_PATH",
+    "frontend package/Vite build and same-origin proxy not selected",
+    "Dockerfile/Compose execution and persistent volume not selected"
+  ]
+}

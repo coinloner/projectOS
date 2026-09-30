@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-27T15:00:00+00:00",
+  "goal_status": "incomplete",
+  "live_trace": {
+    "trace_id": "tr-2e4924e985cf",
+    "status": "blocked",
+    "error": "测试 sandbox 未就绪：第三方依赖解析需要项目所有者显式批准：调用 POST /api/v1/projects/{project_id}/runtime/dependency-approvals/approve（状态查询 GET .../dependency-approvals），批准后重新运行交付即可继续",
+    "integration_node": "completed",
+    "test_node": "needs_replan",
+    "review_node": null,
+    "latest_http_owner_change_set": "0b213f103d48a97bd45f611d13a9af3cb442656b",
+    "latest_wave_events": [
+      {
+        "type": "code_wave_integration_failed",
+        "wave": 3
+      },
+      {
+        "type": "code_wave_integration_failed",
+        "wave": 3
+      },
+      {
+        "type": "code_wave_repair_scheduled",
+        "wave": null
+      },
+      {
+        "type": "code_wave_integrated",
+        "wave": 3
+      },
+      {
+        "type": "code_wave_integrated",
+        "wave": 4
+      },
+      {
+        "type": "code_wave_integrated",
+        "wave": 5
+      },
+      {
+        "type": "code_wave_repair_scheduled",
+        "wave": null
+      },
+      {
+        "type": "code_wave_repair_scheduled",
+        "wave": null
+      }
+    ],
+    "contract_entrypoints": {
+      "backend_file": null,
+      "backend_import": null,
+      "backend_command": null,
+      "frontend_file": null,
+      "health_path": "/health"
+    },
+    "dependency_approval": {
+      "approved": false,
+      "requirements_file": "projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/requirements.in",
+      "requirements": [
+        "fastapi",
+        "uvicorn[standard]",
+        "pytest",
+        "httpx"
+      ],
+      "status": "pending"
+    },
+    "supplementary_host_api_probe": "validation-evidence/live-l2-host-api-probe-20260927.json",
+    "supplementary_host_test": "validation-evidence/live-l2-host-supplementary-20260927.log",
+    "provider_preflight": "validation-evidence/live-l2-preflight-current-20260927.json",
+    "http_contract_gate": "validation-evidence/live-l2-http-contract-gate-20260927.json"
+  },
+  "validation": {
+    "pytest": "validation-evidence/pytest-current-20260927.log",
+    "failure_matrix": "validation-evidence/failure-matrix-current-20260927.json",
+    "replay_l2": "validation-evidence/replay-l2-current-20260927.log",
+    "provider_preflight": "validation-evidence/live-l2-preflight-after-resume-fix-20260927.json",
+    "pytest_latest": "validation-evidence/pytest-final-after-http-freeze-20260927.log",
+    "failure_matrix_latest": "validation-evidence/failure-matrix-after-http-freeze-20260927.json",
+    "replay_l2_latest": "validation-evidence/replay-l2-after-http-freeze-20260927.json",
+    "replay_l1_latest": "validation-evidence/replay-l1-after-http-freeze-20260927.json"
+  },
+  "engineering_changes_since_previous_snapshot": [
+    "新增 HttpOperationContract，新的 Project Contract 对 API 接口强制冻结 method/path/owner_file。",
+    "Contract Compiler 将 required_http_interfaces 注入 consumer WorkItem；CodeAgent prompt 禁止猜测 API 前缀和别名。",
+    "Integration 增加 FastAPI 与 Python/JS/JSX 静态 HTTP consumer 一致性门，并能归因 owner 文件。",
+    "原始 Live L2 已被确定性 HTTP gate 发现 13 个跨单元契约漂移；未将其误报为可交付。"
+  ],
+  "validation_summary": {
+    "pytest": "771 passed, 138 warnings, 23 subtests passed",
+    "failure_matrix": "7/7 passed",
+    "provider_preflight": "passed (HTTP 200, terminal event and tool schema accepted)",
+    "replay_l1": "passed (real ChangeSet, wave integration, /health=200)",
+    "replay_l2": "passed",
+    "live_l2": "blocked pending explicit dependency approval; HTTP gate currently reports 13 cross-unit mismatches"
+  }
+}

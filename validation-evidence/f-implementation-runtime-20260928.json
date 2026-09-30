@@ -1,0 +1,112 @@
+{
+  "status": "verified_isolated_f_implementation",
+  "classification": "F",
+  "date": "2026-09-28",
+  "scope": "Generated project backend/frontend implementation and Docker runtime alignment; isolated validation only",
+  "runtime": {
+    "ports": {
+      "backend": 18080,
+      "frontend": 18081
+    },
+    "root": {
+      "status": 200,
+      "body": "<!doctype html>\n<html lang=\"zh-CN\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <meta name=\"description\" content=\"ProjectOS 任务管理\" />\n    <title>ProjectOS 任务管理</title>\n    <script type=\"module\" crossorigin src=\"/assets/index-CCeXuf-I.js\"></script>\n  </head>\n  <body>\n    <div id=\"root\"></div>\n  </body>\n</html>\n",
+      "content_type": "text/html"
+    },
+    "health_via_frontend_proxy": {
+      "status": 200,
+      "body": "{\"status\":\"ok\"}",
+      "content_type": "application/json"
+    },
+    "tasks_before": {
+      "status": 200,
+      "body": "[{\"id\":\"f1960f3d-9811-424c-823d-bd2d28079846\",\"title\":\"container persisted\",\"completed\":false}]",
+      "content_type": "application/json"
+    },
+    "create_task": {
+      "status": 201,
+      "body": "{\"id\":\"03ec622c-1636-4b71-b0d3-e9303104ad75\",\"title\":\"f-runtime-evidence-1790588241\",\"completed\":false}",
+      "content_type": "application/json"
+    },
+    "blank_title": {
+      "status": 400,
+      "body": "{\"detail\":\"title must not be blank\"}",
+      "content_type": "application/json"
+    },
+    "get_created_task_after_backend_restart": {
+      "status": 200,
+      "body": "{\"id\":\"03ec622c-1636-4b71-b0d3-e9303104ad75\",\"title\":\"f-runtime-evidence-1790588241\",\"completed\":false}",
+      "content_type": "application/json"
+    },
+    "tasks_after_backend_restart": {
+      "status": 200,
+      "body": "[{\"id\":\"f1960f3d-9811-424c-823d-bd2d28079846\",\"title\":\"container persisted\",\"completed\":false},{\"id\":\"03ec622c-1636-4b71-b0d3-e9303104ad75\",\"title\":\"f-runtime-evidence-1790588241\",\"completed\":false}]",
+      "content_type": "application/json"
+    },
+    "persistence_assertion": true,
+    "delete_smoke_task": {
+      "status": 200,
+      "body": "{\"deleted\":true,\"id\":\"03ec622c-1636-4b71-b0d3-e9303104ad75\"}",
+      "content_type": "application/json"
+    },
+    "compose_restart_backend_command": "PROJECTOS_BACKEND_PORT=18080 PROJECTOS_FRONTEND_PORT=18081 docker compose restart backend",
+    "compose_ps_after_restart": "NAME                                               IMAGE                                            COMMAND                  SERVICE    CREATED         STATUS                           PORTS\nprojectos-wanfa-live-l2-todo-20260927-backend-1    projectos-wanfa-live-l2-todo-20260927-backend    \"python -m uvicorn a…\"   backend    9 minutes ago   Up 1 second (health: starting)   0.0.0.0:18080->8000/tcp, [::]:18080->8000/tcp\nprojectos-wanfa-live-l2-todo-20260927-frontend-1   projectos-wanfa-live-l2-todo-20260927-frontend   \"nginx -g 'daemon of…\"   frontend   9 minutes ago   Up 8 minutes (healthy)           0.0.0.0:18081->8080/tcp, [::]:18081->8080/tcp\n",
+    "nginx_config_test": "nginx: the configuration file /etc/nginx/nginx.conf syntax is ok\nnginx: configuration file /etc/nginx/nginx.conf test is successful\n"
+  },
+  "checks": {
+    "compileall": "passed",
+    "backend_pytest": "1 passed",
+    "frontend_vite_build": "passed",
+    "docker_compose_config": "passed",
+    "nginx_config_test": "passed",
+    "frontend_container_health": "healthy",
+    "backend_container_health": "healthy",
+    "frontend_root_http": "200",
+    "frontend_proxy_get_tasks": "200",
+    "frontend_proxy_post_tasks": "201",
+    "frontend_proxy_blank_title": "400",
+    "persistence_after_backend_restart": "passed"
+  },
+  "changed_files": [
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/backend/app/task_repository.py",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/backend/requirements.txt",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/ops/Dockerfile",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/package.json",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/vite.config.js",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/Dockerfile",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/nginx.conf",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/nginx.main.conf",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/docker-compose.yml"
+  ],
+  "changed_file_sha256": {
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/backend/app/task_repository.py": "f3995609ecbcfcb2620a8efbf3ad5c2bf706d871767c027be8408b5bdb4140f2",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/backend/requirements.txt": "b84645eee7b2d38332b98b97c7c1dcb8d8abc6824a5992e8a7ae495db90d9daf",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/ops/Dockerfile": "cd008794a0becc33866c5378c2997b3ba3ca57885a5651892842c2cd5f4d5ec2",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/package.json": "d94db004b368519de7d791cd2fbdaccd563747f7ab6275d55d9331c1a0f9a5ad",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/vite.config.js": "5f65b49e453d6d28d4baa2f8e9e9f122b59070a5a3ce6a907f92bce749392278",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/Dockerfile": "e07590f7d8741f56387c3f44e3f58173acc358d64ee9c342e5adcc1be4f4dccf",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/nginx.conf": "5f38e1ccc7a8ede0eccd873c5318c2a2d1d2f7db3d3dd550dc3c690a94a34af8",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/workspace/frontend/nginx.main.conf": "e2075cd8b3fa30e4b95460c049147bdcb2beb8b733d4780d6857eae8c11f7386",
+    "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/docker-compose.yml": "1db7d0ae2dd01a2fe2b018f538b3cd3b8715e9bd6df0fec4a448777a32c1ccf2"
+  },
+  "evidence_files": [
+    "/Users/coinloner/projectOS/validation-evidence/f-runtime-backend-tests-20260928.log",
+    "/Users/coinloner/projectOS/validation-evidence/f-runtime-frontend-build-20260928.log",
+    "/Users/coinloner/projectOS/validation-evidence/f-runtime-compose-config-20260928.yaml",
+    "/Users/coinloner/projectOS/validation-evidence/f-runtime-nginx-config-test-20260928.log",
+    "/Users/coinloner/projectOS/validation-evidence/f-runtime-compose-ps-20260928.log",
+    "/Users/coinloner/projectOS/validation-evidence/f-runtime-frontend-container-20260928.log",
+    "/Users/coinloner/projectOS/validation-evidence/f-runtime-backend-container-20260928.log"
+  ],
+  "limitations": [
+    "No real Wanfa call performed",
+    "No Live L0/L1 rerun performed",
+    "Original Live Trace tr-2e4924e985cf remains failed and untouched",
+    "Original canonical contract/checkpoint/plan were not overwritten or migrated",
+    "Browser E2E is a later validation gate, not claimed by this F implementation slice"
+  ],
+  "first_failure_and_fix": {
+    "failure": "Nginx exited under read_only filesystem while creating /var/cache/nginx/client_temp; first pid override attempt then caused duplicate pid directive",
+    "fix": "Added explicit nginx.main.conf with /tmp pid and temp paths, bypassed default config mutation entrypoint behavior, retained read_only/no-new-privileges/cap_drop constraints"
+  }
+}

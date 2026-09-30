@@ -1,0 +1,191 @@
+{
+  "status": "completed",
+  "trace_id": "tr-e901a7250bd8",
+  "project_path": "/private/var/folders/sp/7swk15cx1hz_5rj1_xvdb9m40000gn/T/projectos-replay-delivery-lzzt5rkc",
+  "planned_nodes": 7,
+  "completed_nodes": 7,
+  "contract_units": 2,
+  "compiled_work_items": [
+    "wi-code-backend-entrypoint",
+    "wi-code-frontend-entrypoint"
+  ],
+  "wave_baselines": {
+    "0": "a45604a405b6265f7da5699873b13e2ef09499cc",
+    "1": "92e8da701d9adcb641ab4b3dcdab81bc0c27f2d0"
+  },
+  "artifacts": {
+    "requirement": true,
+    "architecture": true,
+    "architecture_contract": true,
+    "tasks": true,
+    "environment": true,
+    "implementation": true,
+    "tests": true,
+    "review": true
+  },
+  "api_evidence": {
+    "health": {
+      "status": 200,
+      "body": {
+        "status": "ok"
+      }
+    },
+    "crud": {
+      "create": {
+        "id": 1,
+        "title": "replay task",
+        "completed": false
+      },
+      "active_list": {
+        "tasks": [
+          {
+            "id": 1,
+            "title": "replay task",
+            "completed": false
+          }
+        ]
+      },
+      "complete": {
+        "id": 1,
+        "title": "replay task",
+        "completed": true
+      },
+      "stats": {
+        "total": 1,
+        "completed": 1
+      },
+      "delete_status": 204,
+      "blank_title_status": 400
+    }
+  },
+  "browser_evidence": {
+    "status": "passed",
+    "url": "http://127.0.0.1:52073/",
+    "title": "ProjectOS Todo",
+    "form_seen": true,
+    "blank_title_feedback": "请填写此字段。",
+    "created": {
+      "title": "ProjectOS Todo",
+      "form": true,
+      "items": [
+        {
+          "title": " browser task Delete",
+          "completed": false
+        }
+      ],
+      "summary": "1 task(s), 0 completed",
+      "filter": "all",
+      "error": "",
+      "blankTitleInvalid": true,
+      "blankTitleMessage": "请填写此字段。"
+    },
+    "completed": {
+      "title": "ProjectOS Todo",
+      "form": true,
+      "items": [
+        {
+          "title": " browser task Delete",
+          "completed": true
+        }
+      ],
+      "summary": "1 task(s), 1 completed",
+      "filter": "all",
+      "error": "",
+      "blankTitleInvalid": true,
+      "blankTitleMessage": "请填写此字段。"
+    },
+    "active_filter": {
+      "title": "ProjectOS Todo",
+      "form": true,
+      "items": [],
+      "summary": "1 task(s), 1 completed",
+      "filter": "active",
+      "error": "",
+      "blankTitleInvalid": true,
+      "blankTitleMessage": "请填写此字段。"
+    },
+    "completed_filter": {
+      "title": "ProjectOS Todo",
+      "form": true,
+      "items": [
+        {
+          "title": " browser task Delete",
+          "completed": true
+        }
+      ],
+      "summary": "1 task(s), 1 completed",
+      "filter": "completed",
+      "error": "",
+      "blankTitleInvalid": true,
+      "blankTitleMessage": "请填写此字段。"
+    },
+    "uncompleted": {
+      "title": "ProjectOS Todo",
+      "form": true,
+      "items": [],
+      "summary": "1 task(s), 0 completed",
+      "filter": "completed",
+      "error": "",
+      "blankTitleInvalid": true,
+      "blankTitleMessage": "请填写此字段。"
+    },
+    "deleted": {
+      "title": "ProjectOS Todo",
+      "form": true,
+      "items": [],
+      "summary": "0 task(s), 0 completed",
+      "filter": "all",
+      "error": "",
+      "blankTitleInvalid": true,
+      "blankTitleMessage": "请填写此字段。"
+    }
+  },
+  "event_types": [
+    "requirement_snapshot",
+    "requirement_completed",
+    "architecture_published",
+    "contract_published",
+    "tasks_published",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "implementation_plan_compiled",
+    "work_item_started",
+    "work_item_completed",
+    "work_item_started",
+    "work_item_completed",
+    "work_item_started",
+    "work_item_completed",
+    "work_item_started",
+    "code_wave_integrated",
+    "work_item_completed",
+    "work_item_started",
+    "code_wave_integrated",
+    "work_item_completed",
+    "implementation_published",
+    "work_item_started",
+    "sandbox_evidence_recorded",
+    "sandbox_evidence_recorded",
+    "tests_published",
+    "work_item_completed",
+    "review_published",
+    "work_item_completed",
+    "runtime_started",
+    "api_e2e_passed",
+    "browser_e2e_passed",
+    "runtime_smoke_passed"
+  ],
+  "sandbox_evidence": [
+    "rev-7ab575c6a55d.json",
+    "rev-ba9ec66fba8b.json",
+    "rev-460eeea540ad.json",
+    "ev-58ff9aa1839b.json",
+    "rev-5067d124c9d6.json",
+    "ev-70a4035d58ec.json",
+    "rev-71b82d728e7b.json"
+  ]
+}

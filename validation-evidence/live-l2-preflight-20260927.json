@@ -1,0 +1,13 @@
+{
+  "provider": "wanfa",
+  "model": "gpt-6-sol",
+  "wire_api": "responses",
+  "endpoint": "https://wanfaai.com/responses",
+  "status": "passed",
+  "retryable": false,
+  "message": "Provider 支持当前 streaming/tool calling 协议",
+  "http_status": 200,
+  "terminal_seen": true,
+  "tool_schema_accepted": true,
+  "elapsed_ms": 11945
+}

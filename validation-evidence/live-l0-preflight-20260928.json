@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "scope": "Phase 5 Live L0 Provider capability gate only",
+  "created_at": "2026-09-28T14:11:55.011601+00:00",
+  "provider": {
+    "provider": "wanfa",
+    "model": "gpt-6-sol",
+    "base_url": "https://wanfaai.com",
+    "api_key_env": "wanfa_API_KEY",
+    "crewai_provider": "openai",
+    "wire_api": "responses"
+  },
+  "attempts": [
+    {
+      "provider": "wanfa",
+      "model": "gpt-6-sol",
+      "wire_api": "responses",
+      "endpoint": "https://wanfaai.com/responses",
+      "status": "unavailable",
+      "retryable": true,
+      "http_status": null,
+      "terminal_seen": false,
+      "tool_schema_accepted": false,
+      "elapsed_ms": 20387,
+      "observation": "first direct ProviderPreflight invocation returned transport timeout/no HTTP response; captured from command output"
+    },
+    {
+      "provider": "wanfa",
+      "model": "gpt-6-sol",
+      "wire_api": "responses",
+      "endpoint": "https://wanfaai.com/responses",
+      "status": "blocked",
+      "retryable": false,
+      "message": "Provider preflight HTTP 400: {\"error\":{\"code\":\"integer_below_min_value\",\"message\":\"Invalid 'max_output_tokens': integer below minimum value. Expected a value \\u003e= 16, but got 8 instead.\",\"param\":\"m",
+      "http_status": 400,
+      "terminal_seen": false,
+      "tool_schema_accepted": false,
+      "elapsed_ms": 6804
+    }
+  ],
+  "status": "blocked_by_provider",
+  "project_or_trace_created": false,
+  "note": "Two bounded preflight requests total; no architecture WorkItem dispatched."
+}

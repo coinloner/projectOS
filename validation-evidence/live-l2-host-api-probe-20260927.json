@@ -1,0 +1,32 @@
+[
+  {
+    "method": "GET",
+    "path": "/health",
+    "status": 200,
+    "body": "{\"status\":\"ok\"}"
+  },
+  {
+    "method": "POST",
+    "path": "/api/tasks",
+    "status": 201,
+    "body": "{\"id\":\"e97fd0fe-e73b-4fc9-91f8-69e799fbf6b7\",\"title\":\"test\",\"completed\":false}"
+  },
+  {
+    "method": "GET",
+    "path": "/api/tasks",
+    "status": 500,
+    "body": "Internal Server Error"
+  },
+  {
+    "method": "GET",
+    "path": "/api/tasks/stats",
+    "status": 500,
+    "body": "Internal Server Error"
+  },
+  {
+    "method": "GET",
+    "path": "/tasks",
+    "status": 404,
+    "body": "{\"detail\":\"Not Found\"}"
+  }
+]

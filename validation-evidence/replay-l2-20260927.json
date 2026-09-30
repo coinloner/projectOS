@@ -1,0 +1,116 @@
+{
+  "status": "completed",
+  "trace_id": "tr-9cf94b7d98a6",
+  "project_path": "/Users/coinloner/projectOS/validation-evidence/replay-l2-workspace-20260927",
+  "planned_nodes": 7,
+  "completed_nodes": 7,
+  "contract_units": 2,
+  "compiled_work_items": [
+    "wi-code-backend-entrypoint",
+    "wi-code-frontend-entrypoint"
+  ],
+  "wave_baselines": {
+    "0": "7b8b75f19b5f35569de0adcdcc29931bdc5d86f8",
+    "1": "25825bd169f930c00dbd505797ea4a263a0a4589"
+  },
+  "artifacts": {
+    "requirement": true,
+    "architecture": true,
+    "architecture_contract": true,
+    "tasks": true,
+    "environment": true,
+    "implementation": true,
+    "tests": true,
+    "review": true
+  },
+  "api_evidence": {
+    "health": {
+      "status": 200,
+      "body": {
+        "status": "ok"
+      }
+    },
+    "crud": {
+      "create": {
+        "id": 1,
+        "title": "replay task",
+        "completed": false
+      },
+      "active_list": {
+        "tasks": [
+          {
+            "id": 1,
+            "title": "replay task",
+            "completed": false
+          }
+        ]
+      },
+      "complete": {
+        "id": 1,
+        "title": "replay task",
+        "completed": true
+      },
+      "stats": {
+        "total": 1,
+        "completed": 1
+      },
+      "delete_status": 204,
+      "blank_title_status": 400
+    }
+  },
+  "browser_evidence": {
+    "status": "passed",
+    "url": "http://127.0.0.1:57638/",
+    "title": "ProjectOS Todo",
+    "form_seen": true,
+    "body_excerpt": "ProjectOS Todo\nAdd task\n\n0 task(s)"
+  },
+  "event_types": [
+    "requirement_snapshot",
+    "requirement_completed",
+    "architecture_published",
+    "contract_published",
+    "tasks_published",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "implementation_plan_compiled",
+    "work_item_started",
+    "work_item_completed",
+    "work_item_started",
+    "work_item_completed",
+    "work_item_started",
+    "work_item_completed",
+    "work_item_started",
+    "code_wave_integrated",
+    "work_item_completed",
+    "work_item_started",
+    "code_wave_integrated",
+    "work_item_completed",
+    "implementation_published",
+    "work_item_started",
+    "sandbox_evidence_recorded",
+    "sandbox_evidence_recorded",
+    "tests_published",
+    "work_item_completed",
+    "review_published",
+    "work_item_completed",
+    "runtime_started",
+    "api_e2e_passed",
+    "browser_e2e_passed",
+    "runtime_smoke_passed"
+  ],
+  "sandbox_evidence": [
+    "ev-961ee6f2dd25.json",
+    "ev-f7a8689bf7bf.json",
+    "rev-30273e2b6912.json",
+    "rev-07a7b0209324.json",
+    "rev-2aea31853c4e.json",
+    "rev-207c40cad795.json",
+    "rev-479fff8aea90.json"
+  ]
+}

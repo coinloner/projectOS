@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "project_path": "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927",
+  "validator": "http_contract_consumer_gate",
+  "status": "failed",
+  "issue_count": 13,
+  "issues": [
+    "tests/test_mvp_delivery.py:104 消费接口 task_management.task_api 使用 GET /tasks/stats，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "tests/test_mvp_delivery.py:121 消费接口 task_management.task_api 使用 PATCH /tasks/{parameter}/complete，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "tests/test_mvp_delivery.py:124 消费接口 task_management.task_api 使用 GET /tasks/stats，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "tests/test_mvp_delivery.py:126 消费接口 task_management.task_api 使用 PATCH /tasks/{parameter}/uncomplete，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "tests/test_mvp_delivery.py:129 消费接口 task_management.task_api 使用 PATCH /tasks/{parameter}/complete，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "tests/test_mvp_delivery.py:132 消费接口 task_management.task_api 使用 GET /tasks/stats，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "tests/test_mvp_delivery.py:112 消费接口 task_management.task_api 使用 GET /tasks/stats，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "tests/test_mvp_delivery.py:141 消费接口 task_management.task_api 使用 GET /tasks/stats，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "frontend/src/App.jsx:83 消费接口 task_management.task_api 使用 GET /api/tasks，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "frontend/src/App.jsx:84 消费接口 task_management.task_api 使用 GET /api/tasks/stats，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "frontend/src/App.jsx:105 消费接口 task_management.task_api 使用 POST /api/tasks，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "frontend/src/App.jsx:123 消费接口 task_management.task_api 使用 PATCH /api/tasks/{parameter}，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）",
+    "frontend/src/App.jsx:139 消费接口 task_management.task_api 使用 DELETE /api/tasks/{parameter}，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, GET /tasks, GET /tasks/statistics, GET /tasks/{task_id}, PATCH /tasks/{task_id}/status, DELETE /tasks/{task_id}）"
+  ]
+}

@@ -1,0 +1,246 @@
+{
+  "schema_version": 1,
+  "status": "in_progress",
+  "updated_at": "2026-09-29",
+  "goal": "Requirement to full delivery; phases 5 and 7 not verified",
+  "stages": {
+    "phase_1_replay_l0": {
+      "status": "verified",
+      "evidence": [
+        "/Users/coinloner/projectOS/validation-evidence/replay-l0-20260927.json"
+      ]
+    },
+    "phase_2_replay_l1a": {
+      "status": "verified",
+      "evidence": [
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1a-codeagent-20260927-corrected.json"
+      ]
+    },
+    "phase_3_replay_l1b": {
+      "status": "verified_replay_amended_contract",
+      "trace_id": "tr-03f323cea803",
+      "source_live_trace": "tr-2e4924e985cf",
+      "work_item_ids": [
+        "wi-code-task-management-repository",
+        "wi-code-task-management-service",
+        "wi-code-task-management-http"
+      ],
+      "changeset_commits": {
+        "wi-code-task-management-repository": "58fc408ad27aeb204de0bd72843baf94c304cd38",
+        "wi-code-task-management-service": "0ab158aec74efa524fcc5cc13c26a1c2924a466e",
+        "wi-code-task-management-http": "0701029853b12c898debc3f0b306dfbf8013bbe2"
+      },
+      "wave_merge_commits": {
+        "1": "8943c4af572be5291bced251ce9115f00749085a",
+        "2": "ea9c6190dadfa6cb37b883891720ddb77a9261c5",
+        "3": "a5d415183bb5bf97599aba36ce319d37122be2fa"
+      },
+      "contract_sha256": "2ff3cb3ff245798f413943ec68068c57cac5fb7ba76c58fafb805ad65cba66f5",
+      "fixture_sha256": {
+        "task-management-repository": "80a468b6d1f6e3bbd1a343588b6c8b35ad5e113366eaec4387f52647b82d8825",
+        "task-management-service": "f78159e4f8c2097344e0efdcb6aa6fb8ef7df15fca5d2bcb483c55772cdc2eb3",
+        "task-management-http": "b9ef47775345b54d4b8bc7302730fac8f574ddea48395d455e18ef62cf8da14e"
+      },
+      "command": ".venv/bin/python scripts/validate_replay_l1b_business.py",
+      "evidence": [
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1-business-20260928-065529.json",
+        "/Users/coinloner/projectOS/validation-evidence/import-binding-gate-tr-03f323cea803.json",
+        "/Users/coinloner/projectOS/validation-evidence/http-contract-gate-tr-03f323cea803.json",
+        "/Users/coinloner/projectOS/validation-evidence/runtime-business-smoke-tr-03f323cea803.json"
+      ],
+      "raw_artifacts": [
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-rwggtaos/.projectos/runs/tr-03f323cea803/events.jsonl",
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-rwggtaos/runtime-1.log",
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-rwggtaos/runtime-2.log",
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-rwggtaos/agent-prompts/task-management-repository.txt",
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-rwggtaos/agent-prompts/task-management-service.txt",
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-rwggtaos/agent-prompts/task-management-http.txt"
+      ],
+      "limitation": "original Live contract is not amended; deterministic recorded response, not a live Provider call"
+    },
+    "phase_4_failure_recovery": {
+      "status": "verified_isolated_fault_injection",
+      "direct_boundary_cases": 9,
+      "policy_matrix_cases": 7,
+      "focused_regression_tests": "8 passed",
+      "work_item_ids": [
+        "wi-owner",
+        "wi-sibling",
+        "wi-integration",
+        "wi-runtime"
+      ],
+      "command": ".venv/bin/python scripts/validate_phase4_recovery.py --output validation-evidence/phase4-direct-20260928.json",
+      "regression_command": ".venv/bin/pytest -q tests/test_phase4_recovery.py tests/test_failure_matrix.py tests/test_run_coordinator.py::CodeWaveRepairFrontierTest tests/test_graph_runner.py::ProviderFailureClassificationTest",
+      "evidence": [
+        "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928.json",
+        "/Users/coinloner/projectOS/validation-evidence/phase4-closure-focused-20260928.log",
+        "/Users/coinloner/projectOS/validation-evidence/failure-matrix-phase4-20260928.json",
+        "/Users/coinloner/projectOS/validation-evidence/phase4-broad-regression-20260928.log",
+        "/Users/coinloner/projectOS/validation-evidence/phase4-closure-20260928.json",
+        "/Users/coinloner/projectOS/validation-evidence/phase4-broad-regression-closure-20260928.log"
+      ],
+      "raw_event_and_checkpoint_paths": "See each case in phase4-direct-20260928.json",
+      "failure_package_scope": "Policy matrix only; direct coordinator cases use FailureSignal and persisted recovery event",
+      "remaining": [],
+      "limitation": "Isolated failure injection, not Live Provider or container startup; runtime subprocess was actually launched and exited nonzero, with persisted SandboxEvidence. Original Live Trace remains failed.",
+      "broad_regression_tests": "91 passed, 9 subtests passed",
+      "broad_regression_command": ".venv/bin/pytest -q tests/test_run_coordinator.py tests/test_graph_runner.py tests/test_phase4_recovery.py tests/test_failure_matrix.py",
+      "closure_boundary_cases": 2,
+      "closure_command": ".venv/bin/python scripts/validate_phase4_recovery.py --closure-only --output validation-evidence/phase4-closure-20260928.json",
+      "closure_traces": [
+        {
+          "case": "wave-conflict",
+          "trace_id": "tr-9073de41cc52",
+          "status": "needs_replan",
+          "raw_events": "/Users/coinloner/projectOS/validation-evidence/phase4-closure-20260928-traces/wave-conflict/.projectos/runs/tr-9073de41cc52/events.jsonl",
+          "raw_checkpoint": "/Users/coinloner/projectOS/validation-evidence/phase4-closure-20260928-traces/wave-conflict/.projectos/runs/tr-9073de41cc52/checkpoint.json"
+        },
+        {
+          "case": "runtime-start-failure",
+          "trace_id": "tr-f56a23108b65",
+          "status": "blocked",
+          "sandbox_evidence_id": "ev-5c27b6101a5a",
+          "raw_events": "/Users/coinloner/projectOS/validation-evidence/phase4-closure-20260928-traces/runtime-start-failure/.projectos/runs/tr-f56a23108b65/events.jsonl",
+          "raw_checkpoint": "/Users/coinloner/projectOS/validation-evidence/phase4-closure-20260928-traces/runtime-start-failure/.projectos/runs/tr-f56a23108b65/checkpoint.json",
+          "raw_sandbox_evidence": "/Users/coinloner/projectOS/validation-evidence/phase4-closure-20260928-traces/runtime-start-failure/.projectos/runs/tr-f56a23108b65/evidence/ev-5c27b6101a5a.json"
+        }
+      ]
+    },
+    "phase_5_live_l0_l1": {
+      "status": "live_l0_candidate_v2_validated_inactive",
+      "attempts": 2,
+      "provider": "wanfa",
+      "model": "gpt-6-sol",
+      "wire_api": "responses",
+      "preflight_evidence": "/Users/coinloner/projectOS/validation-evidence/live-l0-preflight-20260928.json",
+      "trace_id": "tr-b23fd9b89e41",
+      "work_items_started": 11,
+      "classification": "F: generated Blueprint/Contract lacks startup and required file freeze; R: control-plane accepted incomplete handoff; V: first post-run audit checked wrong event and preliminary audit was overbroad",
+      "next_gate": "Canonical Live L0 remains blocked. Decide explicit versioned Blueprint/Contract activation and checkpoint replan, including AC-10 documentation ownership; no Live L1 or old Trace migration without separate authorization.",
+      "current_trace_id": "tr-b23fd9b89e41",
+      "current_project_path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836",
+      "current_workflow": "architecture_l0",
+      "provider_preflight": {
+        "provider": "wanfa",
+        "model": "gpt-6-sol",
+        "wire_api": "responses",
+        "endpoint": "https://wanfaai.com/responses",
+        "status": "passed",
+        "retryable": false,
+        "message": "Provider 支持当前 streaming/tool calling 协议",
+        "http_status": 200,
+        "terminal_seen": true,
+        "tool_schema_accepted": true,
+        "elapsed_ms": 3761
+      },
+      "local_entry_test_log": "/Users/coinloner/projectOS/validation-evidence/live-l0-local-entry-tests-20260928.log",
+      "current_raw_events": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/events.jsonl",
+      "current_raw_checkpoint": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/checkpoint.json",
+      "current_run_log": "/Users/coinloner/projectOS/validation-evidence/live-l0-run-20260928.log",
+      "current_status_caveat": "Trace completed structurally; Live L0 not verified as usable Contract. Original launch report retains V audit exception. No CodeAgent executed.",
+      "completed_work_item_ids": [
+        "wi-01-requirement",
+        "wi-02-architecture-blueprint",
+        "wi-architecture-module-task_management",
+        "wi-architecture-module-http_service",
+        "wi-architecture-module-browser_task_experience",
+        "wi-architecture-implementation-task_management",
+        "wi-architecture-implementation-http_service",
+        "wi-architecture-implementation-browser_task_experience",
+        "wi-03-architecture-integration",
+        "wi-04-architecture-quality-gate",
+        "wi-05-contract"
+      ],
+      "active_work_item_ids": [],
+      "current_trace_status": "completed",
+      "structural_work_items_completed": "11/11",
+      "contract_units": 8,
+      "contract_handoff_gaps": [
+        "entrypoints.backend_file missing",
+        "entrypoints.backend_import missing",
+        "entrypoints.backend_command missing",
+        "entrypoints.frontend_file missing",
+        "required_files empty"
+      ],
+      "post_run_audit": "/Users/coinloner/projectOS/validation-evidence/live-l0-audit-tr-b23fd9b89e41.json",
+      "preserved_preliminary_audit": "/Users/coinloner/projectOS/validation-evidence/live-l0-preliminary-audit-tr-b23fd9b89e41.json",
+      "local_post_audit_tests": "/Users/coinloner/projectOS/validation-evidence/live-l0-post-audit-tests-20260928.log",
+      "candidate_v2": {
+        "status": "validated_not_activated",
+        "contract_digest": "421649e5c87e83a28bf514abd8eb2a7d4883760b02841c8b5024c64ddca6c1f2",
+        "blueprint": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/architecture/revisions/blueprint-f-handoff-v2-20260929.json",
+        "contract": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/architecture/revisions/project-contract-f-handoff-v2-20260929.json",
+        "evidence": "/Users/coinloner/projectOS/validation-evidence/live-l0-f-handoff-v2-20260929.json",
+        "post_policy_audit": "/Users/coinloner/projectOS/validation-evidence/live-l0-post-policy-audit-20260929.json",
+        "regression_log": "/Users/coinloner/projectOS/validation-evidence/live-l0-handoff-gate-tests-20260929.log",
+        "compiled_code_work_items_not_run": 8,
+        "source_still_blocked": true,
+        "supersedes_candidate_v1": "/Users/coinloner/projectOS/validation-evidence/live-l0-f-handoff-v1-20260929.json"
+      }
+    },
+    "phase_6_replay_l2": {
+      "status": "verified_separately",
+      "evidence": [
+        "/Users/coinloner/projectOS/validation-evidence/replay-l2-browser-full-20260927.json"
+      ]
+    },
+    "phase_7_original_live_recovery": {
+      "status": "pending",
+      "trace_id": "tr-2e4924e985cf"
+    },
+    "phase_3_replay_l1b_rerun": {
+      "status": "verified_replay_backend_slice_only",
+      "trace_id": "tr-c046387e7d2a",
+      "source_live_trace": "tr-2e4924e985cf",
+      "candidate_digest": "4d8d5958040d7f3e702e459aaf1ff05c46981cb111418b62b7f05878418f98f5",
+      "evidence": [
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1-business-f-candidate-20260928-075247-411229.json",
+        "/Users/coinloner/projectOS/validation-evidence/phase3-rerun-audit-tr-c046387e7d2a.json",
+        "/Users/coinloner/projectOS/validation-evidence/import-binding-gate-tr-c046387e7d2a.json",
+        "/Users/coinloner/projectOS/validation-evidence/http-contract-gate-tr-c046387e7d2a.json",
+        "/Users/coinloner/projectOS/validation-evidence/runtime-business-smoke-tr-c046387e7d2a.json"
+      ],
+      "raw_artifacts": [
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/.projectos/runs/tr-c046387e7d2a/events.jsonl",
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/runtime-1.log",
+        "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/runtime-2.log"
+      ],
+      "quantified": {
+        "compiled_units": 9,
+        "selected_code_agents": 3,
+        "changesets": 3,
+        "wave_commits": 3,
+        "health_status": 200,
+        "blank_title_status": 400,
+        "create_status": 201,
+        "post_restart_list_status": 200,
+        "sqlite_row_persisted": true
+      },
+      "limitations": "deterministic recorded files; backend slice only; F container/frontend constraints not implemented; original Live trace failed"
+    }
+  },
+  "historical_failures_preserved": [
+    "/Users/coinloner/projectOS/validation-evidence/l1-closure-audit-20260928.json",
+    "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-wc6m62rk",
+    "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-e8yjs1o0"
+  ],
+  "f_design_correction": {
+    "status": "candidate_validated_not_activated",
+    "classification": "F",
+    "source_trace": "tr-2e4924e985cf",
+    "source_trace_status": "failed",
+    "original_contract_digest": "70953d6408bb740f4d3c5226f532ed3295893da821e3be9ac4c28875d1d5a2ea",
+    "candidate_digest": "4d8d5958040d7f3e702e459aaf1ff05c46981cb111418b62b7f05878418f98f5",
+    "evidence": "/Users/coinloner/projectOS/validation-evidence/f-design-correction-v2-20260928.json",
+    "candidate": "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/architecture/revisions/project-contract-f-correction-v2-20260928.json",
+    "note": "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/architecture-f-correction-v2-20260928.md",
+    "checks": {
+      "compiled_work_items": 9,
+      "related_pytest_passed": 46,
+      "original_authoritative_files_unchanged": 4
+    },
+    "limitation": "not activated; F implementation and original Live Trace remain unresolved; HTTP gate has one known cross-interface misattribution",
+    "audit_evidence": "/Users/coinloner/projectOS/validation-evidence/f-design-correction-v2-audit-20260928.json",
+    "pytest_log": "/Users/coinloner/projectOS/validation-evidence/f-design-correction-v2-tests-20260928.log"
+  }
+}

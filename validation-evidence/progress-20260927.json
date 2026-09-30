@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "goal_status": "incomplete",
+  "live_trace": {
+    "trace_id": "tr-2e4924e985cf",
+    "trace_file": "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/runs/tr-2e4924e985cf/trace.json",
+    "status": "blocked",
+    "contract_entrypoints": {
+      "backend_file": null,
+      "backend_import": null,
+      "backend_command": null,
+      "frontend_file": null,
+      "health_path": "/health"
+    },
+    "quality_issues": [
+      {
+        "rule_id": "project.backend_layers_required",
+        "summary": "后端必须具备接口、应用、基础设施、领域四类结构；当前缺少: interface, application, infrastructure, domain"
+      },
+      {
+        "rule_id": "project.backend_entrypoint_required",
+        "summary": "Project Contract 声明的后端启动入口不存在: None"
+      },
+      {
+        "rule_id": "project.required_test_type_missing",
+        "summary": "Project Contract 要求测试类型未找到证据: API 集成测试"
+      },
+      {
+        "rule_id": "project.required_test_type_missing",
+        "summary": "Project Contract 要求测试类型未找到证据: Docker sandbox 冒烟验证"
+      },
+      {
+        "rule_id": "project.required_test_type_missing",
+        "summary": "Project Contract 要求测试类型未找到证据: api/integration"
+      },
+      {
+        "rule_id": "project.required_test_type_missing",
+        "summary": "Project Contract 要求测试类型未找到证据: frontend_component"
+      },
+      {
+        "rule_id": "project.required_test_type_missing",
+        "summary": "Project Contract 要求测试类型未找到证据: frontend_http_integration"
+      },
+      {
+        "rule_id": "project.required_test_type_missing",
+        "summary": "Project Contract 要求测试类型未找到证据: persistence/restart"
+      },
+      {
+        "rule_id": "project.required_test_type_missing",
+        "summary": "Project Contract 要求测试类型未找到证据: unit"
+      },
+      {
+        "rule_id": "project.required_test_type_missing",
+        "summary": "Project Contract 要求测试类型未找到证据: 交付文档与 Review 可审查性检查"
+      },
+      {
+        "rule_id": "project.required_test_type_missing",
+        "summary": "Project Contract 要求测试类型未找到证据: 持久化重启测试"
+      }
+    ]
+  },
+  "replay_l2": {
+    "trace_id": "tr-83ab563fa640",
+    "status": "completed",
+    "evidence_file": "/Users/coinloner/projectOS/validation-evidence/replay-l2-browser-full-20260927.json",
+    "browser_steps": [
+      "blank_title_feedback",
+      "created",
+      "completed",
+      "active_filter",
+      "completed_filter",
+      "uncompleted",
+      "deleted"
+    ]
+  },
+  "validation": {
+    "pytest_log": "/Users/coinloner/projectOS/validation-evidence/pytest-final-20260927.log",
+    "failure_matrix": "/Users/coinloner/projectOS/validation-evidence/failure-matrix-20260927.json"
+  }
+}

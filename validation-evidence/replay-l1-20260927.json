@@ -1,0 +1,31 @@
+{
+  "status": "completed",
+  "trace_id": "tr-cff0067f9e70",
+  "contract_units": 1,
+  "compiled_work_items": [
+    "wi-code-health-entrypoint"
+  ],
+  "changeset_commit": "cc4bf5f891d8b044c30fd6d25085c997e4d6a2b1",
+  "changeset_files": [
+    "workspace/backend/app/main.py"
+  ],
+  "staging_result": "已提交代码 ChangeSet: cc4bf5f891d8b044c30fd6d25085c997e4d6a2b1 (backend/app/main.py)",
+  "integration_result": "Git Policy 通过并发布 1 个文件，merge commit: 17718d5a00a9cc385061968d2826df4d4f0e25c7。",
+  "baseline": "497a3f8fa34d5e187a30d06202266fbe62d73471",
+  "workspace_file": "workspace/backend/app/main.py",
+  "smoke": {
+    "status": 200,
+    "body": "{\"status\":\"ok\"}"
+  },
+  "event_types": [
+    "work_item_planned",
+    "implementation_plan_compiled",
+    "work_item_started",
+    "work_item_completed",
+    "code_wave_integrated",
+    "runtime_smoke_started",
+    "runtime_smoke_passed"
+  ],
+  "code_wave_integrated": true,
+  "runtime_smoke_passed": true
+}

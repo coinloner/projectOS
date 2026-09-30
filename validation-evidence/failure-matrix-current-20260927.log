@@ -1,0 +1,415 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "policy": "RetryPolicy + FailurePackage",
+  "cases": [
+    {
+      "id": "provider-403-policy",
+      "failure_kind": "provider_policy_rejected",
+      "retryable": false,
+      "scope": "run",
+      "code": "upstream_policy_rejected",
+      "evidence_id": "ev-matrix-01",
+      "failure_fingerprint": "c531f541f0815eb3e263",
+      "expected_action": "block",
+      "actual_action": "block",
+      "failure_package": {
+        "signal": {
+          "kind": "provider_policy_rejected",
+          "summary": "injected provider-403-policy",
+          "evidence_id": "ev-matrix-01",
+          "validator": "FailureMatrix",
+          "field_path": null,
+          "code": "upstream_policy_rejected",
+          "input_digest": null,
+          "artifact_digest": null,
+          "retry_hint": null,
+          "retryable": false,
+          "scope": "run",
+          "requires_control_plane": true,
+          "related_work_item_ids": [
+            "wi-matrix-provider-403-policy"
+          ],
+          "related_artifact_refs": [],
+          "failure_fingerprint": "c531f541f0815eb3e263"
+        },
+        "check_id": "check-provider-403-policy",
+        "runtime_profile": null,
+        "exit_code": 1,
+        "repair_paths": [],
+        "owner_files": [],
+        "forbidden_rework": [],
+        "repair_scope": [
+          "wi-matrix-provider-403-policy"
+        ],
+        "unsatisfied_constraints": [],
+        "satisfied_constraints": [],
+        "diagnostics": {
+          "stdout_excerpt": "injected stdout",
+          "stderr_excerpt": "injected stderr"
+        }
+      },
+      "recovery_entrypoint": "provider_decision",
+      "completed_siblings": [
+        "wi-sibling-completed"
+      ],
+      "rerun_work_item_ids": [],
+      "completed_siblings_replayed": false,
+      "passed": true
+    },
+    {
+      "id": "provider-sse-timeout",
+      "failure_kind": "provider_transport",
+      "retryable": true,
+      "scope": "current_work_item",
+      "code": "provider_timeout",
+      "evidence_id": "ev-matrix-02",
+      "failure_fingerprint": "a41ba5a8424cb8b6cf51",
+      "expected_action": "retry_item",
+      "actual_action": "retry_item",
+      "failure_package": {
+        "signal": {
+          "kind": "provider_transport",
+          "summary": "injected provider-sse-timeout",
+          "evidence_id": "ev-matrix-02",
+          "validator": "FailureMatrix",
+          "field_path": null,
+          "code": "provider_timeout",
+          "input_digest": null,
+          "artifact_digest": null,
+          "retry_hint": null,
+          "retryable": true,
+          "scope": "current_work_item",
+          "requires_control_plane": false,
+          "related_work_item_ids": [
+            "wi-matrix-provider-sse-timeout"
+          ],
+          "related_artifact_refs": [],
+          "failure_fingerprint": "a41ba5a8424cb8b6cf51"
+        },
+        "check_id": "check-provider-sse-timeout",
+        "runtime_profile": null,
+        "exit_code": 1,
+        "repair_paths": [],
+        "owner_files": [],
+        "forbidden_rework": [],
+        "repair_scope": [
+          "wi-matrix-provider-sse-timeout"
+        ],
+        "unsatisfied_constraints": [],
+        "satisfied_constraints": [],
+        "diagnostics": {
+          "stdout_excerpt": "injected stdout",
+          "stderr_excerpt": "injected stderr"
+        }
+      },
+      "recovery_entrypoint": "retry_same_work_item",
+      "completed_siblings": [
+        "wi-sibling-completed"
+      ],
+      "rerun_work_item_ids": [
+        "wi-matrix-provider-sse-timeout"
+      ],
+      "completed_siblings_replayed": false,
+      "passed": true
+    },
+    {
+      "id": "provider-terminal-event-missing",
+      "failure_kind": "provider_terminal_missing",
+      "retryable": true,
+      "scope": "current_work_item",
+      "code": "terminal_event_missing",
+      "evidence_id": "ev-matrix-03",
+      "failure_fingerprint": "c2bfa9f0aa722187977b",
+      "expected_action": "retry_item",
+      "actual_action": "retry_item",
+      "failure_package": {
+        "signal": {
+          "kind": "provider_terminal_missing",
+          "summary": "injected provider-terminal-event-missing",
+          "evidence_id": "ev-matrix-03",
+          "validator": "FailureMatrix",
+          "field_path": null,
+          "code": "terminal_event_missing",
+          "input_digest": null,
+          "artifact_digest": null,
+          "retry_hint": null,
+          "retryable": true,
+          "scope": "current_work_item",
+          "requires_control_plane": false,
+          "related_work_item_ids": [
+            "wi-matrix-provider-terminal-event-missing"
+          ],
+          "related_artifact_refs": [],
+          "failure_fingerprint": "c2bfa9f0aa722187977b"
+        },
+        "check_id": "check-provider-terminal-event-missing",
+        "runtime_profile": null,
+        "exit_code": 1,
+        "repair_paths": [],
+        "owner_files": [],
+        "forbidden_rework": [],
+        "repair_scope": [
+          "wi-matrix-provider-terminal-event-missing"
+        ],
+        "unsatisfied_constraints": [],
+        "satisfied_constraints": [],
+        "diagnostics": {
+          "stdout_excerpt": "injected stdout",
+          "stderr_excerpt": "injected stderr"
+        }
+      },
+      "recovery_entrypoint": "retry_same_work_item",
+      "completed_siblings": [
+        "wi-sibling-completed"
+      ],
+      "rerun_work_item_ids": [
+        "wi-matrix-provider-terminal-event-missing"
+      ],
+      "completed_siblings_replayed": false,
+      "passed": true
+    },
+    {
+      "id": "architecture-schema-mismatch",
+      "failure_kind": "tool_contract_mismatch",
+      "retryable": false,
+      "scope": "control_plane",
+      "code": "schema_mismatch",
+      "evidence_id": "ev-matrix-04",
+      "failure_fingerprint": "54631ad59d12652cfeb6",
+      "expected_action": "block",
+      "actual_action": "block",
+      "failure_package": {
+        "signal": {
+          "kind": "tool_contract_mismatch",
+          "summary": "injected architecture-schema-mismatch",
+          "evidence_id": "ev-matrix-04",
+          "validator": "FailureMatrix",
+          "field_path": null,
+          "code": "schema_mismatch",
+          "input_digest": null,
+          "artifact_digest": null,
+          "retry_hint": null,
+          "retryable": false,
+          "scope": "control_plane",
+          "requires_control_plane": true,
+          "related_work_item_ids": [
+            "wi-matrix-architecture-schema-mismatch"
+          ],
+          "related_artifact_refs": [],
+          "failure_fingerprint": "54631ad59d12652cfeb6"
+        },
+        "check_id": "check-architecture-schema-mismatch",
+        "runtime_profile": null,
+        "exit_code": 1,
+        "repair_paths": [
+          "app/domain/architecture/design_contract.py"
+        ],
+        "owner_files": [
+          "app/domain/architecture/design_contract.py"
+        ],
+        "forbidden_rework": [],
+        "repair_scope": [
+          "wi-matrix-architecture-schema-mismatch"
+        ],
+        "unsatisfied_constraints": [],
+        "satisfied_constraints": [],
+        "diagnostics": {
+          "stdout_excerpt": "injected stdout",
+          "stderr_excerpt": "injected stderr"
+        }
+      },
+      "recovery_entrypoint": "tool_contract_repair",
+      "completed_siblings": [
+        "wi-sibling-completed"
+      ],
+      "rerun_work_item_ids": [],
+      "completed_siblings_replayed": false,
+      "passed": true
+    },
+    {
+      "id": "codeagent-no-changeset",
+      "failure_kind": "code_delivery_incomplete",
+      "retryable": true,
+      "scope": "current_work_item",
+      "code": "changeset_missing",
+      "evidence_id": "ev-matrix-05",
+      "failure_fingerprint": "b4d7ce7ebe5d22e26ec7",
+      "expected_action": "retry_item",
+      "actual_action": "retry_item",
+      "failure_package": {
+        "signal": {
+          "kind": "code_delivery_incomplete",
+          "summary": "injected codeagent-no-changeset",
+          "evidence_id": "ev-matrix-05",
+          "validator": "FailureMatrix",
+          "field_path": null,
+          "code": "changeset_missing",
+          "input_digest": null,
+          "artifact_digest": null,
+          "retry_hint": null,
+          "retryable": true,
+          "scope": "current_work_item",
+          "requires_control_plane": false,
+          "related_work_item_ids": [
+            "wi-matrix-codeagent-no-changeset"
+          ],
+          "related_artifact_refs": [],
+          "failure_fingerprint": "b4d7ce7ebe5d22e26ec7"
+        },
+        "check_id": "check-codeagent-no-changeset",
+        "runtime_profile": null,
+        "exit_code": 1,
+        "repair_paths": [
+          "backend/main.py"
+        ],
+        "owner_files": [
+          "backend/main.py"
+        ],
+        "forbidden_rework": [],
+        "repair_scope": [
+          "wi-matrix-codeagent-no-changeset"
+        ],
+        "unsatisfied_constraints": [],
+        "satisfied_constraints": [],
+        "diagnostics": {
+          "stdout_excerpt": "injected stdout",
+          "stderr_excerpt": "injected stderr"
+        }
+      },
+      "recovery_entrypoint": "retry_codeagent_owned_file",
+      "completed_siblings": [
+        "wi-sibling-completed"
+      ],
+      "rerun_work_item_ids": [
+        "wi-matrix-codeagent-no-changeset"
+      ],
+      "completed_siblings_replayed": false,
+      "passed": true
+    },
+    {
+      "id": "wave-merge-conflict",
+      "failure_kind": "artifact_commit_failure",
+      "retryable": false,
+      "scope": "wave",
+      "code": "wave_merge_conflict",
+      "evidence_id": "ev-matrix-06",
+      "failure_fingerprint": "8f92045efd185c98f7c3",
+      "expected_action": "block",
+      "actual_action": "block",
+      "failure_package": {
+        "signal": {
+          "kind": "artifact_commit_failure",
+          "summary": "injected wave-merge-conflict",
+          "evidence_id": "ev-matrix-06",
+          "validator": "FailureMatrix",
+          "field_path": null,
+          "code": "wave_merge_conflict",
+          "input_digest": null,
+          "artifact_digest": null,
+          "retry_hint": null,
+          "retryable": false,
+          "scope": "wave",
+          "requires_control_plane": true,
+          "related_work_item_ids": [
+            "wi-matrix-wave-merge-conflict"
+          ],
+          "related_artifact_refs": [],
+          "failure_fingerprint": "8f92045efd185c98f7c3"
+        },
+        "check_id": "check-wave-merge-conflict",
+        "runtime_profile": null,
+        "exit_code": 1,
+        "repair_paths": [
+          "backend/main.py",
+          "frontend/index.html"
+        ],
+        "owner_files": [
+          "backend/main.py",
+          "frontend/index.html"
+        ],
+        "forbidden_rework": [],
+        "repair_scope": [
+          "wi-matrix-wave-merge-conflict"
+        ],
+        "unsatisfied_constraints": [],
+        "satisfied_constraints": [],
+        "diagnostics": {
+          "stdout_excerpt": "injected stdout",
+          "stderr_excerpt": "injected stderr"
+        }
+      },
+      "recovery_entrypoint": "freeze_wave_and_repair_changesets",
+      "completed_siblings": [
+        "wi-sibling-completed"
+      ],
+      "rerun_work_item_ids": [],
+      "completed_siblings_replayed": false,
+      "passed": true
+    },
+    {
+      "id": "runtime-startup-failure",
+      "failure_kind": "runtime_preflight",
+      "retryable": false,
+      "scope": "run",
+      "code": "runtime_start_failed",
+      "evidence_id": "ev-matrix-07",
+      "failure_fingerprint": "ac03fe697d78fe170259",
+      "expected_action": "block",
+      "actual_action": "block",
+      "failure_package": {
+        "signal": {
+          "kind": "runtime_preflight",
+          "summary": "injected runtime-startup-failure",
+          "evidence_id": "ev-matrix-07",
+          "validator": "FailureMatrix",
+          "field_path": null,
+          "code": "runtime_start_failed",
+          "input_digest": null,
+          "artifact_digest": null,
+          "retry_hint": null,
+          "retryable": false,
+          "scope": "run",
+          "requires_control_plane": true,
+          "related_work_item_ids": [
+            "wi-matrix-runtime-startup-failure"
+          ],
+          "related_artifact_refs": [],
+          "failure_fingerprint": "ac03fe697d78fe170259"
+        },
+        "check_id": "check-runtime-startup-failure",
+        "runtime_profile": null,
+        "exit_code": 1,
+        "repair_paths": [
+          "backend/main.py"
+        ],
+        "owner_files": [
+          "backend/main.py"
+        ],
+        "forbidden_rework": [],
+        "repair_scope": [
+          "wi-matrix-runtime-startup-failure"
+        ],
+        "unsatisfied_constraints": [],
+        "satisfied_constraints": [],
+        "diagnostics": {
+          "stdout_excerpt": "injected stdout",
+          "stderr_excerpt": "injected stderr"
+        }
+      },
+      "recovery_entrypoint": "runtime_repair",
+      "completed_siblings": [
+        "wi-sibling-completed"
+      ],
+      "rerun_work_item_ids": [],
+      "completed_siblings_replayed": false,
+      "passed": true
+    }
+  ],
+  "summary": {
+    "total": 7,
+    "passed": 7,
+    "sibling_replay_count": 0
+  },
+  "evidence_path": "/Users/coinloner/projectOS/validation-evidence/failure-matrix-current-20260927.json"
+}

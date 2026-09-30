@@ -1,0 +1,51 @@
+{
+  "status": "completed",
+  "scope": "Replay L1a",
+  "trace_id": "tr-514221d4ae14",
+  "provider_mode": "deterministic recorded CrewAI tool-call response; no external provider call",
+  "agent": "production CodeAgent via AgentRegistry and GraphRunner",
+  "crewai_agent_calls": 1,
+  "work_item_id": "wi-code-health-entrypoint",
+  "owned_files": [
+    "backend/app/main.py"
+  ],
+  "changeset_commit": "8ef7bdea31e876323e18edeebef9cbbabf753714",
+  "changeset_files": [
+    "workspace/backend/app/main.py"
+  ],
+  "wave_integration": "Git Policy 通过并发布 1 个文件，merge commit: fef29be26cd7d99c945979060e035ce564343636。",
+  "wave_merge_commit": "fef29be26cd7d99c945979060e035ce564343636",
+  "wave_event_work_item_id": "wave-0-integration",
+  "integrated_commits": [
+    "8ef7bdea31e876323e18edeebef9cbbabf753714"
+  ],
+  "baseline": "73fb62d13f26766cd206957623b83404909231d0",
+  "workspace_file": "/private/var/folders/sp/7swk15cx1hz_5rj1_xvdb9m40000gn/T/projectos-replay-l1a-codeagent-mivsumyy/workspace/backend/app/main.py",
+  "runtime_smoke": {
+    "status": 200,
+    "body": "{\"status\":\"ok\"}"
+  },
+  "event_types": [
+    "work_item_planned",
+    "work_item_planned",
+    "batch_started",
+    "work_item_started",
+    "tool_contract_preflight",
+    "work_item_completed",
+    "batch_completed",
+    "code_wave_integrated",
+    "runtime_smoke_started",
+    "runtime_smoke_passed"
+  ],
+  "assertions": {
+    "actual_code_agent_registry_path": true,
+    "gateway_serialized_tool_dispatch": true,
+    "single_owned_file_changeset": true,
+    "wave_integration": true,
+    "changeset_recorded_as_integrated": true,
+    "real_merge_commit": true,
+    "merge_commit_published_to_workspace": true,
+    "health_200": true,
+    "runtime_smoke_passed": true
+  }
+}

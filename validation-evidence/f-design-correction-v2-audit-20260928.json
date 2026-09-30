@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "classification": "V",
+  "candidate_sha256": "59888711dfca824948544a29c4b33a467573b012bf581e6b12ab38c6bbd6a8d0",
+  "candidate_digest": "4d8d5958040d7f3e702e459aaf1ff05c46981cb111418b62b7f05878418f98f5",
+  "compiled_work_items": 9,
+  "original_unchanged_count": 4,
+  "source_trace_status": "failed",
+  "pytest_log": "/Users/coinloner/projectOS/validation-evidence/f-design-correction-v2-tests-20260928.log",
+  "pytest_result": "46 passed",
+  "limitations": [
+    "candidate not activated",
+    "no Live/Compose/browser run",
+    "HTTP gate has one cross-interface diagnostic"
+  ]
+}

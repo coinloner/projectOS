@@ -1,0 +1,342 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "isolation": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces",
+  "method": "isolated injected Agent/Git gate failure through GraphRunner and RunCoordinator; never a Live Provider call",
+  "cases": [
+    {
+      "case": "provider-403",
+      "trace_id": "tr-1bbf6ed50517",
+      "injection_boundary": "Agent.run exception or completed-without-ChangeSet",
+      "status": "needs_replan",
+      "failure_kind": "provider_policy_rejected",
+      "agent_calls": 1,
+      "retry_events": [],
+      "before_frontier": [
+        "wi-sibling"
+      ],
+      "after_frontier": [
+        "wi-owner",
+        "wi-sibling"
+      ],
+      "completed_sibling_preserved": true,
+      "downstream_not_started": true,
+      "raw_events": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/provider-403/.projectos/runs/tr-1bbf6ed50517/events.jsonl",
+      "raw_checkpoint": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/provider-403/.projectos/runs/tr-1bbf6ed50517/checkpoint.json"
+    },
+    {
+      "case": "codeagent-502",
+      "trace_id": "tr-f2e7d1f30c56",
+      "injection_boundary": "Agent.run exception or completed-without-ChangeSet",
+      "status": "failed",
+      "failure_kind": "provider_transport",
+      "agent_calls": 2,
+      "retry_events": [
+        {
+          "failure": {
+            "kind": "provider_transport",
+            "summary": "Provider 请求异常（provider_transport）：Error code: 502 - upstream unavailable",
+            "evidence_id": null,
+            "validator": null,
+            "field_path": null,
+            "code": null,
+            "input_digest": "39888be350829647fc016163449f279d88a002006a0492283e552a2d9980783e",
+            "artifact_digest": null,
+            "retry_hint": null,
+            "retryable": true,
+            "scope": "current_work_item",
+            "requires_control_plane": false,
+            "related_work_item_ids": [],
+            "related_artifact_refs": [],
+            "failure_fingerprint": "91d0385d7f3dc818ef27"
+          },
+          "kind": "provider_transport",
+          "attempt": 2,
+          "retry_reason": "bounded_recovery",
+          "input_digest": "39888be350829647fc016163449f279d88a002006a0492283e552a2d9980783e",
+          "failure_fingerprint": "91d0385d7f3dc818ef27",
+          "delta_evidence": "none",
+          "circuit_breaker": false
+        }
+      ],
+      "before_frontier": [
+        "wi-sibling"
+      ],
+      "after_frontier": [
+        "wi-owner",
+        "wi-sibling"
+      ],
+      "completed_sibling_preserved": true,
+      "downstream_not_started": true,
+      "raw_events": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/codeagent-502/.projectos/runs/tr-f2e7d1f30c56/events.jsonl",
+      "raw_checkpoint": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/codeagent-502/.projectos/runs/tr-f2e7d1f30c56/checkpoint.json"
+    },
+    {
+      "case": "codeagent-503",
+      "trace_id": "tr-8580c64c314b",
+      "injection_boundary": "Agent.run exception or completed-without-ChangeSet",
+      "status": "failed",
+      "failure_kind": "provider_transport",
+      "agent_calls": 2,
+      "retry_events": [
+        {
+          "failure": {
+            "kind": "provider_transport",
+            "summary": "Provider 请求异常（provider_transport）：Error code: 503 - upstream unavailable",
+            "evidence_id": null,
+            "validator": null,
+            "field_path": null,
+            "code": null,
+            "input_digest": "39888be350829647fc016163449f279d88a002006a0492283e552a2d9980783e",
+            "artifact_digest": null,
+            "retry_hint": null,
+            "retryable": true,
+            "scope": "current_work_item",
+            "requires_control_plane": false,
+            "related_work_item_ids": [],
+            "related_artifact_refs": [],
+            "failure_fingerprint": "2cfe80edd03240138c06"
+          },
+          "kind": "provider_transport",
+          "attempt": 2,
+          "retry_reason": "bounded_recovery",
+          "input_digest": "39888be350829647fc016163449f279d88a002006a0492283e552a2d9980783e",
+          "failure_fingerprint": "2cfe80edd03240138c06",
+          "delta_evidence": "none",
+          "circuit_breaker": false
+        }
+      ],
+      "before_frontier": [
+        "wi-sibling"
+      ],
+      "after_frontier": [
+        "wi-owner",
+        "wi-sibling"
+      ],
+      "completed_sibling_preserved": true,
+      "downstream_not_started": true,
+      "raw_events": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/codeagent-503/.projectos/runs/tr-8580c64c314b/events.jsonl",
+      "raw_checkpoint": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/codeagent-503/.projectos/runs/tr-8580c64c314b/checkpoint.json"
+    },
+    {
+      "case": "terminal-missing",
+      "trace_id": "tr-827d5ff9494b",
+      "injection_boundary": "Agent.run exception or completed-without-ChangeSet",
+      "status": "failed",
+      "failure_kind": "provider_terminal_missing",
+      "agent_calls": 2,
+      "retry_events": [
+        {
+          "failure": {
+            "kind": "provider_terminal_missing",
+            "summary": "Provider 请求异常（provider_terminal_missing）：stream ended without terminal signal",
+            "evidence_id": null,
+            "validator": null,
+            "field_path": null,
+            "code": null,
+            "input_digest": "39888be350829647fc016163449f279d88a002006a0492283e552a2d9980783e",
+            "artifact_digest": null,
+            "retry_hint": null,
+            "retryable": true,
+            "scope": "current_work_item",
+            "requires_control_plane": false,
+            "related_work_item_ids": [],
+            "related_artifact_refs": [],
+            "failure_fingerprint": "1b35ceab936daa4e0e69"
+          },
+          "kind": "provider_terminal_missing",
+          "attempt": 2,
+          "retry_reason": "bounded_recovery",
+          "input_digest": "39888be350829647fc016163449f279d88a002006a0492283e552a2d9980783e",
+          "failure_fingerprint": "1b35ceab936daa4e0e69",
+          "delta_evidence": "none",
+          "circuit_breaker": false
+        }
+      ],
+      "before_frontier": [
+        "wi-sibling"
+      ],
+      "after_frontier": [
+        "wi-owner",
+        "wi-sibling"
+      ],
+      "completed_sibling_preserved": true,
+      "downstream_not_started": true,
+      "raw_events": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/terminal-missing/.projectos/runs/tr-827d5ff9494b/events.jsonl",
+      "raw_checkpoint": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/terminal-missing/.projectos/runs/tr-827d5ff9494b/checkpoint.json"
+    },
+    {
+      "case": "no-changeset",
+      "trace_id": "tr-0b22d0743d77",
+      "injection_boundary": "Agent.run exception or completed-without-ChangeSet",
+      "status": "failed",
+      "failure_kind": "code_delivery_incomplete",
+      "agent_calls": 3,
+      "retry_events": [
+        {
+          "failure": {
+            "kind": "code_delivery_incomplete",
+            "summary": "CodeAgent 交付不完整：没有生成 Git ChangeSet",
+            "evidence_id": null,
+            "validator": null,
+            "field_path": null,
+            "code": null,
+            "input_digest": "39888be350829647fc016163449f279d88a002006a0492283e552a2d9980783e",
+            "artifact_digest": null,
+            "retry_hint": null,
+            "retryable": true,
+            "scope": "current_work_item",
+            "requires_control_plane": false,
+            "related_work_item_ids": [],
+            "related_artifact_refs": [],
+            "failure_fingerprint": "0cfd11d4cba3b77f507c"
+          },
+          "kind": "code_delivery_incomplete",
+          "attempt": 2,
+          "retry_reason": "bounded_recovery",
+          "input_digest": "39888be350829647fc016163449f279d88a002006a0492283e552a2d9980783e",
+          "failure_fingerprint": "0cfd11d4cba3b77f507c",
+          "delta_evidence": "none",
+          "circuit_breaker": false
+        },
+        {
+          "failure": {
+            "kind": "code_delivery_incomplete",
+            "summary": "CodeAgent 交付不完整：没有生成 Git ChangeSet",
+            "evidence_id": null,
+            "validator": null,
+            "field_path": null,
+            "code": null,
+            "input_digest": "39888be350829647fc016163449f279d88a002006a0492283e552a2d9980783e",
+            "artifact_digest": null,
+            "retry_hint": null,
+            "retryable": true,
+            "scope": "current_work_item",
+            "requires_control_plane": false,
+            "related_work_item_ids": [],
+            "related_artifact_refs": [],
+            "failure_fingerprint": "0cfd11d4cba3b77f507c"
+          },
+          "kind": "code_delivery_incomplete",
+          "attempt": 3,
+          "retry_reason": "bounded_recovery",
+          "input_digest": "39888be350829647fc016163449f279d88a002006a0492283e552a2d9980783e",
+          "failure_fingerprint": "0cfd11d4cba3b77f507c",
+          "delta_evidence": "none",
+          "circuit_breaker": false
+        }
+      ],
+      "before_frontier": [
+        "wi-sibling"
+      ],
+      "after_frontier": [
+        "wi-owner",
+        "wi-sibling"
+      ],
+      "completed_sibling_preserved": true,
+      "downstream_not_started": true,
+      "raw_events": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/no-changeset/.projectos/runs/tr-0b22d0743d77/events.jsonl",
+      "raw_checkpoint": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/no-changeset/.projectos/runs/tr-0b22d0743d77/checkpoint.json"
+    },
+    {
+      "case": "import-binding",
+      "trace_id": "tr-939f52bd3e44",
+      "injection_boundary": "GitCodeIntegrationService.validate_published_workspace diagnostic -> integration NodeResult",
+      "semantic_diagnostic": "Integration 语义检查拒绝合并（已发布 workspace） [owner_files: backend/app/main.py]: backend/app/main.py 引用了不存在的本地模块 app.missing_service",
+      "owner_files": [
+        "backend/app/main.py"
+      ],
+      "repair_scope": [
+        "wi-owner"
+      ],
+      "recovery_entrypoint": "RunCoordinator._run_with_repairs/code_wave_repair_scheduled",
+      "executed_work_items": [
+        "wi-integration",
+        "wi-owner"
+      ],
+      "before_frontier": [
+        "wi-owner",
+        "wi-sibling",
+        "wi-runtime"
+      ],
+      "after_frontier": [
+        "wi-owner",
+        "wi-sibling"
+      ],
+      "forced_rerun": [
+        "wi-owner"
+      ],
+      "completed_sibling_preserved": true,
+      "runtime_not_started": true,
+      "scheduled_event": {
+        "event_id": "evt-d1060b50699b",
+        "trace_id": "tr-939f52bd3e44",
+        "work_item_id": "control",
+        "type": "code_wave_repair_scheduled",
+        "created_at": "2026-09-28T11:55:24.388078+00:00",
+        "details": {
+          "attempt": 1,
+          "work_item_ids": [
+            "wi-owner"
+          ],
+          "reason": "代码集成发现实现适配问题：Integration 语义检查拒绝合并（已发布 workspace） [owner_files: backend/app/main.py]: backend/app/main.py 引用了不存在的本地模块 app.missing_service",
+          "mode": "rerun_partitioned_code_items"
+        }
+      },
+      "raw_events": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/import-binding-frontier/.projectos/runs/tr-939f52bd3e44/events.jsonl",
+      "raw_checkpoint": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/import-binding-frontier/.projectos/runs/tr-939f52bd3e44/checkpoint.json"
+    },
+    {
+      "case": "http-contract",
+      "trace_id": "tr-197dc83473a3",
+      "injection_boundary": "GitCodeIntegrationService.validate_published_workspace diagnostic -> integration NodeResult",
+      "semantic_diagnostic": "Integration 语义检查拒绝合并（已发布 workspace） [owner_files: backend/app/main.py, tests/test_records.py]: tests/test_records.py:2 消费接口 records.api 使用 GET /records/stats，provider=backend/app/main.py 未提供匹配路由（可用: GET /records）",
+      "owner_files": [
+        "tests/test_records.py"
+      ],
+      "repair_scope": [
+        "wi-owner"
+      ],
+      "recovery_entrypoint": "RunCoordinator._run_with_repairs/code_wave_repair_scheduled",
+      "executed_work_items": [
+        "wi-integration",
+        "wi-owner"
+      ],
+      "before_frontier": [
+        "wi-owner",
+        "wi-sibling",
+        "wi-runtime"
+      ],
+      "after_frontier": [
+        "wi-owner",
+        "wi-sibling"
+      ],
+      "forced_rerun": [
+        "wi-owner"
+      ],
+      "completed_sibling_preserved": true,
+      "runtime_not_started": true,
+      "scheduled_event": {
+        "event_id": "evt-d13dbd756732",
+        "trace_id": "tr-197dc83473a3",
+        "work_item_id": "control",
+        "type": "code_wave_repair_scheduled",
+        "created_at": "2026-09-28T11:55:24.399675+00:00",
+        "details": {
+          "attempt": 1,
+          "work_item_ids": [
+            "wi-owner"
+          ],
+          "reason": "代码集成发现实现适配问题：Integration 语义检查拒绝合并（已发布 workspace） [owner_files: backend/app/main.py, tests/test_records.py]: tests/test_records.py:2 消费接口 records.api 使用 GET /records/stats，provider=backend/app/main.py 未提供匹配路由（可用: GET /records）",
+          "mode": "rerun_partitioned_code_items"
+        }
+      },
+      "raw_events": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/http-contract-frontier/.projectos/runs/tr-197dc83473a3/events.jsonl",
+      "raw_checkpoint": "/Users/coinloner/projectOS/validation-evidence/phase4-direct-20260928-traces/http-contract-frontier/.projectos/runs/tr-197dc83473a3/checkpoint.json"
+    }
+  ],
+  "summary": {
+    "passed": 7,
+    "total": 7
+  }
+}

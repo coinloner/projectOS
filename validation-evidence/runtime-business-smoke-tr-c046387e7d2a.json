@@ -1,0 +1,80 @@
+{
+  "status": "passed",
+  "trace_id": "tr-c046387e7d2a",
+  "source_evidence": "/Users/coinloner/projectOS/validation-evidence/replay-l1-business-f-candidate-20260928-075247-411229.json",
+  "project_path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz",
+  "processes": [
+    {
+      "pid": 49817,
+      "command": "python -m uvicorn app.main:app",
+      "log": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/runtime-1.log",
+      "attempt": 1
+    },
+    {
+      "pid": 49818,
+      "command": "python -m uvicorn app.main:app",
+      "log": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/runtime-2.log",
+      "attempt": 2
+    }
+  ],
+  "responses": {
+    "health": {
+      "status": 200,
+      "body": "{\"status\":\"ok\"}",
+      "json": {
+        "status": "ok"
+      }
+    },
+    "blank": {
+      "status": 400,
+      "body": "{\"detail\":\"title must not be blank\"}",
+      "json": {
+        "detail": "title must not be blank"
+      }
+    },
+    "create": {
+      "status": 201,
+      "body": "{\"id\":\"6dd2a233-7f4e-488b-baf4-b5daad431778\",\"title\":\"Replay L1b persisted\",\"completed\":false}",
+      "json": {
+        "id": "6dd2a233-7f4e-488b-baf4-b5daad431778",
+        "title": "Replay L1b persisted",
+        "completed": false
+      }
+    },
+    "list_before_restart": {
+      "status": 200,
+      "body": "[{\"id\":\"6dd2a233-7f4e-488b-baf4-b5daad431778\",\"title\":\"Replay L1b persisted\",\"completed\":false}]",
+      "json": [
+        {
+          "id": "6dd2a233-7f4e-488b-baf4-b5daad431778",
+          "title": "Replay L1b persisted",
+          "completed": false
+        }
+      ]
+    },
+    "health_after_restart": {
+      "status": 200,
+      "body": "{\"status\":\"ok\"}",
+      "json": {
+        "status": "ok"
+      }
+    },
+    "list_after_restart": {
+      "status": 200,
+      "body": "[{\"id\":\"6dd2a233-7f4e-488b-baf4-b5daad431778\",\"title\":\"Replay L1b persisted\",\"completed\":false}]",
+      "json": [
+        {
+          "id": "6dd2a233-7f4e-488b-baf4-b5daad431778",
+          "title": "Replay L1b persisted",
+          "completed": false
+        }
+      ]
+    }
+  },
+  "sqlite_path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/workspace/backend/tasks.sqlite3",
+  "sqlite_row_after_restart": [
+    "6dd2a233-7f4e-488b-baf4-b5daad431778",
+    "Replay L1b persisted",
+    0
+  ]
+}

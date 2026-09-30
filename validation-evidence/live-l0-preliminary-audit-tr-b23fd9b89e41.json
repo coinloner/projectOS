@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "status": "verified_live_l0",
+  "scope": "Live L0 only; no Live L1/Code execution",
+  "project_path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836",
+  "trace_id": "tr-b23fd9b89e41",
+  "provider": {
+    "provider": "wanfa",
+    "model": "gpt-6-sol",
+    "wire_api": "responses"
+  },
+  "trace_status": "completed",
+  "workflow": "architecture_l0",
+  "planned_work_items": 11,
+  "completed_work_items": 11,
+  "work_item_ids": [
+    "wi-01-requirement",
+    "wi-02-architecture-blueprint",
+    "wi-03-architecture-integration",
+    "wi-04-architecture-quality-gate",
+    "wi-05-contract",
+    "wi-architecture-module-task_management",
+    "wi-architecture-module-http_service",
+    "wi-architecture-module-browser_task_experience",
+    "wi-architecture-implementation-task_management",
+    "wi-architecture-implementation-http_service",
+    "wi-architecture-implementation-browser_task_experience"
+  ],
+  "provider_retry_events": [
+    "wi-architecture-module-http_service"
+  ],
+  "contract_units": 8,
+  "compiled_code_work_items_not_run": 8,
+  "publication": {
+    "candidate_id": "cand-f25000c9ebdd",
+    "source_count": 7,
+    "revision": "published:architecture:rev-001",
+    "digest": "a859e02fdef7852f834b89c699ad7789994279f69538fb2e466d78c7e9091b1f",
+    "expanded_work_items": 11,
+    "all_architecture_producers_before_integration": true,
+    "integration_before_gate": true,
+    "contract_work_item_id": "wi-05-contract",
+    "contract_units": 8,
+    "contract_digest": "096a45b5e6fe3813b12ca7b8a86e4923a47972036b010e3dbdc47eef6fee5fde",
+    "contract_file": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/architecture/project-contract.json",
+    "checkpoint": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/checkpoint.json"
+  },
+  "raw": {
+    "trace": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/trace.json",
+      "sha256": "afaf107f3387f87ac4b6c1587a7c8c5f2eff85b266d135274064f06d9d8ef5d0"
+    },
+    "plan": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/plan.json",
+      "sha256": "27f494dd1bda5c91e3c0231476c34a507128066aacaebb5bd3425ab1bd0a9acf"
+    },
+    "checkpoint": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/checkpoint.json",
+      "sha256": "937026a3f0f0c699595cb0cadac71c022865ebb7acd0fe027ee7beb64f0096c1"
+    },
+    "events": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/events.jsonl",
+      "sha256": "094f1a9fd6ba26def8eb17e044e6968a9d7ecf91afb79a6c7531a2ffd01361e8"
+    },
+    "requirement": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/requirement.md",
+      "sha256": "51d870e674acf0b79d0610e482aeb3ca69fac0e541263637e3590622cd40f971"
+    },
+    "architecture": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/architecture.md",
+      "sha256": "a859e02fdef7852f834b89c699ad7789994279f69538fb2e466d78c7e9091b1f"
+    },
+    "contract": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/architecture/project-contract.json",
+      "sha256": "2362103f7c86189e8ccfbd627d44ee7d9686a6b1bd1f32773bd340dadf3640db"
+    },
+    "original_launcher_report": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/validation-evidence.json",
+      "sha256": "18cc6fed6a7e0206532aa903afaa8f38e262895fcf4201095f516d404e4c72bd"
+    }
+  },
+  "historical_verifier_exception_retained": true,
+  "metrics": {
+    "trace_id": "tr-b23fd9b89e41",
+    "event_count": 103,
+    "work_items_completed": 11,
+    "work_items_failed": 0,
+    "retry_count": 1,
+    "retry_convergence_rate": 1.0,
+    "event_counts": {
+      "work_item_planned": 24,
+      "batch_started": 11,
+      "work_item_started": 11,
+      "tool_contract_preflight": 11,
+      "work_item_completed": 11,
+      "requirement_snapshot": 1,
+      "batch_completed": 11,
+      "architecture_execution_config": 9,
+      "artifact_commit_verified": 7,
+      "architecture_modules_expanded": 1,
+      "retry_decision_recorded": 1,
+      "work_item_retrying": 1,
+      "architecture_implementations_expanded": 1,
+      "architecture_contract_published": 1,
+      "deterministic_action_completed": 1,
+      "semantic_loop_completed": 1
+    }
+  }
+}

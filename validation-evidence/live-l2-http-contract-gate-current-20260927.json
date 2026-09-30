@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "project_path": "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927",
+  "validator": "http_contract_consumer_gate",
+  "status": "failed",
+  "issue_count": 4,
+  "issues": [
+    "tests/test_mvp_delivery.py:121 消费接口 task_management.task_api 使用 PATCH /tasks/{parameter}/status，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, POST /api/tasks, GET /tasks, GET /api/tasks, GET /tasks/statistics, GET /api/tasks/statistics, GET /api/tasks/stats, GET /tasks/stats, GET /tasks/{task_id}, GET /api/tasks/{task_id}, PATCH /tasks/{task_id}, PATCH /api/tasks/{task_id}, PATCH /tasks/{task_id}/complete, PATCH /api/tasks/{task_id}/complete, PATCH /tasks/{task_id}/uncomplete, PATCH /api/tasks/{task_id}/uncomplete, DELETE /tasks/{task_id}, DELETE /api/tasks/{task_id}）",
+    "tests/test_mvp_delivery.py:126 消费接口 task_management.task_api 使用 PATCH /tasks/{parameter}/status，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, POST /api/tasks, GET /tasks, GET /api/tasks, GET /tasks/statistics, GET /api/tasks/statistics, GET /api/tasks/stats, GET /tasks/stats, GET /tasks/{task_id}, GET /api/tasks/{task_id}, PATCH /tasks/{task_id}, PATCH /api/tasks/{task_id}, PATCH /tasks/{task_id}/complete, PATCH /api/tasks/{task_id}/complete, PATCH /tasks/{task_id}/uncomplete, PATCH /api/tasks/{task_id}/uncomplete, DELETE /tasks/{task_id}, DELETE /api/tasks/{task_id}）",
+    "tests/test_mvp_delivery.py:129 消费接口 task_management.task_api 使用 PATCH /tasks/{parameter}/status，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, POST /api/tasks, GET /tasks, GET /api/tasks, GET /tasks/statistics, GET /api/tasks/statistics, GET /api/tasks/stats, GET /tasks/stats, GET /tasks/{task_id}, GET /api/tasks/{task_id}, PATCH /tasks/{task_id}, PATCH /api/tasks/{task_id}, PATCH /tasks/{task_id}/complete, PATCH /api/tasks/{task_id}/complete, PATCH /tasks/{task_id}/uncomplete, PATCH /api/tasks/{task_id}/uncomplete, DELETE /tasks/{task_id}, DELETE /api/tasks/{task_id}）",
+    "frontend/src/App.jsx:123 消费接口 task_management.task_api 使用 PATCH /tasks/{parameter}/status，provider=backend/app/main.py 未提供匹配路由（可用: GET /health, POST /tasks, POST /api/tasks, GET /tasks, GET /api/tasks, GET /tasks/statistics, GET /api/tasks/statistics, GET /api/tasks/stats, GET /tasks/stats, GET /tasks/{task_id}, GET /api/tasks/{task_id}, PATCH /tasks/{task_id}, PATCH /api/tasks/{task_id}, PATCH /tasks/{task_id}/complete, PATCH /api/tasks/{task_id}/complete, PATCH /tasks/{task_id}/uncomplete, PATCH /api/tasks/{task_id}/uncomplete, DELETE /tasks/{task_id}, DELETE /api/tasks/{task_id}）"
+  ]
+}

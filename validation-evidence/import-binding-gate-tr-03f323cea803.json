@@ -1,0 +1,46 @@
+{
+  "status": "passed",
+  "trace_id": "tr-03f323cea803",
+  "source_evidence": "/Users/coinloner/projectOS/validation-evidence/replay-l1-business-20260928-065529.json",
+  "project_path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-rwggtaos",
+  "ast_import": {
+    "status": "passed",
+    "issues": []
+  },
+  "canonical_binding": {
+    "status": "passed",
+    "issues": []
+  },
+  "layering": {
+    "status": "passed",
+    "checks": {
+      "api_imports_service": true,
+      "service_imports_repository": true,
+      "repository_imports_sqlite3": true,
+      "api_does_not_import_repository_or_sqlite": true,
+      "service_does_not_access_sqlite": true,
+      "repository_has_create_insert_select": true,
+      "api_routes_delegate_to_service": true,
+      "service_delegates_create_to_repository": true
+    },
+    "source_sha256": {
+      "task-management-repository": "80a468b6d1f6e3bbd1a343588b6c8b35ad5e113366eaec4387f52647b82d8825",
+      "task-management-service": "f78159e4f8c2097344e0efdcb6aa6fb8ef7df15fca5d2bcb483c55772cdc2eb3",
+      "task-management-http": "b9ef47775345b54d4b8bc7302730fac8f574ddea48395d455e18ef62cf8da14e"
+    }
+  },
+  "agent_prompts": {
+    "task-management-repository": {
+      "path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-rwggtaos/agent-prompts/task-management-repository.txt",
+      "sha256": "28a57b6a7d3bbc0cd96fd69da7c356b7b37b6553ccb72a95c1d0f247258ae7dd"
+    },
+    "task-management-service": {
+      "path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-rwggtaos/agent-prompts/task-management-service.txt",
+      "sha256": "d050144ea48cd30fbee8585274d8dc217205076d0024b7bc30c2106225eafeaf"
+    },
+    "task-management-http": {
+      "path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-rwggtaos/agent-prompts/task-management-http.txt",
+      "sha256": "540659d58516a390bc56265aff150cbe9a374772fa3dda5a858c2d3660cff888"
+    }
+  }
+}

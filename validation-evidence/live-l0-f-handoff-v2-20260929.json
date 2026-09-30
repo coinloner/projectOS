@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "status": "design_and_contract_candidates_validated_not_activated",
+  "trace_id": "tr-b23fd9b89e41",
+  "source_trace_status": "completed",
+  "classification": {
+    "design": "F",
+    "gate": "R",
+    "audit": "V"
+  },
+  "source_artifact_sha256": {
+    "contract": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/architecture/project-contract.json",
+      "sha256": "2362103f7c86189e8ccfbd627d44ee7d9686a6b1bd1f32773bd340dadf3640db"
+    },
+    "trace": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/trace.json",
+      "sha256": "afaf107f3387f87ac4b6c1587a7c8c5f2eff85b266d135274064f06d9d8ef5d0"
+    },
+    "plan": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/plan.json",
+      "sha256": "27f494dd1bda5c91e3c0231476c34a507128066aacaebb5bd3425ab1bd0a9acf"
+    },
+    "checkpoint": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/checkpoint.json",
+      "sha256": "937026a3f0f0c699595cb0cadac71c022865ebb7acd0fe027ee7beb64f0096c1"
+    },
+    "events": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/runs/tr-b23fd9b89e41/events.jsonl",
+      "sha256": "094f1a9fd6ba26def8eb17e044e6968a9d7ecf91afb79a6c7531a2ffd01361e8"
+    },
+    "architecture": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/architecture.md",
+      "sha256": "a859e02fdef7852f834b89c699ad7789994279f69538fb2e466d78c7e9091b1f"
+    },
+    "requirement": {
+      "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/requirement.md",
+      "sha256": "51d870e674acf0b79d0610e482aeb3ca69fac0e541263637e3590622cd40f971"
+    }
+  },
+  "source_blueprint": {
+    "ref": "staged:tr-b23fd9b89e41:wi-02-architecture-blueprint:blueprint",
+    "digest": "2c574c9c35633edfee8492c2851fc3fc94d59d59ca9b55be65f9c0ab5ad8d8dd"
+  },
+  "source_modules": [
+    {
+      "ref": "staged:tr-b23fd9b89e41:wi-architecture-module-task_management:module-task_management",
+      "digest": "102cc19926874d3ccac9e192431f363c68322253bf1169ede50e05cf8a4040c4"
+    },
+    {
+      "ref": "staged:tr-b23fd9b89e41:wi-architecture-module-http_service:module-http_service",
+      "digest": "6642e35ad580d70c64a09fb462c18e8603fd003aec4f2720c5525ed5d931e38d"
+    },
+    {
+      "ref": "staged:tr-b23fd9b89e41:wi-architecture-module-browser_task_experience:module-browser_task_experience",
+      "digest": "8bf831c1dd880fb156f659d1c14044313fb77ac06b4078f185734867d99075dd"
+    }
+  ],
+  "source_implementations": [
+    {
+      "ref": "staged:tr-b23fd9b89e41:wi-architecture-implementation-task_management:implementation-task_management",
+      "digest": "6cb1e900de98c63e8d2cbae219e95d106347a7827c8a27ea0b6f9deafc7b989a"
+    },
+    {
+      "ref": "staged:tr-b23fd9b89e41:wi-architecture-implementation-http_service:implementation-http_service",
+      "digest": "51cd8d3d794542dda285125c50b72d25e762d3f973754aa7190de0190e9f8fb8"
+    },
+    {
+      "ref": "staged:tr-b23fd9b89e41:wi-architecture-implementation-browser_task_experience:implementation-browser_task_experience",
+      "digest": "72ae015b6843ee1027e7355d1ae67458d8bfd159cb321915142bee11ca07efc2"
+    }
+  ],
+  "blueprint_candidate": {
+    "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/architecture/revisions/blueprint-f-handoff-v2-20260929.json",
+    "sha256": "6ede7db0642bc10680cd2bf647752912b7e03b8c0c00fcd355ade178640aa58f"
+  },
+  "contract_candidate": {
+    "path": "/Users/coinloner/projectOS/projects/wanfa-architecture-protocol-20260928-224311-319836/.projectos/architecture/revisions/project-contract-f-handoff-v2-20260929.json",
+    "sha256": "c2efdaebf894c1fa9d037c0ba9767d4ed6b10c59196765cb8bff9d59029df124",
+    "digest": "421649e5c87e83a28bf514abd8eb2a7d4883760b02841c8b5024c64ddca6c1f2"
+  },
+  "original_contract_digest": "096a45b5e6fe3813b12ca7b8a86e4923a47972036b010e3dbdc47eef6fee5fde",
+  "only_contract_fields_changed": [
+    "entrypoints",
+    "required_files"
+  ],
+  "required_files": [
+    "backend/http_service.py",
+    "backend/task_management/operations.py",
+    "backend/task_management/storage.py",
+    "frontend/index.html",
+    "frontend/package.json",
+    "frontend/src/App.jsx",
+    "frontend/src/api.js",
+    "frontend/src/main.jsx",
+    "frontend/vite.config.js",
+    "tests/test_http_service.py",
+    "tests/test_task_management.py"
+  ],
+  "blueprint_handoff_gaps": [],
+  "bundle_handoff_gaps": [],
+  "contract_handoff_gaps": [],
+  "compiled_code_work_items_not_run": 8,
+  "supersedes": "live-l0-f-handoff-v1-20260929.json (proposed required_paths changes not needed for source-consistent derivation)",
+  "decision_basis": {
+    "backend_entry": "http_service.api owns backend/http_service.py and declares provided symbol app",
+    "frontend_entry": "browser_task_experience.frontend_runtime owns frontend/index.html",
+    "command": "proposed ASGI startup based on FastAPI runtime profile; not emitted by Provider or executed",
+    "required_files": "all 11 source-owned implementation files assigned to the original three modules"
+  },
+  "limitations": [
+    "Not active: no published Blueprint/Architecture revision, contract replacement, checkpoint replan or Live L1",
+    "Proposed uvicorn cwd/dependencies/command have not passed a live runtime check",
+    "AC-10 startup/access instructions still have no owned documentation file in source implementation design",
+    "Original failed Live Trace tr-2e4924e985cf remains separately unresolved"
+  ]
+}

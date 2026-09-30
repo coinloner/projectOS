@@ -1,0 +1,24 @@
+{
+  "status": "passed",
+  "trace_id": "tr-03f323cea803",
+  "source_evidence": "/Users/coinloner/projectOS/validation-evidence/replay-l1-business-20260928-065529.json",
+  "project_path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-rwggtaos",
+  "http_contract": {
+    "status": "passed",
+    "issues": []
+  },
+  "declared_operations": [
+    {
+      "method": "POST",
+      "path": "/tasks",
+      "request_schema": null,
+      "response_schema": null
+    },
+    {
+      "method": "GET",
+      "path": "/tasks",
+      "request_schema": null,
+      "response_schema": null
+    }
+  ]
+}

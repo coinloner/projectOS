@@ -1,0 +1,48 @@
+{
+  "status": "passed",
+  "trace_id": "tr-c046387e7d2a",
+  "source_evidence": "/Users/coinloner/projectOS/validation-evidence/replay-l1-business-f-candidate-20260928-075247-411229.json",
+  "project_path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz",
+  "http_contract": {
+    "status": "passed",
+    "issues": []
+  },
+  "declared_operations": [
+    {
+      "method": "POST",
+      "path": "/tasks",
+      "request_schema": null,
+      "response_schema": null
+    },
+    {
+      "method": "GET",
+      "path": "/tasks",
+      "request_schema": null,
+      "response_schema": null
+    },
+    {
+      "method": "GET",
+      "path": "/tasks/{task_id}",
+      "request_schema": null,
+      "response_schema": null
+    },
+    {
+      "method": "PATCH",
+      "path": "/tasks/{task_id}/status",
+      "request_schema": null,
+      "response_schema": null
+    },
+    {
+      "method": "DELETE",
+      "path": "/tasks/{task_id}",
+      "request_schema": null,
+      "response_schema": null
+    },
+    {
+      "method": "GET",
+      "path": "/tasks/statistics",
+      "request_schema": null,
+      "response_schema": null
+    }
+  ]
+}

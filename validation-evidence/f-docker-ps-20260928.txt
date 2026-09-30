@@ -1,0 +1,2 @@
+NAME                                              IMAGE                                           COMMAND                  SERVICE   CREATED              STATUS                           PORTS
+projectos-wanfa-live-l2-todo-20260927-backend-1   projectos-wanfa-live-l2-todo-20260927-backend   "python -m uvicorn a…"   backend   About a minute ago   Up 1 second (health: starting)   0.0.0.0:18080->8000/tcp, [::]:18080->8000/tcp

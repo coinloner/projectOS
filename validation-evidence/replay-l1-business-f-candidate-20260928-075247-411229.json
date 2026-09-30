@@ -1,0 +1,215 @@
+{
+  "status": "completed",
+  "scope": "Replay L1b",
+  "trace_id": "tr-c046387e7d2a",
+  "source_live_trace": "tr-2e4924e985cf",
+  "source_contract_sha256": "d91ca5f8c0764050bc8dd3222aa0d5bfa96220a4de6fa6af31337d254f5b8c39",
+  "amended_replay_contract_sha256": "bd974a1dc37444a1b00a30e4ba5bdf9f7558649d02b7a2f8ed1b9ab9a3fee8a3",
+  "amendments": [
+    "versioned F candidate used unchanged except Replay-only selected unit refs/slot",
+    "three selected units clear old Live staged refs for isolated Replay"
+  ],
+  "input_candidate_path": "/Users/coinloner/projectOS/projects/live-l2-20260926-rerun/wanfa-live-l2-todo-20260927/.projectos/architecture/revisions/project-contract-f-correction-v2-20260928.json",
+  "input_candidate_sha256": "59888711dfca824948544a29c4b33a467573b012bf581e6b12ab38c6bbd6a8d0",
+  "f_constraints_not_proven_by_this_slice": [
+    "recorded repository does not read TASK_DB_PATH",
+    "frontend package/Vite build and same-origin proxy not selected",
+    "Dockerfile/Compose execution and persistent volume not selected"
+  ],
+  "source_provider_responses": "recorded Live-generated file contents; no external provider call",
+  "recorded_response_sha256": {
+    "task-management-repository": "80a468b6d1f6e3bbd1a343588b6c8b35ad5e113366eaec4387f52647b82d8825",
+    "task-management-service": "f78159e4f8c2097344e0efdcb6aa6fb8ef7df15fca5d2bcb483c55772cdc2eb3",
+    "task-management-http": "b9ef47775345b54d4b8bc7302730fac8f574ddea48395d455e18ef62cf8da14e"
+  },
+  "full_contract_units": 9,
+  "full_compilation_items": 9,
+  "selected_work_items": [
+    "wi-code-task-management-repository",
+    "wi-code-task-management-service",
+    "wi-code-task-management-http"
+  ],
+  "prompts_contain_canonical_bindings": true,
+  "agent_prompts": {
+    "task-management-repository": {
+      "path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/agent-prompts/task-management-repository.txt",
+      "sha256": "3c2ec7fa59bf5fcd4787f4a62cd11e2161300ae8fb899595bace1145afa63400"
+    },
+    "task-management-service": {
+      "path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/agent-prompts/task-management-service.txt",
+      "sha256": "2ac8057707d14ffec2313c280e5a8c27cdb21794dfd065452a9b32e0c838279f"
+    },
+    "task-management-http": {
+      "path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/agent-prompts/task-management-http.txt",
+      "sha256": "4916bc18c8b2795d98ec62ccbdf9c31f1629101175c92b700c7c027a42dfa827"
+    }
+  },
+  "crewai_agent_calls": [
+    "task-management-repository",
+    "task-management-service",
+    "task-management-http"
+  ],
+  "changesets": {
+    "wi-code-task-management-repository": {
+      "commit": "12f807c013125fe887c875faa0b4759be523f490",
+      "files": [
+        "workspace/backend/app/task_repository.py"
+      ]
+    },
+    "wi-code-task-management-service": {
+      "commit": "98d0ab5ffb231f0c71823ed3ce4453fd901e44e4",
+      "files": [
+        "workspace/backend/app/task_service.py"
+      ]
+    },
+    "wi-code-task-management-http": {
+      "commit": "c6e7dc7412b52199d5a570aba9507d2ab78f8c50",
+      "files": [
+        "workspace/backend/app/main.py"
+      ]
+    }
+  },
+  "wave_merge_commits": {
+    "1": "6edf6514fc088990e1fb6820a029eebc03c5a004",
+    "2": "89f1bca751b7019ca230a6df815118e27503c102",
+    "3": "b802032cc5d899415dba2e696e16b8db6a44e21e"
+  },
+  "baseline": "96b16ce3d4dd630662b8b2ff0260431b6fc4e46d",
+  "gates": {
+    "ast_import": {
+      "status": "passed",
+      "issues": []
+    },
+    "canonical_binding": {
+      "status": "passed",
+      "issues": []
+    },
+    "http_contract": {
+      "status": "passed",
+      "issues": []
+    },
+    "layering": {
+      "status": "passed",
+      "checks": {
+        "api_imports_service": true,
+        "service_imports_repository": true,
+        "repository_imports_sqlite3": true,
+        "api_does_not_import_repository_or_sqlite": true,
+        "service_does_not_access_sqlite": true,
+        "repository_has_create_insert_select": true,
+        "api_routes_delegate_to_service": true,
+        "service_delegates_create_to_repository": true
+      },
+      "source_sha256": {
+        "task-management-repository": "80a468b6d1f6e3bbd1a343588b6c8b35ad5e113366eaec4387f52647b82d8825",
+        "task-management-service": "f78159e4f8c2097344e0efdcb6aa6fb8ef7df15fca5d2bcb483c55772cdc2eb3",
+        "task-management-http": "b9ef47775345b54d4b8bc7302730fac8f574ddea48395d455e18ef62cf8da14e"
+      }
+    }
+  },
+  "runtime": {
+    "processes": [
+      {
+        "pid": 49817,
+        "command": "python -m uvicorn app.main:app",
+        "log": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/runtime-1.log",
+        "attempt": 1
+      },
+      {
+        "pid": 49818,
+        "command": "python -m uvicorn app.main:app",
+        "log": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/runtime-2.log",
+        "attempt": 2
+      }
+    ],
+    "responses": {
+      "health": {
+        "status": 200,
+        "body": "{\"status\":\"ok\"}",
+        "json": {
+          "status": "ok"
+        }
+      },
+      "blank": {
+        "status": 400,
+        "body": "{\"detail\":\"title must not be blank\"}",
+        "json": {
+          "detail": "title must not be blank"
+        }
+      },
+      "create": {
+        "status": 201,
+        "body": "{\"id\":\"6dd2a233-7f4e-488b-baf4-b5daad431778\",\"title\":\"Replay L1b persisted\",\"completed\":false}",
+        "json": {
+          "id": "6dd2a233-7f4e-488b-baf4-b5daad431778",
+          "title": "Replay L1b persisted",
+          "completed": false
+        }
+      },
+      "list_before_restart": {
+        "status": 200,
+        "body": "[{\"id\":\"6dd2a233-7f4e-488b-baf4-b5daad431778\",\"title\":\"Replay L1b persisted\",\"completed\":false}]",
+        "json": [
+          {
+            "id": "6dd2a233-7f4e-488b-baf4-b5daad431778",
+            "title": "Replay L1b persisted",
+            "completed": false
+          }
+        ]
+      },
+      "health_after_restart": {
+        "status": 200,
+        "body": "{\"status\":\"ok\"}",
+        "json": {
+          "status": "ok"
+        }
+      },
+      "list_after_restart": {
+        "status": 200,
+        "body": "[{\"id\":\"6dd2a233-7f4e-488b-baf4-b5daad431778\",\"title\":\"Replay L1b persisted\",\"completed\":false}]",
+        "json": [
+          {
+            "id": "6dd2a233-7f4e-488b-baf4-b5daad431778",
+            "title": "Replay L1b persisted",
+            "completed": false
+          }
+        ]
+      }
+    },
+    "sqlite_path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz/workspace/backend/tasks.sqlite3",
+    "sqlite_row_after_restart": [
+      "6dd2a233-7f4e-488b-baf4-b5daad431778",
+      "Replay L1b persisted",
+      0
+    ]
+  },
+  "event_types": [
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "work_item_planned",
+    "batch_started",
+    "work_item_started",
+    "tool_contract_preflight",
+    "work_item_completed",
+    "batch_completed",
+    "code_wave_integrated",
+    "batch_started",
+    "work_item_started",
+    "tool_contract_preflight",
+    "work_item_completed",
+    "batch_completed",
+    "code_wave_integrated",
+    "batch_started",
+    "work_item_started",
+    "tool_contract_preflight",
+    "work_item_completed",
+    "batch_completed",
+    "code_wave_integrated",
+    "runtime_business_smoke_passed"
+  ],
+  "project_path": "/Users/coinloner/projectOS/validation-evidence/replay-l1b-project-_9n41ydz",
+  "generated_at": "2026-09-28T07:52:47.410930+00:00"
+}
